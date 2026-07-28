@@ -4,3 +4,6 @@ Copyright (c) Camellia Computing and contributors.
 This repository is derived from RustDesk and other upstream components. The normalized source
 baseline is recorded in SOURCE_PROVENANCE.json. Existing copyright notices and upstream authorship
 remain applicable. Third-party dependencies retain their respective licenses.
+
+Build automation includes a modified copy of subosito/flutter-action v2.23.0 under the MIT
+License; its source notice and license are retained in .github/actions/setup-flutter/.

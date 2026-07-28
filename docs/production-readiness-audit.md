@@ -51,6 +51,10 @@ Resolved by invoking only `pwsh` and the current PowerShell 7 installation path.
 
 Resolved by accepting only the current random-nonce local encryption envelope and current salted permanent-password storage, regenerating rather than importing plaintext device IDs, and removing obsolete installer/CLI aliases. File-transfer requests now use a 10,000-file safe default for missing or invalid configuration and a non-removable 100,000-file hard ceiling.
 
+### RM-P1-05 — A pinned Flutter action retained a transitive floating dependency
+
+Resolved by vendoring the reviewed MIT-licensed setup action, pinning its nested cache action to a full commit, and verifying downloaded Flutter archives against the release-manifest SHA-256 digest. Organization-wide immutable Action references now fail closed.
+
 ## Verification evidence
 
 - Shared protocol: the client and server pin commit `76bf96f7e6b3f0fdb7f009b8606586da53cb5fe4`; format, Clippy with warnings denied, and 98 current-format unit tests passed.
@@ -58,7 +62,7 @@ Resolved by accepting only the current random-nonce local encryption envelope an
 - Client: the Linux workspace/all-target Flutter feature suite passed (88 client, 98 protocol, 4 portable-packer, 30 screen-capture, and 6 input tests, with one documented long-running codec matrix ignored by the ordinary gate). Flutter analysis reported no errors or warnings and all 66 widget/unit tests passed; inherited information-level lint and Rust warning debt remains explicitly non-blocking. Portable generation is deterministic and rejects unsafe inputs.
 - Web client: protobuf codecs were regenerated from the pinned protocol, the TypeScript bridge lint/build and CSP/provenance synchronization check passed, and npm reported no vulnerabilities at the configured threshold.
 - Management: Ruff format/check, Django migration drift, 48 ordinary tests (2 environment-specific skips), the real PostgreSQL test/deployment path, Compose expansion through Docker Desktop, release metadata, and systemd hardening analysis passed.
-- All 22 repository workflow files passed Actionlint 1.7.12. Final management-image/Web provenance, every target-platform package, and platform-native acceptance remain mandatory hosted gates even where an equivalent local runner is unavailable.
+- All 22 repository workflow files passed Actionlint 1.7.12; the vendored setup script also passed ShellCheck and resolved Flutter 3.44.5 manifests for Linux, Windows, Intel macOS, and Apple Silicon macOS. Final management-image/Web provenance, every target-platform package, and platform-native acceptance remain mandatory hosted gates even where an equivalent local runner is unavailable.
 
 ## Residual risks and mandatory gates
 
