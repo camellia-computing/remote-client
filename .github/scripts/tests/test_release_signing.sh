@@ -18,6 +18,35 @@ if APPLE_CERTIFICATE=partial SIGNING_ENV_FILE="$macos_env" \
   exit 1
 fi
 
+macos_password='test-only-password'
+openssl req -x509 -newkey rsa:2048 -nodes \
+  -keyout "$test_root/macos.key" \
+  -out "$test_root/macos.crt" \
+  -subj '/CN=Camellia Remote macOS Test' \
+  -days 1 >/dev/null 2>&1
+openssl pkcs12 -export \
+  -inkey "$test_root/macos.key" \
+  -in "$test_root/macos.crt" \
+  -out "$test_root/macos.p12" \
+  -passout "pass:$macos_password" >/dev/null 2>&1
+macos_certificate="$(base64 -w 0 "$test_root/macos.p12")"
+macos_sha256="$(
+  openssl x509 -in "$test_root/macos.crt" -outform DER |
+    shasum -a 256 |
+    awk '{ print toupper($1) }'
+)"
+: > "$macos_env"
+APPLE_CERTIFICATE="$macos_certificate" \
+APPLE_CERTIFICATE_PASSWORD="$macos_password" \
+APPLE_SIGNING_CERTIFICATE_SHA256="$macos_sha256" \
+APPLE_SIGNING_IDENTITY='Camellia Remote macOS Test' \
+APPLE_SIGNING_TRUST_MODE=private-trust \
+SIGNING_ENV_FILE="$macos_env" \
+SIGNING_TEMP_DIRECTORY="$test_root" \
+  bash "$repository/.github/scripts/resolve-macos-signing.sh" >/dev/null
+grep -Fqx 'MACOS_NATIVE_SIGNING=signed' "$macos_env"
+grep -Fqx "MACOS_SIGNING_CERTIFICATE_SHA256=$macos_sha256" "$macos_env"
+
 ios_env="$test_root/ios.env"
 SIGNING_ENV_FILE="$ios_env" SIGNING_TEMP_DIRECTORY="$test_root" \
   bash "$repository/.github/scripts/resolve-ios-signing.sh" >/dev/null
@@ -34,6 +63,7 @@ fi
 IOS_CERTIFICATE_BASE64=dGVzdC1jZXJ0aWZpY2F0ZQ== \
 IOS_CERTIFICATE_PASSWORD=test-only-password \
 IOS_PROVISIONING_PROFILE_BASE64=dGVzdC1wcm9maWxl \
+IOS_SIGNING_CERTIFICATE_SHA256="$(printf 'A%.0s' {1..64})" \
 IOS_SIGNING_IDENTITY='Apple Distribution: Camellia Test (A1B2C3D4E5)' \
 IOS_TEAM_ID=A1B2C3D4E5 \
 IOS_EXPORT_METHOD=app-store-connect \
@@ -71,10 +101,21 @@ if command -v keytool >/dev/null 2>&1; then
     -keypass "$android_password" \
     >/dev/null 2>&1
   android_keystore_base64="$(base64 -w 0 "$android_keystore")"
+  android_certificate_sha256="$(
+    keytool -J-Duser.language=en -list -v \
+      -keystore "$android_keystore" \
+      -storepass "$android_password" \
+      -alias release |
+      sed -n 's/^[[:space:]]*SHA256:[[:space:]]*//p' |
+      tr -d ':[:space:]' |
+      tr '[:lower:]' '[:upper:]' |
+      head -n 1
+  )"
   ANDROID_SIGNING_KEY="$android_keystore_base64" \
   ANDROID_KEY_STORE_PASSWORD="$android_password" \
   ANDROID_KEY_PASSWORD="$android_password" \
   ANDROID_ALIAS=release \
+  ANDROID_SIGNING_CERTIFICATE_SHA256="$android_certificate_sha256" \
   SIGNING_ENV_FILE="$android_env" \
   SIGNING_TEMP_DIRECTORY="$test_root" \
     bash "$repository/.github/scripts/resolve-android-signing.sh" >/dev/null

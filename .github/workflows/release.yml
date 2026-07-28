@@ -604,6 +604,7 @@ jobs:
           APPLE_API_PRIVATE_KEY: ${{ inputs.publish && secrets.APPLE_API_PRIVATE_KEY || '' }}
           APPLE_CERTIFICATE: ${{ inputs.publish && secrets.APPLE_CERTIFICATE || '' }}
           APPLE_CERTIFICATE_PASSWORD: ${{ inputs.publish && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_CERTIFICATE_SHA256: ${{ inputs.publish && vars.APPLE_SIGNING_CERTIFICATE_SHA256 || '' }}
           APPLE_SIGNING_IDENTITY: ${{ inputs.publish && vars.APPLE_SIGNING_IDENTITY || '' }}
           APPLE_SIGNING_TRUST_MODE: ${{ inputs.publish && vars.APPLE_SIGNING_TRUST_MODE || '' }}
         run: |
@@ -885,6 +886,7 @@ jobs:
           ANDROID_KEY_STORE_PASSWORD: ${{ inputs.publish && secrets.ANDROID_KEY_STORE_PASSWORD || '' }}
           ANDROID_KEY_PASSWORD: ${{ inputs.publish && secrets.ANDROID_KEY_PASSWORD || '' }}
           ANDROID_ALIAS: ${{ inputs.publish && secrets.ANDROID_ALIAS || '' }}
+          ANDROID_SIGNING_CERTIFICATE_SHA256: ${{ inputs.publish && vars.ANDROID_SIGNING_CERTIFICATE_SHA256 || '' }}
         run: |
           SIGNING_ENV_FILE="$GITHUB_ENV" SIGNING_TEMP_DIRECTORY="$RUNNER_TEMP" \
             bash .github/scripts/resolve-android-signing.sh
@@ -1078,6 +1080,7 @@ jobs:
           IOS_CERTIFICATE_BASE64: ${{ inputs.publish && secrets.IOS_CERTIFICATE_BASE64 || '' }}
           IOS_CERTIFICATE_PASSWORD: ${{ inputs.publish && secrets.IOS_CERTIFICATE_PASSWORD || '' }}
           IOS_PROVISIONING_PROFILE_BASE64: ${{ inputs.publish && secrets.IOS_PROVISIONING_PROFILE_BASE64 || '' }}
+          IOS_SIGNING_CERTIFICATE_SHA256: ${{ inputs.publish && vars.IOS_SIGNING_CERTIFICATE_SHA256 || '' }}
           IOS_SIGNING_IDENTITY: ${{ inputs.publish && vars.IOS_SIGNING_IDENTITY || '' }}
           IOS_TEAM_ID: ${{ inputs.publish && vars.IOS_TEAM_ID || '' }}
           IOS_EXPORT_METHOD: ${{ inputs.publish && vars.IOS_EXPORT_METHOD || '' }}
@@ -1101,6 +1104,7 @@ jobs:
         shell: bash
         env:
           IOS_CERTIFICATE_PASSWORD: ${{ inputs.publish && secrets.IOS_CERTIFICATE_PASSWORD || '' }}
+          IOS_SIGNING_CERTIFICATE_SHA256: ${{ inputs.publish && vars.IOS_SIGNING_CERTIFICATE_SHA256 || '' }}
           IOS_SIGNING_IDENTITY: ${{ inputs.publish && vars.IOS_SIGNING_IDENTITY || '' }}
           IOS_TEAM_ID: ${{ inputs.publish && vars.IOS_TEAM_ID || '' }}
           IOS_EXPORT_METHOD: ${{ inputs.publish && vars.IOS_EXPORT_METHOD || '' }}

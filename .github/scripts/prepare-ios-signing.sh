@@ -4,6 +4,7 @@ set -euo pipefail
 : "${IOS_CERTIFICATE_PASSWORD:?IOS_CERTIFICATE_PASSWORD is required}"
 : "${IOS_CERTIFICATE_PATH:?IOS_CERTIFICATE_PATH is required}"
 : "${IOS_PROVISIONING_PROFILE_PATH:?IOS_PROVISIONING_PROFILE_PATH is required}"
+: "${IOS_SIGNING_CERTIFICATE_SHA256:?IOS_SIGNING_CERTIFICATE_SHA256 is required}"
 : "${IOS_SIGNING_IDENTITY:?IOS_SIGNING_IDENTITY is required}"
 : "${IOS_TEAM_ID:?IOS_TEAM_ID is required}"
 : "${IOS_EXPORT_METHOD:?IOS_EXPORT_METHOD is required}"
@@ -83,6 +84,10 @@ certificate_sha256="$(
 )"
 [[ "$certificate_sha256" =~ ^[0-9A-F]{64}$ ]] || {
   echo 'Unable to calculate the iOS signing certificate SHA-256 digest' >&2
+  exit 1
+}
+[[ "$certificate_sha256" == "$IOS_SIGNING_CERTIFICATE_SHA256" ]] || {
+  echo 'The iOS P12 does not match IOS_SIGNING_CERTIFICATE_SHA256' >&2
   exit 1
 }
 

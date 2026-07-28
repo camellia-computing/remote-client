@@ -12,6 +12,7 @@ signing_values=(
   IOS_CERTIFICATE_BASE64
   IOS_CERTIFICATE_PASSWORD
   IOS_PROVISIONING_PROFILE_BASE64
+  IOS_SIGNING_CERTIFICATE_SHA256
   IOS_SIGNING_IDENTITY
   IOS_TEAM_ID
   IOS_EXPORT_METHOD
@@ -20,8 +21,8 @@ signing_count=0
 for name in "${signing_values[@]}"; do
   [[ -z "${!name:-}" ]] || signing_count=$((signing_count + 1))
 done
-[[ "$signing_count" == 0 || "$signing_count" == 6 ]] || {
-  echo 'IOS_CERTIFICATE_BASE64, IOS_CERTIFICATE_PASSWORD, IOS_PROVISIONING_PROFILE_BASE64, IOS_SIGNING_IDENTITY, IOS_TEAM_ID and IOS_EXPORT_METHOD must be configured together' >&2
+[[ "$signing_count" == 0 || "$signing_count" == 7 ]] || {
+  echo 'IOS_CERTIFICATE_BASE64, IOS_CERTIFICATE_PASSWORD, IOS_PROVISIONING_PROFILE_BASE64, IOS_SIGNING_CERTIFICATE_SHA256, IOS_SIGNING_IDENTITY, IOS_TEAM_ID and IOS_EXPORT_METHOD must be configured together' >&2
   exit 1
 }
 
@@ -59,6 +60,10 @@ if [[ -z "$IOS_SIGNING_IDENTITY" ||
   echo 'IOS_SIGNING_IDENTITY contains characters that are unsafe in Xcode settings' >&2
   exit 1
 fi
+[[ "$IOS_SIGNING_CERTIFICATE_SHA256" =~ ^[0-9A-F]{64}$ ]] || {
+  echo 'IOS_SIGNING_CERTIFICATE_SHA256 must be the canonical uppercase 64-hexadecimal certificate fingerprint' >&2
+  exit 1
+}
 
 decode_base64() {
   local name="$1"

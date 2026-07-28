@@ -13,13 +13,14 @@ signing_values=(
   ANDROID_KEY_STORE_PASSWORD
   ANDROID_KEY_PASSWORD
   ANDROID_ALIAS
+  ANDROID_SIGNING_CERTIFICATE_SHA256
 )
 signing_count=0
 for name in "${signing_values[@]}"; do
   [[ -z "${!name:-}" ]] || signing_count=$((signing_count + 1))
 done
-[[ "$signing_count" == 0 || "$signing_count" == 4 ]] || {
-  echo 'ANDROID_SIGNING_KEY, ANDROID_KEY_STORE_PASSWORD, ANDROID_KEY_PASSWORD and ANDROID_ALIAS must be configured together' >&2
+[[ "$signing_count" == 0 || "$signing_count" == 5 ]] || {
+  echo 'ANDROID_SIGNING_KEY, ANDROID_KEY_STORE_PASSWORD, ANDROID_KEY_PASSWORD, ANDROID_ALIAS and ANDROID_SIGNING_CERTIFICATE_SHA256 must be configured together' >&2
   exit 1
 }
 
@@ -34,6 +35,10 @@ fi
 
 [[ "$ANDROID_ALIAS" =~ ^[A-Za-z0-9._-]{1,128}$ ]] || {
   echo 'ANDROID_ALIAS contains unsupported characters' >&2
+  exit 1
+}
+[[ "$ANDROID_SIGNING_CERTIFICATE_SHA256" =~ ^[0-9A-F]{64}$ ]] || {
+  echo 'ANDROID_SIGNING_CERTIFICATE_SHA256 must be the canonical uppercase 64-hexadecimal certificate fingerprint' >&2
   exit 1
 }
 command -v keytool >/dev/null 2>&1 || {
@@ -81,6 +86,11 @@ certificate_sha256="$(
 [[ "$certificate_sha256" =~ ^[0-9A-F]{64}$ ]] || {
   rm -f -- "$keystore_path"
   echo 'Could not resolve the Android signing certificate SHA-256 digest' >&2
+  exit 1
+}
+[[ "$certificate_sha256" == "$ANDROID_SIGNING_CERTIFICATE_SHA256" ]] || {
+  rm -f -- "$keystore_path"
+  echo 'The Android keystore does not match ANDROID_SIGNING_CERTIFICATE_SHA256' >&2
   exit 1
 }
 

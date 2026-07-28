@@ -79,6 +79,8 @@ Certificate signing requires the complete group:
 
 - secret `APPLE_CERTIFICATE`: one-line base64 of the P12;
 - secret `APPLE_CERTIFICATE_PASSWORD`;
+- variable `APPLE_SIGNING_CERTIFICATE_SHA256`: canonical uppercase
+  64-hexadecimal leaf fingerprint;
 - variable `APPLE_SIGNING_IDENTITY`: the exact code-signing identity;
 - variable `APPLE_SIGNING_TRUST_MODE`: `private-trust` or `public-trust`.
 
@@ -142,6 +144,8 @@ Configure the complete group:
 - secret `ANDROID_KEY_STORE_PASSWORD`;
 - secret `ANDROID_KEY_PASSWORD`;
 - secret `ANDROID_ALIAS`.
+- variable `ANDROID_SIGNING_CERTIFICATE_SHA256`: canonical uppercase
+  64-hexadecimal update-certificate fingerprint.
 
 These names match the source repository's existing secret inventory, but the
 new workflow fixes the old gap: merely storing the secrets is insufficient.
@@ -156,6 +160,9 @@ base64 < android-release.keystore | tr -d '\n' |
 gh secret set ANDROID_KEY_STORE_PASSWORD --repo "$repository"
 gh secret set ANDROID_KEY_PASSWORD --repo "$repository"
 gh secret set ANDROID_ALIAS --repo "$repository"
+gh variable set ANDROID_SIGNING_CERTIFICATE_SHA256 \
+  --repo "$repository" \
+  --body '<UPPERCASE-64-HEX-CERTIFICATE-FINGERPRINT>'
 ```
 
 The workflow validates the alias and certificate, builds without the debug-key
@@ -172,6 +179,8 @@ Configure the complete, iOS-specific group:
 - secret `IOS_CERTIFICATE_PASSWORD`;
 - secret `IOS_PROVISIONING_PROFILE_BASE64`: one-line base64 of the matching
   `.mobileprovision`;
+- variable `IOS_SIGNING_CERTIFICATE_SHA256`: canonical uppercase
+  64-hexadecimal leaf fingerprint;
 - variable `IOS_SIGNING_IDENTITY`: exact identity name shown by
   `security find-identity -v -p codesigning`;
 - variable `IOS_TEAM_ID`: the 10-character Apple Developer Team ID;
@@ -188,6 +197,9 @@ base64 < camellia-remote.mobileprovision | tr -d '\n' |
 gh variable set IOS_SIGNING_IDENTITY \
   --repo "$repository" \
   --body 'Apple Distribution: <publisher> (<team-id>)'
+gh variable set IOS_SIGNING_CERTIFICATE_SHA256 \
+  --repo "$repository" \
+  --body '<UPPERCASE-64-HEX-CERTIFICATE-FINGERPRINT>'
 gh variable set IOS_TEAM_ID --repo "$repository" --body '<team-id>'
 gh variable set IOS_EXPORT_METHOD \
   --repo "$repository" \
