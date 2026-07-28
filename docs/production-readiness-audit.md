@@ -55,6 +55,10 @@ Resolved by accepting only the current random-nonce local encryption envelope an
 
 Resolved by vendoring the reviewed MIT-licensed setup action, pinning its nested cache action to a full commit, and verifying downloaded Flutter archives against the release-manifest SHA-256 digest. Organization-wide immutable Action references now fail closed.
 
+### RM-P1-06 — Visual regression tests depended on ignored local files
+
+Resolved by versioning the three reviewed light, dark, and compact golden snapshots required by the Flutter test suite. A clean checkout now exercises the same visual baseline as a developer workspace instead of failing because ignored local artifacts were present.
+
 ## Verification evidence
 
 - Shared protocol: the client and server pin commit `76bf96f7e6b3f0fdb7f009b8606586da53cb5fe4`; format, Clippy with warnings denied, and 98 current-format unit tests passed.

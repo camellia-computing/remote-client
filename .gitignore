@@ -23,6 +23,7 @@ cert.pfx
 !res/android-monochrome.png
 !docs/assets/*.png
 !docs/assets/*.svg
+!flutter/test/goldens/*.png
 sciter.dll
 **pdb
 src/bridge_generated.rs
