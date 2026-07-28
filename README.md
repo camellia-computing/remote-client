@@ -51,7 +51,7 @@ Report vulnerabilities through GitHub private vulnerability reporting as describ
 
 Pull requests and `main` run pinned-action checks for metadata, dependencies, Rust, Flutter, Web, scripts, and platform-specific build contracts. The release workflow accepts only an exact commit reachable from the default branch and reuses artifacts from its successful push CI run.
 
-Formal publication requires the protected `release` environment. Selected platform packages are produced once, checksummed, described by `versions.json`, and attested with GitHub/Sigstore identity. Windows Authenticode, Apple signing/notarization, and controlled private signatures are supported deployment trust modes; incomplete signing configuration fails closed. Public packages should use a recognized publisher certificate, but lack of a public certificate is not a functional application bypass.
+Formal publication requires the protected `release` environment. Selected platform packages are produced once, checksummed, described by `versions.json`, and attested with GitHub/Sigstore identity. Windows Authenticode, Apple signing/notarization, Linux OpenPGP signatures, and Android release keys are optional complete groups; missing groups produce explicitly unsigned/ad-hoc or re-signing outputs and partial groups fail closed. Public packages should use a recognized publisher identity, but private or temporarily unsigned releases remain supported when their limitations are stated. See [release signing modes](docs/release-signing.md).
 
 Versions are stable SemVer from the root manifest. Published tags and assets are immutable; rebuilding or moving an existing release is prohibited. See [the production-readiness audit](docs/production-readiness-audit.md) for the complete release decision.
 

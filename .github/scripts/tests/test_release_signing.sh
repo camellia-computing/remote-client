@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repository="$(cd "$(dirname "$0")/../../.." && pwd)"
+test_root="$(mktemp -d "${RUNNER_TEMP:-/tmp}/camellia-remote-signing-tests.XXXXXX")"
+trap 'rm -rf -- "$test_root"' EXIT
+
+macos_env="$test_root/macos.env"
+SIGNING_ENV_FILE="$macos_env" SIGNING_TEMP_DIRECTORY="$test_root" \
+  bash "$repository/.github/scripts/resolve-macos-signing.sh" >/dev/null
+grep -Fqx 'MACOS_NATIVE_SIGNING=ad-hoc' "$macos_env"
+grep -Fqx 'MACOS_DISTRIBUTION_TRUST=none' "$macos_env"
+
+if APPLE_CERTIFICATE=partial SIGNING_ENV_FILE="$macos_env" \
+  SIGNING_TEMP_DIRECTORY="$test_root" \
+  bash "$repository/.github/scripts/resolve-macos-signing.sh" >/dev/null 2>&1; then
+  echo 'partial macOS signing configuration unexpectedly succeeded' >&2
+  exit 1
+fi
+
+android_env="$test_root/android.env"
+SIGNING_ENV_FILE="$android_env" SIGNING_TEMP_DIRECTORY="$test_root" \
+  bash "$repository/.github/scripts/resolve-android-signing.sh" >/dev/null
+grep -Fqx 'ANDROID_NATIVE_SIGNING=unsigned' "$android_env"
+grep -Fqx 'ANDROID_ARTIFACT_SUFFIX=-unsigned' "$android_env"
+
+if ANDROID_KEY_ALIAS=partial SIGNING_ENV_FILE="$android_env" \
+  SIGNING_TEMP_DIRECTORY="$test_root" \
+  bash "$repository/.github/scripts/resolve-android-signing.sh" >/dev/null 2>&1; then
+  echo 'partial Android signing configuration unexpectedly succeeded' >&2
+  exit 1
+fi
+
+if command -v keytool >/dev/null 2>&1; then
+  android_keystore="$test_root/android-release.p12"
+  android_password='test-only-password'
+  keytool -genkeypair \
+    -alias release \
+    -keyalg RSA \
+    -keysize 2048 \
+    -validity 1 \
+    -dname 'CN=Camellia Remote Test,O=Camellia Computing' \
+    -keystore "$android_keystore" \
+    -storetype PKCS12 \
+    -storepass "$android_password" \
+    -keypass "$android_password" \
+    >/dev/null 2>&1
+  android_keystore_base64="$(base64 -w 0 "$android_keystore")"
+  ANDROID_KEYSTORE_BASE64="$android_keystore_base64" \
+  ANDROID_KEYSTORE_PASSWORD="$android_password" \
+  ANDROID_KEY_PASSWORD="$android_password" \
+  ANDROID_KEY_ALIAS=release \
+  SIGNING_ENV_FILE="$android_env" \
+  SIGNING_TEMP_DIRECTORY="$test_root" \
+    bash "$repository/.github/scripts/resolve-android-signing.sh" >/dev/null
+  grep -Fqx 'ANDROID_NATIVE_SIGNING=signed' "$android_env"
+  grep -Eq '^ANDROID_SIGNING_IDENTITY=[0-9A-F]{64}$' "$android_env"
+fi
+
+linux_env="$test_root/linux.env"
+SIGNING_ENV_FILE="$linux_env" \
+  bash "$repository/.github/scripts/resolve-linux-signing.sh" >/dev/null
+grep -Fqx 'ARTIFACT_SIGNING=none' "$linux_env"
+if LINUX_GPG_FINGERPRINT=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA \
+  SIGNING_ENV_FILE="$linux_env" \
+  bash "$repository/.github/scripts/resolve-linux-signing.sh" >/dev/null 2>&1; then
+  echo 'partial Linux signing configuration unexpectedly succeeded' >&2
+  exit 1
+fi
+
+export GNUPGHOME="$test_root/gpg-source"
+mkdir -m 700 "$GNUPGHOME"
+passphrase='test-only-passphrase'
+gpg --batch --pinentry-mode loopback --passphrase "$passphrase" \
+  --quick-generate-key 'Camellia Remote Test <test@example.invalid>' ed25519 sign 1d \
+  >/dev/null 2>&1
+fingerprint="$(
+  gpg --batch --with-colons --list-secret-keys |
+    awk -F: '$1 == "fpr" { print $10; exit }'
+)"
+private_key="$(
+  gpg --batch --pinentry-mode loopback --passphrase "$passphrase" \
+    --armor --export-secret-keys "$fingerprint"
+)"
+public_key="$test_root/public.asc"
+artifact="$test_root/artifact.tar.gz"
+printf 'artifact\n' > "$artifact"
+
+LINUX_GPG_FINGERPRINT="$fingerprint" \
+LINUX_GPG_PRIVATE_KEY="$private_key" \
+LINUX_GPG_PASSPHRASE="$passphrase" \
+SIGNING_ENV_FILE="$linux_env" \
+  bash "$repository/.github/scripts/resolve-linux-signing.sh" >/dev/null
+LINUX_GPG_FINGERPRINT="$fingerprint" \
+LINUX_GPG_PRIVATE_KEY="$private_key" \
+LINUX_GPG_PASSPHRASE="$passphrase" \
+LINUX_GPG_PUBLIC_KEY_OUTPUT="$public_key" \
+  bash "$repository/.github/scripts/linux-openpgp-sign.sh" "$artifact" >/dev/null
+LINUX_GPG_FINGERPRINT="$fingerprint" LINUX_GPG_PUBLIC_KEY="$public_key" \
+  bash "$repository/.github/scripts/linux-openpgp-verify.sh" "$artifact" >/dev/null
+
+printf 'tamper\n' >> "$artifact"
+if LINUX_GPG_FINGERPRINT="$fingerprint" LINUX_GPG_PUBLIC_KEY="$public_key" \
+  bash "$repository/.github/scripts/linux-openpgp-verify.sh" "$artifact" >/dev/null 2>&1; then
+  echo 'tampered Linux artifact unexpectedly verified' >&2
+  exit 1
+fi
+
+echo 'Cross-platform release signing resolver tests passed'

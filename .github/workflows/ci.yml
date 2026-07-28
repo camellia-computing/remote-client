@@ -165,13 +165,22 @@ jobs:
           shellcheck \
             .github/actions/setup-flutter/setup.sh \
             .github/scripts/*.sh \
+            .github/scripts/tests/*.sh \
             flutter/web/tools/build_web.sh
+
+      - name: Install Java for Android signing tests
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
+        with:
+          distribution: temurin
+          java-version: "21"
 
       - name: Test build automation
         run: |
           python3 -m compileall -q .github/scripts libs/portable
           python3 -m unittest discover -s .github/scripts/tests -v
           python3 -m unittest discover -s libs/portable/tests -v
+          bash .github/scripts/tests/test_release_signing.sh
+          pwsh -NoProfile -File .github/scripts/tests/test_windows_signing_resolver.ps1
 
   generate_bridge:
     name: Generate Flutter Rust bridge

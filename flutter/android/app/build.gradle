@@ -15,6 +15,22 @@ if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
 }
 
+def ciSigningValues = [
+    storeFile: System.getenv('CAMELLIA_ANDROID_STORE_FILE'),
+    storePassword: System.getenv('ANDROID_KEYSTORE_PASSWORD'),
+    keyPassword: System.getenv('ANDROID_KEY_PASSWORD'),
+    keyAlias: System.getenv('CAMELLIA_ANDROID_KEY_ALIAS'),
+]
+def ciSigningCount = ciSigningValues.values().count { value ->
+    value != null && !value.trim().isEmpty()
+}
+if (ciSigningCount != 0 && ciSigningCount != ciSigningValues.size()) {
+    throw new GradleException('The Camellia Android CI signing group must be configured completely')
+}
+def ciSigningConfigured = ciSigningCount == ciSigningValues.size()
+def localSigningConfigured = keystoreProperties['storeFile'] != null
+def formalRelease = System.getenv('CAMELLIA_FORMAL_RELEASE') == 'true'
+
 def localProperties = new Properties()
 def localPropertiesFile = rootProject.file('local.properties')
 if (localPropertiesFile.exists()) {
@@ -106,23 +122,30 @@ android {
     }
 
     signingConfigs {
-      release {
-        keyAlias keystoreProperties['keyAlias']
-        keyPassword keystoreProperties['keyPassword']
-        storeFile keystoreProperties['storeFile'] ? file(keystoreProperties['storeFile']) : null
-        storePassword keystoreProperties['storePassword']
-      }
+        release {
+            if (ciSigningConfigured) {
+                keyAlias ciSigningValues.keyAlias
+                keyPassword ciSigningValues.keyPassword
+                storeFile file(ciSigningValues.storeFile)
+                storePassword ciSigningValues.storePassword
+            } else if (localSigningConfigured) {
+                keyAlias keystoreProperties['keyAlias']
+                keyPassword keystoreProperties['keyPassword']
+                storeFile file(keystoreProperties['storeFile'])
+                storePassword keystoreProperties['storePassword']
+            }
+        }
     }
 
     buildTypes {
         release {
-            // Sign for real when a keystore is configured. Without one - CI
-            // build checks, and anyone building from a clean clone - fall back
-            // to the debug key so packaging still produces an installable APK
-            // instead of failing on a missing storeFile.
-            signingConfig keystoreProperties['storeFile']
-                ? signingConfigs.release
-                : signingConfigs.debug
+            if (ciSigningConfigured || localSigningConfigured) {
+                signingConfig signingConfigs.release
+            } else if (!formalRelease) {
+                // Keep ordinary local development convenient. Formal release
+                // automation never uses this unstable debug update identity.
+                signingConfig signingConfigs.debug
+            }
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules'
         }
     }
