@@ -25,7 +25,7 @@ The source baseline is suitable for protected pre-release integration. No review
 
 ### RM-P0-01 — Shared protocol could drift between independently copied repositories
 
-Resolved by creating `remote-protocol`, pinning the same full submodule commit in client and server, preserving the public API, and running its 104-test suite from both consumers.
+Resolved by creating `remote-protocol`, pinning the same full submodule commit in client and server, preserving the public API, and running its 105-test suite from both consumers.
 
 ### RM-P0-02 — Product identity was mixed with upstream package, bundle, executable, and update identities
 
@@ -49,9 +49,9 @@ Resolved by invoking only `pwsh` and the current PowerShell 7 installation path.
 
 ## Verification evidence
 
-- Shared protocol: the client and server pin commit `510eeb112b0340e612db6dd03c7c1edb3cbf90fe`; format, Clippy with warnings denied, and 104 unit tests passed.
-- Identity/relay server: Rust check/format and protocol (104), identity (33), relay (21), utilities (2), and recursion (1) tests passed. The production image built successfully, runs as `10001:10001` with a read-only root, exposes canonical OCI labels, and returns successful help/version output before configuration startup.
-- Client: the Linux workspace/all-target Flutter feature suite passed (87 client, 104 protocol, 4 portable-packer, 30 screen-capture, and 6 input tests, with one documented long-running codec matrix ignored by the ordinary gate). Flutter analysis reported no errors or warnings and all 66 widget/unit tests passed; inherited information-level lint and Rust warning debt remains explicitly non-blocking. Portable generation is deterministic and rejects unsafe inputs.
+- Shared protocol: the client and server pin commit `e067d774b62e40005a190f9c0dc40787a41c1f80`; format, Clippy with warnings denied, and 105 unit tests passed.
+- Identity/relay server: Rust check/format and protocol (105), identity (33), relay (21), utilities (2), and recursion (1) tests passed. The production image built successfully, runs as `10001:10001` with a read-only root, exposes canonical OCI labels, and returns successful help/version output before configuration startup.
+- Client: the Linux workspace/all-target Flutter feature suite passed (87 client, 105 protocol, 4 portable-packer, 30 screen-capture, and 6 input tests, with one documented long-running codec matrix ignored by the ordinary gate). Flutter analysis reported no errors or warnings and all 66 widget/unit tests passed; inherited information-level lint and Rust warning debt remains explicitly non-blocking. Portable generation is deterministic and rejects unsafe inputs.
 - Web client: protobuf codecs were regenerated from the pinned protocol, the TypeScript bridge lint/build and CSP/provenance synchronization check passed, and npm reported no vulnerabilities at the configured threshold.
 - Management: Ruff format/check, Django migration drift, 48 ordinary tests (2 environment-specific skips), the real PostgreSQL test/deployment path, Compose expansion through Docker Desktop, release metadata, and systemd hardening analysis passed.
 - All 22 repository workflow files passed Actionlint 1.7.12. Final management-image/Web provenance, every target-platform package, and platform-native acceptance remain mandatory hosted gates even where an equivalent local runner is unavailable.
