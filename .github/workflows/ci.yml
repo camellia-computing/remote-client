@@ -71,6 +71,9 @@ jobs:
             git diff --name-only -z "$base" "$head" > "$changed_paths"
             while IFS= read -r -d '' path; do
               case "$path" in
+                .github/workflows/ci.yml|.github/workflows/release.yml)
+                  runtime=true
+                  ;;
                 README.md|README_*.md|docs/*|LICENSE|LICENSE.*|CONTRIBUTING.md|CODE_OF_CONDUCT.md|.github/ISSUE_TEMPLATE/*|.github/workflows/*|.github/dependabot.yml|.github/scripts/release_metadata.py|.github/scripts/tests/test_release_metadata.py)
                   ;;
                 *)
@@ -83,7 +86,7 @@ jobs:
                   ;;
               esac
               case "$path" in
-                Cargo.toml|Cargo.lock|*/Cargo.toml|*/Cargo.lock|flutter/pubspec.yaml|flutter/pubspec.lock|flutter/web/js/package.json|flutter/web/js/package-lock.json|vcpkg.json|vcpkg-configuration.json|.gitmodules|libs/camellia_remote_protocol|.github/dependabot.yml|.github/workflows/*)
+                Cargo.toml|Cargo.lock|*/Cargo.toml|*/Cargo.lock|flutter/pubspec.yaml|flutter/pubspec.lock|flutter/web/js/package.json|flutter/web/js/package-lock.json|flutter/ios/Podfile|flutter/macos/Podfile|vcpkg.json|vcpkg-configuration.json|res/vcpkg/*|res/vcpkg-triplets/*|.gitmodules|libs/camellia_remote_protocol|.github/dependabot.yml|.github/workflows/*)
                   dependencies=true
                   ;;
               esac
@@ -177,6 +180,7 @@ jobs:
       - name: Test build automation
         run: |
           python3 -m compileall -q .github/scripts libs/portable
+          python3 .github/scripts/verify_apple_deployment.py
           python3 -m unittest discover -s .github/scripts/tests -v
           python3 -m unittest discover -s libs/portable/tests -v
           bash .github/scripts/tests/test_dependency_lock_scope.sh
@@ -337,6 +341,89 @@ jobs:
             --executable camellia-remote.exe `
             --target '${{ matrix.target }}'
 
+  apple_native:
+    name: Apple native smoke checks
+    if: needs.classify.outputs.runtime == 'true'
+    needs: [classify, metadata, generate_bridge]
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      IPHONEOS_DEPLOYMENT_TARGET: "13.0"
+      MACOSX_DEPLOYMENT_TARGET: "10.15"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Download generated bridge
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bridge-generated-${{ github.sha }}
+          path: .
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: aarch64-apple-ios
+
+      - name: Restore Cargo cache
+        uses: Swatinem/rust-cache@23869a5bd66c73db3c0ac40331f3206eb23791dc # v2.9.1
+        with:
+          shared-key: apple-native
+
+      - name: Install Flutter
+        uses: ./.github/actions/setup-flutter
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: flutter/web/js/package-lock.json
+
+      - name: Install Apple build prerequisites
+        run: brew install nasm
+
+      - name: Configure vcpkg
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.6
+        with:
+          vcpkgDirectory: ${{ runner.temp }}/vcpkg
+
+      - name: Verify Apple deployment policy
+        run: python3 .github/scripts/verify_apple_deployment.py
+
+      - name: Synchronize declared version
+        run: |
+          bash .github/scripts/sync-version.sh \
+            "${{ needs.metadata.outputs.version }}" \
+            "${{ needs.metadata.outputs.build_number }}" \
+            "${{ needs.metadata.outputs.source_date_epoch }}"
+
+      - name: Prepare locked dependencies
+        run: bash .github/scripts/prepare-dependencies.sh "${{ env.DEPENDENCY_MODE }}"
+
+      - name: Check macOS input implementation
+        env:
+          RUSTFLAGS: -D warnings
+        run: cargo check --locked -p enigo --features with_serde
+
+      - name: Compile iOS Rust library
+        run: |
+          "$VCPKG_ROOT/vcpkg" install \
+            --triplet arm64-ios \
+            --x-install-root="$VCPKG_ROOT/installed"
+          cargo build --locked --release \
+            --target aarch64-apple-ios \
+            --lib \
+            --features flutter
+
   quality:
     name: Rust, Flutter, and Web quality
     if: needs.classify.outputs.runtime == 'true'
@@ -451,6 +538,7 @@ jobs:
       - generate_bridge
       - windows_rust
       - windows_portable
+      - apple_native
       - quality
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -470,6 +558,7 @@ jobs:
           BRIDGE_RESULT: ${{ needs.generate_bridge.result }}
           WINDOWS_RUST_RESULT: ${{ needs.windows_rust.result }}
           WINDOWS_PORTABLE_RESULT: ${{ needs.windows_portable.result }}
+          APPLE_NATIVE_RESULT: ${{ needs.apple_native.result }}
           QUALITY_RESULT: ${{ needs.quality.result }}
         run: |
           failure=false
@@ -492,6 +581,7 @@ jobs:
             require_success "bridge generation" "$BRIDGE_RESULT"
             require_success "Windows Rust smoke check" "$WINDOWS_RUST_RESULT"
             require_success "Windows portable smoke checks" "$WINDOWS_PORTABLE_RESULT"
+            require_success "Apple native smoke checks" "$APPLE_NATIVE_RESULT"
             require_success "Rust, Flutter, and Web quality" "$QUALITY_RESULT"
           fi
           if [[ "$EVENT_NAME" == "pull_request" && "$DEPENDENCIES_CHANGED" == "true" ]]; then

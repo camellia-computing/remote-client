@@ -1,8 +1,8 @@
 // TODO(dustin): use only the things i need
 
-use self::core_graphics::display::*;
-use self::core_graphics::event::*;
-use self::core_graphics::event_source::*;
+use core_graphics::display::*;
+use core_graphics::event::*;
+use core_graphics::event_source::*;
 use std::collections::HashMap as Map;
 use std::ffi::c_void;
 use std::ffi::CStr;

@@ -15,6 +15,10 @@ All four repositories start from clean root histories. Camellia Remote is prelau
 ## Development
 
 Validated toolchains are Rust 1.93.0, Flutter 3.44.5, Node.js 24.18.0, and the locked package managers/dependencies in this repository. Platform builds also require the native SDK, compiler, and vcpkg dependencies declared by CI.
+The current Apple deployment baselines are iOS 13.0 and macOS 10.15. Rust,
+Flutter/Xcode, CocoaPods, FFmpeg, and vcpkg must derive their minimums from
+those targets. If a locked plugin requires a newer OS, raise the product
+baseline everywhere; the required CI policy check rejects partial drift.
 
 ```bash
 git submodule update --init --recursive

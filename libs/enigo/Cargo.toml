@@ -27,6 +27,9 @@ tfc = { git = "https://github.com/rustdesk-org/The-Fat-Controller", branch = "hi
 
 [features]
 with_serde = ["serde", "serde_derive"]
+# objc 0.2 expands a legacy Clippy feature probe in this crate. Declaring the
+# probe keeps Rust's check-cfg validation strict without enabling old behavior.
+cargo-clippy = []
 
 [target.'cfg(target_os = "windows")'.dependencies]
 winapi = { version = "0.3", features = ["winuser", "winbase"] }
