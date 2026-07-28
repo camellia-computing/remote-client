@@ -15,13 +15,15 @@ if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP) -or
 }
 
 $values = @(
+    $env:WINDOWS_CODESIGN_CERTIFICATE_SHA256,
+    $env:WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT,
     $env:WINDOWS_CODESIGN_PFX_BASE64,
     $env:WINDOWS_CODESIGN_PFX_PASSWORD,
     $env:WINDOWS_SIGNING_TRUST_MODE
 )
 $configured = @($values | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
 if ($configured -ne 0 -and $configured -ne $values.Count) {
-    throw 'WINDOWS_CODESIGN_PFX_BASE64, WINDOWS_CODESIGN_PFX_PASSWORD and WINDOWS_SIGNING_TRUST_MODE must be configured together'
+    throw 'WINDOWS_CODESIGN_CERTIFICATE_SHA256, WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT, WINDOWS_CODESIGN_PFX_BASE64, WINDOWS_CODESIGN_PFX_PASSWORD and WINDOWS_SIGNING_TRUST_MODE must be configured together'
 }
 
 if ($configured -eq 0) {
@@ -35,6 +37,14 @@ if ($configured -eq 0) {
 
 if ($env:WINDOWS_SIGNING_TRUST_MODE -notin @('private-trust', 'public-trust')) {
     throw 'WINDOWS_SIGNING_TRUST_MODE must be private-trust or public-trust'
+}
+$expectedSha256 = $env:WINDOWS_CODESIGN_CERTIFICATE_SHA256
+if ($expectedSha256 -cnotmatch '^[0-9A-F]{64}$') {
+    throw 'WINDOWS_CODESIGN_CERTIFICATE_SHA256 must be the canonical uppercase 64-hexadecimal leaf fingerprint'
+}
+$expectedThumbprint = $env:WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT
+if ($expectedThumbprint -cnotmatch '^[0-9A-F]{40}$') {
+    throw 'WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT must be the canonical uppercase 40-hexadecimal leaf thumbprint'
 }
 
 $base64 = $env:WINDOWS_CODESIGN_PFX_BASE64 -replace '\s', ''
@@ -73,6 +83,15 @@ try {
         throw "The PFX must contain exactly one current private code-signing certificate; found $($candidates.Count)"
     }
     $thumbprint = $candidates[0].Thumbprint.ToUpperInvariant()
+    $sha256 = $candidates[0].GetCertHashString(
+        [Security.Cryptography.HashAlgorithmName]::SHA256
+    ).ToUpperInvariant()
+    if ($sha256 -ne $expectedSha256) {
+        throw "The PFX leaf fingerprint $sha256 does not match WINDOWS_CODESIGN_CERTIFICATE_SHA256"
+    }
+    if ($thumbprint -ne $expectedThumbprint) {
+        throw "The PFX leaf thumbprint $thumbprint does not match WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT"
+    }
 }
 catch {
     Remove-Item -LiteralPath $pfxPath -Force -ErrorAction SilentlyContinue
@@ -82,6 +101,7 @@ catch {
 @(
     'WINDOWS_NATIVE_SIGNING=signed',
     "WINDOWS_DISTRIBUTION_TRUST=$($env:WINDOWS_SIGNING_TRUST_MODE)",
+    "WINDOWS_SIGNING_CERTIFICATE_SHA256=$sha256",
     "WINDOWS_SIGNING_IDENTITY=$thumbprint",
     "WINDOWS_SIGNING_PFX_PATH=$pfxPath"
 ) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append

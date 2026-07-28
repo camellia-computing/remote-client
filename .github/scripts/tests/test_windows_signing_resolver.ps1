@@ -20,6 +20,8 @@ function Invoke-Resolver {
 }
 
 try {
+    $env:WINDOWS_CODESIGN_CERTIFICATE_SHA256 = ''
+    $env:WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT = ''
     $env:WINDOWS_CODESIGN_PFX_BASE64 = ''
     $env:WINDOWS_CODESIGN_PFX_PASSWORD = ''
     $env:WINDOWS_SIGNING_TRUST_MODE = ''
@@ -73,6 +75,10 @@ try {
     )
     $env:WINDOWS_CODESIGN_PFX_PASSWORD = $password
     $env:WINDOWS_SIGNING_TRUST_MODE = 'private-trust'
+    $env:WINDOWS_CODESIGN_CERTIFICATE_SHA256 = $certificate.GetCertHashString(
+        [Security.Cryptography.HashAlgorithmName]::SHA256
+    ).ToUpperInvariant()
+    $env:WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT = $certificate.Thumbprint.ToUpperInvariant()
     $signedEnvironment = Join-Path $testRoot 'signed.env'
     Invoke-Resolver -EnvironmentFile $signedEnvironment
     $signed = Get-Content -LiteralPath $signedEnvironment
@@ -83,11 +89,45 @@ try {
     if (-not ($signed | Where-Object { $_ -match '^WINDOWS_SIGNING_IDENTITY=[0-9A-F]+$' })) {
         throw 'Windows signing identity was not recorded'
     }
+
+    $registeredSha256 = $env:WINDOWS_CODESIGN_CERTIFICATE_SHA256
+    $env:WINDOWS_CODESIGN_CERTIFICATE_SHA256 = 'A' * 64
+    if ($env:WINDOWS_CODESIGN_CERTIFICATE_SHA256 -eq $registeredSha256) {
+        $env:WINDOWS_CODESIGN_CERTIFICATE_SHA256 = 'B' * 64
+    }
+    $sha256MismatchFailed = $false
+    try {
+        Invoke-Resolver -EnvironmentFile (Join-Path $testRoot 'sha256-mismatch.env')
+    }
+    catch {
+        $sha256MismatchFailed = $true
+    }
+    if (-not $sha256MismatchFailed) {
+        throw 'A PFX with an unregistered SHA-256 identity unexpectedly succeeded'
+    }
+    $env:WINDOWS_CODESIGN_CERTIFICATE_SHA256 = $registeredSha256
+
+    $env:WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT = 'A' * 40
+    if ($env:WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT -eq $certificate.Thumbprint.ToUpperInvariant()) {
+        $env:WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT = 'B' * 40
+    }
+    $identityMismatchFailed = $false
+    try {
+        Invoke-Resolver -EnvironmentFile (Join-Path $testRoot 'identity-mismatch.env')
+    }
+    catch {
+        $identityMismatchFailed = $true
+    }
+    if (-not $identityMismatchFailed) {
+        throw 'A PFX with an unregistered Windows signing identity unexpectedly succeeded'
+    }
 }
 finally {
     Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item Env:WINDOWS_CODESIGN_PFX_BASE64 -ErrorAction SilentlyContinue
     Remove-Item Env:WINDOWS_CODESIGN_PFX_PASSWORD -ErrorAction SilentlyContinue
+    Remove-Item Env:WINDOWS_CODESIGN_CERTIFICATE_SHA256 -ErrorAction SilentlyContinue
+    Remove-Item Env:WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT -ErrorAction SilentlyContinue
     Remove-Item Env:WINDOWS_SIGNING_TRUST_MODE -ErrorAction SilentlyContinue
 }
 

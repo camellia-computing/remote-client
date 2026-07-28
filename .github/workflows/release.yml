@@ -309,6 +309,8 @@ jobs:
       - name: Resolve Windows signing mode
         shell: pwsh
         env:
+          WINDOWS_CODESIGN_CERTIFICATE_SHA256: ${{ inputs.publish && vars.WINDOWS_CODESIGN_CERTIFICATE_SHA256 || '' }}
+          WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT: ${{ inputs.publish && vars.WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT || '' }}
           WINDOWS_CODESIGN_PFX_BASE64: ${{ inputs.publish && secrets.WINDOWS_CODESIGN_PFX_BASE64 || '' }}
           WINDOWS_CODESIGN_PFX_PASSWORD: ${{ inputs.publish && secrets.WINDOWS_CODESIGN_PFX_PASSWORD || '' }}
           WINDOWS_SIGNING_TRUST_MODE: ${{ inputs.publish && vars.WINDOWS_SIGNING_TRUST_MODE || '' }}
@@ -457,6 +459,8 @@ jobs:
       - name: Resolve Windows signing mode
         shell: pwsh
         env:
+          WINDOWS_CODESIGN_CERTIFICATE_SHA256: ${{ inputs.publish && vars.WINDOWS_CODESIGN_CERTIFICATE_SHA256 || '' }}
+          WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT: ${{ inputs.publish && vars.WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT || '' }}
           WINDOWS_CODESIGN_PFX_BASE64: ${{ inputs.publish && secrets.WINDOWS_CODESIGN_PFX_BASE64 || '' }}
           WINDOWS_CODESIGN_PFX_PASSWORD: ${{ inputs.publish && secrets.WINDOWS_CODESIGN_PFX_PASSWORD || '' }}
           WINDOWS_SIGNING_TRUST_MODE: ${{ inputs.publish && vars.WINDOWS_SIGNING_TRUST_MODE || '' }}

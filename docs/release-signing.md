@@ -28,6 +28,12 @@ provision them through the selected store or managed-distribution channel.
 
 Configure the complete group in `camellia-computing/remote-client`:
 
+- variable `WINDOWS_CODESIGN_CERTIFICATE_SHA256`: the canonical uppercase
+  64-hexadecimal SHA-256 leaf fingerprint recorded in the organization signing
+  registry;
+- variable `WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT`: the complete uppercase
+  40-hexadecimal SHA-1 leaf thumbprint recorded in the organization signing
+  registry;
 - secret `WINDOWS_CODESIGN_PFX_BASE64`;
 - secret `WINDOWS_CODESIGN_PFX_PASSWORD`;
 - variable `WINDOWS_SIGNING_TRUST_MODE`, exactly `private-trust` or
@@ -43,18 +49,26 @@ $repository = 'camellia-computing/remote-client'
   [IO.File]::ReadAllBytes((Resolve-Path '.\camellia-code-signing.pfx'))
 ) | gh secret set WINDOWS_CODESIGN_PFX_BASE64 --repo $repository
 gh secret set WINDOWS_CODESIGN_PFX_PASSWORD --repo $repository
+gh variable set WINDOWS_CODESIGN_CERTIFICATE_SHA256 `
+  --repo $repository `
+  --body '<UPPERCASE-64-HEX-LEAF-FINGERPRINT>'
+gh variable set WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT `
+  --repo $repository `
+  --body '<UPPERCASE-40-HEX-LEAF-THUMBPRINT>'
 gh variable set WINDOWS_SIGNING_TRUST_MODE `
   --repo $repository `
   --body 'private-trust'
 ```
 
 The PFX must contain exactly one current certificate with a private key and the
-code-signing extended key usage. The workflow signs the Camellia application,
-owned native library, portable wrapper, and MSI before creating the ZIP. It
-requires the exact PFX thumbprint and an RFC 3161 timestamp on every signed
-file. `public-trust` additionally requires normal Windows trust validation;
-`private-trust` permits an otherwise-valid chain whose root is not installed on
-the ephemeral runner.
+code-signing extended key usage. Its derived canonical SHA-256 fingerprint and
+Windows-native SHA-1 thumbprint must equal both reviewed variables, so a secret
+rotation cannot silently publish under an unreviewed identity. The workflow signs the Camellia
+application, owned native library, portable wrapper, and MSI before creating
+the ZIP. It requires that exact thumbprint and an RFC 3161 timestamp on every
+signed file. `public-trust` additionally requires normal Windows trust
+validation; `private-trust` permits an otherwise-valid chain whose root is not
+installed on the ephemeral runner.
 
 Install only the public private-CA root on managed test endpoints. A private
 root does not establish SmartScreen reputation or public trust.
