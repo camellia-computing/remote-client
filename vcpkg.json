@@ -1,71 +1,28 @@
 {
   "dependencies": [
-    {
-      "name": "aom",
-      "host": true
-    },
-    {
-      "name": "aom",
-      "host": false
-    },
+    "aom",
     {
       "name": "cpu-features",
       "platform": "android"
     },
-    {
-      "name": "libjpeg-turbo",
-      "host": true
-    },
-    {
-      "name": "libjpeg-turbo",
-      "host": false
-    },
+    "libjpeg-turbo",
     {
       "name": "libsodium",
-      "host": false,
       "platform": "windows"
     },
     {
       "name": "oboe",
       "platform": "android"
     },
-    {
-      "name": "opus",
-      "host": true
-    },
-    {
-      "name": "opus",
-      "host": false
-    },
-    {
-      "name": "libvpx",
-      "host": true
-    },
-    {
-      "name": "libvpx",
-      "host": false
-    },
-    {
-      "name": "libyuv",
-      "host": true
-    },
-    {
-      "name": "libyuv",
-      "host": false
-    },
+    "opus",
+    "libvpx",
+    "libyuv",
     {
       "name": "mfx-dispatch",
-      "host": true,
-      "platform": "((x86 | x64) & (android | linux)) | (windows & !uwp)"
-    },
-    {
-      "name": "mfx-dispatch",
-      "host": false,
       "platform": "((x86 | x64) & (android | linux)) | (windows & !uwp)"
     },
     {
       "name": "ffmpeg",
-      "host": false,
       "features": [
         {
           "name": "amf",
@@ -84,7 +41,6 @@
     },
     {
       "name": "ffmpeg",
-      "host": false,
       "platform": "((android | ios | (linux & arm32)) & static)"
     }
   ],

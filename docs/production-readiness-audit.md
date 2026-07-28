@@ -116,10 +116,21 @@ code and linker failures are rejected before a release candidate starts.
 ### RM-P1-14 — Apple build systems declared conflicting deployment targets
 
 Resolved by adopting the current supported floors of iOS 13.0 and macOS 10.15
-across Flutter/Xcode, CocoaPods, Rust and native C/C++ builds. Repository-owned
-vcpkg triplets now set the same targets, FFmpeg inherits the triplet instead of
-hard-coding iOS 8 with obsolete bitcode flags, and a fail-closed policy validator
-checks every declaration in both CI and release workflows.
+across Flutter/Xcode, CocoaPods, Rust and native C/C++ builds. The universal
+macOS package preserves 10.15 for x86_64 and uses the required macOS 11.0 floor
+for Apple Silicon. Repository-owned vcpkg triplets encode those slice-specific
+targets, FFmpeg inherits the triplet instead of hard-coding iOS 8 with obsolete
+bitcode flags, and a fail-closed policy validator checks every declaration in
+both CI and release workflows.
+
+### RM-P1-15 — Cross-target vcpkg builds compiled unused host media libraries
+
+Resolved by removing legacy host duplicates of runtime codec/image libraries
+from the root manifest. Build scripts link and generate bindings from the target
+triplet, while actual build tools remain host dependencies of their owning
+ports. The libvpx overlay now passes configure options as discrete arguments,
+uses NASM only for x86/x64, and derives both macOS and iOS compiler minimums from
+the selected triplet.
 
 ## Verification evidence
 

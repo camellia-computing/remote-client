@@ -8,8 +8,11 @@ Do not weaken device permissions globally. Add the current user only to narrowly
 
 ## macOS permissions
 
-The supported macOS baseline is 10.15 or later. Native Rust/C/C++ dependencies,
-CocoaPods, and the Flutter Xcode project are built against that same minimum.
+The supported macOS product baseline is 10.15 or later. The x86_64 slice is
+built for 10.15; the Apple Silicon slice is built for its architecture minimum,
+macOS 11.0. CocoaPods and the Flutter Xcode project retain the product baseline,
+while Rust and native C/C++ tooling clamp the arm64 slice to 11.0. The universal
+package therefore supports 10.15 on Intel and 11.0 on Apple Silicon.
 
 Screen Recording and Accessibility consent is granted by macOS to the exact signed application identity. After replacing or re-signing an application, remove stale consent entries if necessary, reopen Camellia Remote, and grant only the permissions required for the enabled features. Public distribution also requires an appropriate Developer ID signature and notarization; private/internal signing remains valid for controlled environments whose trust policy accepts it.
 

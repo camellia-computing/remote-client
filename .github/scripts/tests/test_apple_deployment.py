@@ -42,6 +42,15 @@ class AppleDeploymentPolicyTests(unittest.TestCase):
         with self.assertRaises(apple_policy.PolicyError):
             apple_policy.workflow_job("jobs:\n", "apple_native", "test workflow")
 
+    def test_runtime_dependencies_must_target_the_product(self) -> None:
+        apple_policy.verify_target_only_vcpkg_dependencies(
+            {"dependencies": ["aom", {"name": "libvpx", "host": False}]}
+        )
+        with self.assertRaises(apple_policy.PolicyError):
+            apple_policy.verify_target_only_vcpkg_dependencies(
+                {"dependencies": [{"name": "libvpx", "host": True}]}
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
