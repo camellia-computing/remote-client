@@ -1,6 +1,6 @@
 # Rust dependency risk register
 
-Review date: 2026-07-28  
+Review date: 2026-07-28
 Owner: `camellia-computing/remote`
 
 ## Enforcement
