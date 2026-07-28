@@ -79,14 +79,14 @@ warning set is bounded by the reviewed dependency risk register.
 Resolved by correcting the vendored input crate's external `winapi` imports and
 initializing the Windows input union explicitly. Its Linux-only protocol
 dependency is now scoped to Linux, and the required CI aggregate includes
-separate x64 GNU and arm64 MSVC Windows target checks so the platform module
+separate x64 and arm64 MSVC Windows target checks so the platform module
 cannot silently regress again.
 
 ## Verification evidence
 
 - Shared protocol: the client and server pin commit `76bf96f7e6b3f0fdb7f009b8606586da53cb5fe4`; format, Clippy with warnings denied, and 98 current-format unit tests passed.
 - Identity/relay server: Rust check/format and protocol (98), identity (33), relay (21), utilities (2), and recursion (1) tests passed. The production image built successfully, runs as `10001:10001` with a read-only root, exposes canonical OCI labels, and returns successful help/version output before configuration startup.
-- Client: the Linux workspace/all-target Flutter feature suite passed (88 client, 98 protocol, 4 portable-packer, 30 screen-capture, and 6 input tests, with one documented long-running codec matrix ignored by the ordinary gate). The vendored Windows input implementation also passes locked x64 GNU and arm64 MSVC target checks. Flutter analysis reported no errors or warnings and all 66 widget/unit tests passed. Rust dependency warnings are bounded by an owner/expiry/exit-condition register; every vulnerability, warning increase, or expired exception fails CI. Portable generation is deterministic and rejects unsafe inputs.
+- Client: the Linux workspace/all-target Flutter feature suite passed (88 client, 98 protocol, 4 portable-packer, 30 screen-capture, and 6 input tests, with one documented long-running codec matrix ignored by the ordinary gate). The vendored Windows input implementation also passes locked x64 and arm64 MSVC target checks. Flutter analysis reported no errors or warnings and all 66 widget/unit tests passed. Rust dependency warnings are bounded by an owner/expiry/exit-condition register; every vulnerability, warning increase, or expired exception fails CI. Portable generation is deterministic and rejects unsafe inputs.
 - Web client: protobuf codecs were regenerated from the pinned protocol, the TypeScript bridge lint/build and CSP/provenance synchronization check passed, and npm reported no vulnerabilities at the configured threshold.
 - Management: Ruff format/check, Django migration drift, 48 ordinary tests (2 environment-specific skips), the real PostgreSQL test/deployment path, Compose expansion through Docker Desktop, release metadata, and systemd hardening analysis passed.
 - All 22 repository workflow files passed Actionlint 1.7.12; the vendored setup script also passed ShellCheck and resolved Flutter 3.44.5 manifests for Linux, Windows, Intel macOS, and Apple Silicon macOS. Final management-image/Web provenance, every target-platform package, and platform-native acceptance remain mandatory hosted gates even where an equivalent local runner is unavailable.
