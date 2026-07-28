@@ -62,9 +62,11 @@ Resolved by versioning the three reviewed light, dark, and compact golden snapsh
 ### RM-P1-07 — Hosted Apple runners rejected GNU-only checksum flags
 
 Resolved by computing and comparing Flutter archive digests directly with the
-platform checksum utility. The shared Action now supports macOS `shasum` and
-Linux/Windows `sha256sum`, and regression tests reject malformed digests,
-missing files, and modified archives.
+platform checksum utility. The shared Action supports macOS and Git for Windows
+`shasum` plus GNU `sha256sum`, including the standard escape marker emitted for
+native Windows paths containing backslashes. Regression tests reject malformed
+digests, missing files, and modified archives. Both the portable Unix emulation
+and a hosted Windows runner exercise the verifier in the required CI gate.
 
 ### RM-P1-08 — Release icons and a workspace lock existed only in local copies
 
@@ -82,9 +84,31 @@ dependency is now scoped to Linux, and the required CI aggregate includes
 separate x64 and arm64 MSVC Windows target checks so the platform module
 cannot silently regress again.
 
+### RM-P1-10 — The iOS native dependency build assumed NASM was preinstalled
+
+Resolved by installing the pinned native assembler prerequisite explicitly
+before vcpkg builds the iOS AOM/FFmpeg dependency graph. The iOS runner no
+longer depends on an undocumented hosted-image package.
+
+### RM-P1-11 — The shared protocol bypassed its public API on Apple targets
+
+Resolved in the owning protocol repository by using the public
+`machine_uid::get()` interface and adding an Apple-specific hosted compile job
+to its protected required gate. Client and server provenance now pin the same
+reviewed protocol commit, so conditional platform code and its consumers remain
+traceable as one source contract. Required consumer CI rejects any future
+submodule/provenance mismatch.
+
+### RM-P1-12 — The Windows portable launcher referenced an ignored local bitmap
+
+Resolved by rendering the loading message with a native Windows text control
+instead of embedding an untracked PNG. The launcher now has no hidden local
+resource dependency, and required clean-checkout x64 and arm64 MSVC jobs compile
+the portable package itself before release packaging can run.
+
 ## Verification evidence
 
-- Shared protocol: the client and server pin commit `76bf96f7e6b3f0fdb7f009b8606586da53cb5fe4`; format, Clippy with warnings denied, and 98 current-format unit tests passed.
+- Shared protocol: the client and server pin commit `2daff94dc8d4dae97b04ff47563f70842c47e28b`; format, Clippy with warnings denied, 98 current-format unit tests, and the Apple-specific hosted compile gate passed.
 - Identity/relay server: Rust check/format and protocol (98), identity (33), relay (21), utilities (2), and recursion (1) tests passed. The production image built successfully, runs as `10001:10001` with a read-only root, exposes canonical OCI labels, and returns successful help/version output before configuration startup.
 - Client: the Linux workspace/all-target Flutter feature suite passed (88 client, 98 protocol, 4 portable-packer, 30 screen-capture, and 6 input tests, with one documented long-running codec matrix ignored by the ordinary gate). The vendored Windows input implementation also passes locked x64 and arm64 MSVC target checks. Flutter analysis reported no errors or warnings and all 66 widget/unit tests passed. Rust dependency warnings are bounded by an owner/expiry/exit-condition register; every vulnerability, warning increase, or expired exception fails CI. Portable generation is deterministic and rejects unsafe inputs.
 - Web client: protobuf codecs were regenerated from the pinned protocol, the TypeScript bridge lint/build and CSP/provenance synchronization check passed, and npm reported no vulnerabilities at the configured threshold.
