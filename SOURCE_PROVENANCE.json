@@ -5,7 +5,7 @@
   "source_commit": "cb2c7e57fc4dc5c00c59eee0603f465bc50805c",
   "upstream_repository": "https://github.com/rustdesk/rustdesk",
   "protocol_repository": "https://github.com/camellia-computing/remote-protocol",
-  "protocol_source_commit": "e067d774b62e40005a190f9c0dc40787a41c1f80",
+  "protocol_source_commit": "76bf96f7e6b3f0fdb7f009b8606586da53cb5fe4",
   "normalized_repository": "https://github.com/camellia-computing/remote-client",
   "history_policy": "fresh-root-snapshot",
   "license": "AGPL-3.0-only"

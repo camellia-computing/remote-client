@@ -489,21 +489,13 @@ def main():
             return int(value)
 
     def parse_permission(value):
-        """Parse permission value - supports both string (ro/rw/full) and numeric (1/2/3)"""
-        # Try to parse as string first
+        """Parse the canonical permission names."""
         permission_num = string_to_permission(value)
         if permission_num is not None:
             return permission_num
-
-        # Try to parse as integer for backward compatibility
-        try:
-            num_value = int(value)
-            if num_value in [1, 2, 3]:
-                return num_value
-            else:
-                raise argparse.ArgumentTypeError(f"Invalid permission value: {value}. Must be one of: ro, rw, full, 1, 2, 3")
-        except ValueError:
-            raise argparse.ArgumentTypeError(f"Invalid permission value: {value}. Must be one of: ro, rw, full, 1, 2, 3")
+        raise argparse.ArgumentTypeError(
+            f"Invalid permission value: {value}. Must be one of: ro, rw, full"
+        )
 
     parser = argparse.ArgumentParser(description="Address Book manager")
 
@@ -544,7 +536,11 @@ def main():
     parser.add_argument("--rule-type", choices=["user", "group", "everyone"], help="Rule type (auto-detected if not specified)")
     parser.add_argument("--rule-user", help="Rule target user name (auto-sets rule-type=user)")
     parser.add_argument("--rule-group", help="Rule target group name (auto-sets rule-type=group)")
-    parser.add_argument("--rule-permission", type=parse_permission, help="Rule permission (ro=Read, rw=ReadWrite, full=FullControl, or numeric 1/2/3)")
+    parser.add_argument(
+        "--rule-permission",
+        type=parse_permission,
+        help="Rule permission (ro=Read, rw=ReadWrite, full=FullControl)",
+    )
     parser.add_argument("--rule-guid", help="Rule GUID (for update/delete)")
 
     args = parser.parse_args()
