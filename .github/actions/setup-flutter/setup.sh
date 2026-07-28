@@ -5,6 +5,8 @@ check_command() {
 	command -v "$1" >/dev/null 2>&1
 }
 
+ACTION_DIRECTORY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 if ! check_command jq; then
 	echo "jq not found. Install it from https://jqlang.github.io/jq/"
 	exit 1
@@ -48,14 +50,7 @@ verify_archive() {
 		exit 1
 	fi
 
-	if check_command sha256sum; then
-		echo "$archive_sha256  $archive_path" | sha256sum --check --status
-	elif check_command shasum; then
-		echo "$archive_sha256  $archive_path" | shasum --algorithm 256 --check --status
-	else
-		echo "No SHA-256 verification utility is available"
-		exit 1
-	fi
+	bash "$ACTION_DIRECTORY/verify-sha256.sh" "$archive_sha256" "$archive_path"
 }
 
 download_archive() {

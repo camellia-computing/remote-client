@@ -9,4 +9,5 @@ The vendored copy makes the complete Actions dependency graph auditable under
 the organization-wide immutable-SHA policy. Its two nested `actions/cache`
 references are pinned to the reviewed v6.1.0 commit. The download script also
 verifies the Flutter release archive against the SHA-256 value in Flutter's
-release manifest.
+release manifest. Verification computes and compares the digest directly so it
+does not depend on GNU-only or BSD-only checksum verification flags.

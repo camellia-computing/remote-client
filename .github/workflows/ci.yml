@@ -163,7 +163,7 @@ jobs:
         run: |
           go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
           shellcheck \
-            .github/actions/setup-flutter/setup.sh \
+            .github/actions/setup-flutter/*.sh \
             .github/scripts/*.sh \
             .github/scripts/tests/*.sh \
             flutter/web/tools/build_web.sh
@@ -179,6 +179,8 @@ jobs:
           python3 -m compileall -q .github/scripts libs/portable
           python3 -m unittest discover -s .github/scripts/tests -v
           python3 -m unittest discover -s libs/portable/tests -v
+          bash .github/scripts/tests/test_dependency_lock_scope.sh
+          bash .github/scripts/tests/test_flutter_archive_verification.sh
           bash .github/scripts/tests/test_release_publication.sh
           bash .github/scripts/tests/test_release_signing.sh
           pwsh -NoProfile -File .github/scripts/tests/test_windows_signing_resolver.ps1
@@ -247,6 +249,37 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  windows_rust:
+    name: Windows Rust smoke check (${{ matrix.target }})
+    if: needs.classify.outputs.runtime == 'true'
+    needs: classify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-pc-windows-msvc
+          - aarch64-pc-windows-msvc
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.target }}
+
+      - name: Check Windows input implementation
+        run: >-
+          cargo check --locked -p enigo
+          --target ${{ matrix.target }}
+          --features with_serde
+
   quality:
     name: Rust, Flutter, and Web quality
     if: needs.classify.outputs.runtime == 'true'
@@ -298,6 +331,9 @@ jobs:
           cache: npm
           cache-dependency-path: flutter/web/js/package-lock.json
 
+      - name: Verify generated brand assets
+        run: bash .github/scripts/verify-brand-assets.sh
+
       - name: Synchronize declared version
         run: |
           bash .github/scripts/sync-version.sh \
@@ -318,7 +354,7 @@ jobs:
         run: cargo install cargo-audit --version 0.22.2 --locked --no-default-features
 
       - name: Rust dependency audit
-        run: cargo audit
+        run: python3 .github/scripts/audit_cargo_dependencies.py
 
       - name: Rust clippy
         run: cargo clippy --locked --workspace --all-targets --features flutter
@@ -355,6 +391,7 @@ jobs:
       - dependency_review
       - automation
       - generate_bridge
+      - windows_rust
       - quality
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -371,6 +408,7 @@ jobs:
           DEPENDENCY_REVIEW_RESULT: ${{ needs.dependency_review.result }}
           AUTOMATION_RESULT: ${{ needs.automation.result }}
           BRIDGE_RESULT: ${{ needs.generate_bridge.result }}
+          WINDOWS_RUST_RESULT: ${{ needs.windows_rust.result }}
           QUALITY_RESULT: ${{ needs.quality.result }}
         run: |
           failure=false
@@ -390,6 +428,7 @@ jobs:
           fi
           if [[ "$RUNTIME_REQUIRED" == "true" ]]; then
             require_success "bridge generation" "$BRIDGE_RESULT"
+            require_success "Windows Rust smoke check" "$WINDOWS_RUST_RESULT"
             require_success "Rust, Flutter, and Web quality" "$QUALITY_RESULT"
           fi
           if [[ "$EVENT_NAME" == "pull_request" && "$DEPENDENCIES_CHANGED" == "true" ]]; then

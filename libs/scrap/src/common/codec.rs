@@ -1337,10 +1337,11 @@ mod bitrate_tests {
         let per_frame = |fps: u32| bitrate_at(fps) / fps as f32;
 
         let ratio = per_frame(120) / per_frame(30);
-        assert!(ratio > 0.45, "per-frame budget fell too far: {ratio}");
+        assert!(ratio > 0.45, "per-frame budget fell too far: {}", ratio);
         assert!(
             ratio < 1.0,
-            "high fps should still cost some detail: {ratio}"
+            "high fps should still cost some detail: {}",
+            ratio
         );
     }
 }
