@@ -61,6 +61,7 @@ examples/**/target/
 # ===
 vcpkg_installed
 flutter/lib/generated_plugin_registrant.dart
+flutter/ios/Flutter/Signing.xcconfig
 libsciter.dylib
 # flutter web
 flutter/web/js/node_modules/
