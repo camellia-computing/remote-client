@@ -1,0 +1,10 @@
+Camellia Remote is een open-source remote-desktopclient in voorpublicatie. De client maakt verbinding via servers die door de beheerder zijn gekozen.
+
+Voor het op afstand bedienen van een Android-apparaat is de toegankelijkheidsservice nodig. Camellia Remote gebruikt de AccessibilityService-API uitsluitend voor aanwijzer-, aanraak- en toetsenbordacties die door een geverifieerde sessie worden gevraagd. Schakel deze toestemming alleen in wanneer bediening op afstand nodig is. Schermopname, meldingen, audio, bestanden en achtergrondgebruik kunnen afzonderlijke Android-toestemmingen vereisen.
+
+De client kan ook bestanden overdragen. Deze basisversie bevat geen door Camellia gehost rendez-vous-, relay-, beheer-, telemetrie- of update-eindpunt.
+
+Broncode: https://github.com/camellia-computing/remote-client
+Server: https://github.com/camellia-computing/remote-server
+Documentatie: https://github.com/camellia-computing/remote-client/blob/main/docs/platform-notes.md
+Privacy: https://github.com/camellia-computing/remote-client/blob/main/docs/privacy.md

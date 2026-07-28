@@ -1,0 +1,72 @@
+// Single source of truth for the Android API level the whole build compiles
+// against; plugin subprojects that lag behind are lifted to it below.
+ext.appCompileSdk = 37
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+        maven { url 'https://jitpack.io' }
+    }
+}
+
+rootProject.buildDir = '../build'
+subprojects {
+    project.buildDir = "${rootProject.buildDir}/${project.name}"
+
+    // Flutter temporarily disables AGP's built-in Kotlin while the application
+    // still uses KGP. file_picker 11 expects built-in Kotlin on AGP 9, so its
+    // Kotlin sources otherwise never become part of the Android library.
+    // The plugin defaults to the JDK running Gradle, which Gradle then rejects
+    // for disagreeing with AGP's Java 17, so pin both to the app's target.
+    if (project.name == 'file_picker') {
+        project.pluginManager.apply('org.jetbrains.kotlin.android')
+        project.tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+            compilerOptions {
+                jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+            }
+        }
+        project.pluginManager.withPlugin('com.android.library') {
+            project.android.compileOptions {
+                sourceCompatibility JavaVersion.VERSION_17
+                targetCompatibility JavaVersion.VERSION_17
+            }
+        }
+    }
+
+    // Plugins pinned to an older compileSdk than the androidx artifacts they
+    // pull in fail AAR metadata validation. Lift any that lag behind the app
+    // rather than pinning the whole dependency tree backwards; configuring it
+    // here keeps Flutter's shared pub cache untouched.
+    //
+    // This has to run in afterEvaluate: the plugin's own build.gradle sets
+    // compileSdk while it is being evaluated, which is after the withPlugin
+    // callback fires, so assigning any earlier is simply overwritten.
+    project.afterEvaluate {
+        if (project.plugins.hasPlugin('com.android.library')) {
+            def target = rootProject.ext.appCompileSdk
+            if (project.android.compileSdk == null || project.android.compileSdk < target) {
+                project.android.compileSdk = target
+            }
+        }
+    }
+
+    // The maintained RustDesk fork of uni_links predates AGP's namespace
+    // requirement. Configure it from the consuming project so builds remain
+    // reproducible without modifying Flutter's shared pub cache.
+    if (project.name == 'uni_links') {
+        project.pluginManager.withPlugin('com.android.library') {
+            project.android.namespace = 'name.avioli.unilinks'
+            project.android.sourceSets.main.java.setSrcDirs([
+                rootProject.file('uni_links_v2/src/main/java')
+            ])
+        }
+    }
+}
+subprojects {
+    project.evaluationDependsOn(':app')
+}
+
+tasks.register("clean", Delete) {
+    delete rootProject.buildDir
+}

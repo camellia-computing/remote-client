@@ -1,0 +1,31 @@
+name: Rust Security Audit
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 2 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-security-audit
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: Audit locked Rust dependencies
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: "1.93.0"
+      - name: Install pinned auditor
+        run: cargo install cargo-audit --version 0.22.2 --locked --no-default-features
+      - name: Audit dependency lock
+        run: cargo audit

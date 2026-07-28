@@ -1,0 +1,11 @@
+Camellia Remote 是一款尚未正式发布的开源远程桌面客户端，通过运维方选择的服务器连接设备。
+
+远程控制 Android 设备需要无障碍服务。Camellia Remote 仅使用 Android AccessibilityService API 执行已认证远程会话请求的指针、触摸和键盘操作；不需要远程控制时请勿开启。屏幕捕获、通知、音频、文件与后台运行可能分别需要 Android 的其他权限。
+
+客户端也可在支持的设备之间传输文件。会话内容发送给所选对端和中继；此基线没有内置由 Camellia 托管的注册、中继、管理、遥测或更新端点。
+
+源代码：https://github.com/camellia-computing/remote-client
+服务端：https://github.com/camellia-computing/remote-server
+平台说明：https://github.com/camellia-computing/remote-client/blob/main/docs/platform-notes.md
+隐私边界：https://github.com/camellia-computing/remote-client/blob/main/docs/privacy.md
+发布：https://github.com/camellia-computing/remote-client/releases

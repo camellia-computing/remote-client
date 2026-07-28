@@ -1,0 +1,6 @@
+* text=auto
+
+# Vendored patch files must retain byte-exact context; do not treat their
+# intentional trailing whitespace as source-code whitespace errors.
+*.patch -whitespace
+*.diff -whitespace

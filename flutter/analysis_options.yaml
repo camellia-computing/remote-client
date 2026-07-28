@@ -1,0 +1,9 @@
+include: package:flutter_lints/flutter.yaml
+
+linter:
+  rules:
+    non_constant_identifier_names: false
+    sort_child_properties_last: false
+    # Interop naming and legacy widget structure; revisit as pages migrate.
+    constant_identifier_names: false
+    avoid_print: false

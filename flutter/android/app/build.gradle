@@ -1,0 +1,147 @@
+import com.google.protobuf.gradle.*
+import groovy.json.JsonSlurper
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
+plugins {
+    id "com.google.protobuf" version "0.9.5"
+    id "com.android.application"
+    id "kotlin-android"
+    id "dev.flutter.flutter-gradle-plugin"
+}
+
+def keystoreProperties = new Properties()
+def keystorePropertiesFile = rootProject.file('key.properties')
+if (keystorePropertiesFile.exists()) {
+    keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+}
+
+def localProperties = new Properties()
+def localPropertiesFile = rootProject.file('local.properties')
+if (localPropertiesFile.exists()) {
+    localPropertiesFile.withReader('UTF-8') { reader ->
+        localProperties.load(reader)
+    }
+}
+
+def flutterVersionCode = localProperties.getProperty('flutter.versionCode')
+if (flutterVersionCode == null) {
+    flutterVersionCode = '1'
+}
+
+def flutterVersionName = localProperties.getProperty('flutter.versionName')
+if (flutterVersionName == null) {
+    flutterVersionName = '1.0'
+}
+
+// Add rustls-platform-verifier Android support
+String findRustlsPlatformVerifierMavenDir() {
+    def dependencyText = providers.exec {
+        it.workingDir = new File("../..")
+        commandLine("cargo", "metadata", "--format-version", "1")
+    }.standardOutput.asText.get()
+
+    def dependencyJson = new JsonSlurper().parseText(dependencyText)
+    def pkg = dependencyJson.packages.find { it.name == "rustls-platform-verifier-android" }
+
+    if (pkg == null) {
+        throw new GradleException("rustls-platform-verifier-android package not found in cargo metadata!")
+    }
+
+    def manifestPath = file(pkg.manifest_path)
+    def mavenDir = new File(manifestPath.parentFile, "maven")
+
+    if (!mavenDir.exists()) {
+        throw new GradleException("Maven directory not found at: ${mavenDir.path}")
+    }
+
+    println("✓ Found rustls-platform-verifier maven repo at: ${mavenDir.path}")
+    return mavenDir.path
+}
+
+
+repositories {
+    maven {
+        url = findRustlsPlatformVerifierMavenDir()
+        metadataSources.artifact()
+    }
+}
+
+protobuf {
+    protoc {
+        artifact = 'com.google.protobuf:protoc:3.20.1'
+    }
+
+    generateProtoTasks {
+        all().configureEach { task ->
+            task.builtins {
+                java {
+                    option "lite"
+                }
+            }
+        }
+    }
+}
+
+android {
+    namespace "com.camellia.remote"
+    compileSdk rootProject.ext.appCompileSdk
+    sourceSets {
+        main.java.srcDirs += 'src/main/kotlin'
+
+        main.proto.srcDirs += '../../../libs/camellia_remote_protocol/protos'
+        main.proto.includes += "message.proto"
+    }
+
+    compileOptions {
+        targetCompatibility JavaVersion.VERSION_17
+        sourceCompatibility JavaVersion.VERSION_17
+    }
+
+    defaultConfig {
+        applicationId "com.camellia.remote"
+        minSdk 26
+        targetSdk 37
+        versionCode flutterVersionCode.toInteger()
+        versionName flutterVersionName
+    }
+
+    signingConfigs {
+      release {
+        keyAlias keystoreProperties['keyAlias']
+        keyPassword keystoreProperties['keyPassword']
+        storeFile keystoreProperties['storeFile'] ? file(keystoreProperties['storeFile']) : null
+        storePassword keystoreProperties['storePassword']
+      }
+    }
+
+    buildTypes {
+        release {
+            // Sign for real when a keystore is configured. Without one - CI
+            // build checks, and anyone building from a clean clone - fall back
+            // to the debug key so packaging still produces an installable APK
+            // instead of failing on a missing storeFile.
+            signingConfig keystoreProperties['storeFile']
+                ? signingConfigs.release
+                : signingConfigs.debug
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules'
+        }
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget = JvmTarget.JVM_17
+    }
+}
+
+flutter {
+    source '../..'
+}
+
+dependencies {
+    implementation 'com.google.protobuf:protobuf-javalite:3.20.1'
+    implementation "androidx.media:media:1.6.0"
+    implementation 'com.github.getActivity:XXPermissions:18.5'
+    implementation 'com.caverock:androidsvg-aar:1.4'
+    implementation "rustls:rustls-platform-verifier:0.1.1"
+}

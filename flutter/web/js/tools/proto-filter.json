@@ -1,0 +1,7 @@
+{
+  "messageNames": [
+    "hbb.IdPk",
+    "hbb.Message",
+    "hbb.RendezvousMessage"
+  ]
+}

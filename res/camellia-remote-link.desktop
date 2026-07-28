@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Camellia Remote
+NoDisplay=true
+MimeType=x-scheme-handler/camellia-remote;
+TryExec=camellia-remote
+Exec=camellia-remote %u
+Icon=camellia-remote
+Terminal=false
+Type=Application
+StartupNotify=false
+StartupWMClass=camellia-remote

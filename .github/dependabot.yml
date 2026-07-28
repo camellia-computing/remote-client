@@ -1,0 +1,91 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    target-branch: main
+    schedule:
+      interval: weekly
+      day: monday
+      time: "01:00"
+      timezone: Asia/Singapore
+    groups:
+      rust-dependencies:
+        patterns:
+          - "*"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: deps(rust)
+    labels:
+      - dependencies
+
+  - package-ecosystem: pub
+    directory: /flutter
+    target-branch: main
+    schedule:
+      interval: weekly
+      day: monday
+      time: "01:30"
+      timezone: Asia/Singapore
+    groups:
+      flutter-dependencies:
+        patterns:
+          - "*"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: deps(flutter)
+    labels:
+      - dependencies
+
+  - package-ecosystem: npm
+    directory: /flutter/web/js
+    target-branch: main
+    schedule:
+      interval: weekly
+      day: monday
+      time: "02:00"
+      timezone: Asia/Singapore
+    groups:
+      web-dependencies:
+        patterns:
+          - "*"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: deps(web)
+    labels:
+      - dependencies
+
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: main
+    schedule:
+      interval: weekly
+      day: monday
+      time: "02:30"
+      timezone: Asia/Singapore
+    groups:
+      workflow-actions:
+        patterns:
+          - "*"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: deps(actions)
+    labels:
+      - dependencies
+
+  - package-ecosystem: gitsubmodule
+    directory: /
+    target-branch: main
+    schedule:
+      interval: weekly
+      day: monday
+      time: "03:00"
+      timezone: Asia/Singapore
+    groups:
+      git-submodules:
+        patterns:
+          - "*"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: deps(submodules)
+    labels:
+      - dependencies

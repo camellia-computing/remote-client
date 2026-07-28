@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="66.993 897.484 113.652 26">
+  <defs>
+    <linearGradient id="petal" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#7fe8ff"/>
+      <stop offset="100%" stop-color="#1b7fb0"/>
+    </linearGradient>
+    <radialGradient id="core" cx="50%" cy="40%" r="60%">
+      <stop offset="0%" stop-color="#1d6b8f"/>
+      <stop offset="100%" stop-color="#0b1420"/>
+    </radialGradient>
+  </defs>
+  <g transform="translate(66.993 897.484)">
+    <g transform="translate(13 13)">
+      <circle cx="0" cy="0" r="10" fill="url(#core)"/>
+      <g fill="url(#petal)">
+        <ellipse cx="0" cy="-3.6" rx="3" ry="5.6"/>
+        <ellipse cx="0" cy="-3.6" rx="3" ry="5.6" transform="rotate(72)"/>
+        <ellipse cx="0" cy="-3.6" rx="3" ry="5.6" transform="rotate(144)"/>
+        <ellipse cx="0" cy="-3.6" rx="3" ry="5.6" transform="rotate(216)"/>
+        <ellipse cx="0" cy="-3.6" rx="3" ry="5.6" transform="rotate(288)"/>
+      </g>
+      <path d="M4 -3 A6 6 0 1 0 4 3" fill="none" stroke="#c7f4ff" stroke-width="1.8" stroke-linecap="round"/>
+      <circle cx="-1.4" cy="-1.4" r="1.4" fill="#a5f0ff"/>
+    </g>
+    <text x="30" y="17" fill="#e8f8ff" font-family="Segoe UI, Arial, sans-serif" font-size="12" font-weight="600">Camellia</text>
+  </g>
+</svg>

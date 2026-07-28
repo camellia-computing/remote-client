@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Feature Request
+    url: https://github.com/camellia-computing/remote-client/discussions/categories/ideas
+    about: Discuss product ideas before implementation work begins.
+  - name: Ask a question
+    url: https://github.com/camellia-computing/remote-client/discussions/categories/q-a
+    about: Ask usage and integration questions.
