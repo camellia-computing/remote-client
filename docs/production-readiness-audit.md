@@ -49,7 +49,7 @@ Resolved by invoking only `pwsh` and the current PowerShell 7 installation path.
 
 ## Verification evidence
 
-- Shared protocol: the client and server pin commit `354c42c51174de3bad3097acdc8ee82247c7dbc0`; format, Clippy with warnings denied, and 104 unit tests passed.
+- Shared protocol: the client and server pin commit `79431969ac1026a1153434e6a8f4a8101768411c`; format, Clippy with warnings denied, and 104 unit tests passed.
 - Identity/relay server: Rust check/format and protocol (104), identity (33), relay (21), utilities (2), and recursion (1) tests passed. The production image built successfully, runs as `10001:10001` with a read-only root, exposes canonical OCI labels, and returns successful help/version output before configuration startup.
 - Client: the Linux workspace/all-target Flutter feature suite passed (87 client, 104 protocol, 4 portable-packer, 30 screen-capture, and 6 input tests, with one documented long-running codec matrix ignored by the ordinary gate). Flutter analysis reported no errors or warnings and all 66 widget/unit tests passed; inherited information-level lint and Rust warning debt remains explicitly non-blocking. Portable generation is deterministic and rejects unsafe inputs.
 - Web client: protobuf codecs were regenerated from the pinned protocol, the TypeScript bridge lint/build and CSP/provenance synchronization check passed, and npm reported no vulnerabilities at the configured threshold.
