@@ -179,6 +179,7 @@ jobs:
           python3 -m compileall -q .github/scripts libs/portable
           python3 -m unittest discover -s .github/scripts/tests -v
           python3 -m unittest discover -s libs/portable/tests -v
+          bash .github/scripts/tests/test_dependency_lock_scope.sh
           bash .github/scripts/tests/test_flutter_archive_verification.sh
           bash .github/scripts/tests/test_release_publication.sh
           bash .github/scripts/tests/test_release_signing.sh
@@ -299,6 +300,9 @@ jobs:
           cache: npm
           cache-dependency-path: flutter/web/js/package-lock.json
 
+      - name: Verify generated brand assets
+        run: bash .github/scripts/verify-brand-assets.sh
+
       - name: Synchronize declared version
         run: |
           bash .github/scripts/sync-version.sh \
@@ -319,7 +323,7 @@ jobs:
         run: cargo install cargo-audit --version 0.22.2 --locked --no-default-features
 
       - name: Rust dependency audit
-        run: cargo audit
+        run: python3 .github/scripts/audit_cargo_dependencies.py
 
       - name: Rust clippy
         run: cargo clippy --locked --workspace --all-targets --features flutter

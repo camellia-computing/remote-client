@@ -59,11 +59,26 @@ Resolved by vendoring the reviewed MIT-licensed setup action, pinning its nested
 
 Resolved by versioning the three reviewed light, dark, and compact golden snapshots required by the Flutter test suite. A clean checkout now exercises the same visual baseline as a developer workspace instead of failing because ignored local artifacts were present.
 
+### RM-P1-07 — Hosted Apple runners rejected GNU-only checksum flags
+
+Resolved by computing and comparing Flutter archive digests directly with the
+platform checksum utility. The shared Action now supports macOS `shasum` and
+Linux/Windows `sha256sum`, and regression tests reject malformed digests,
+missing files, and modified archives.
+
+### RM-P1-08 — Release icons and a workspace lock existed only in local copies
+
+Resolved by tracking every generated brand asset consumed by Linux, Android,
+iOS, macOS, and Windows packaging, then regenerating them during CI and requiring
+a clean worktree. The Cargo-ignored nested lock was removed, an obsolete
+example-only password dependency was eliminated, and the remaining exact Rust
+warning set is bounded by the reviewed dependency risk register.
+
 ## Verification evidence
 
 - Shared protocol: the client and server pin commit `76bf96f7e6b3f0fdb7f009b8606586da53cb5fe4`; format, Clippy with warnings denied, and 98 current-format unit tests passed.
 - Identity/relay server: Rust check/format and protocol (98), identity (33), relay (21), utilities (2), and recursion (1) tests passed. The production image built successfully, runs as `10001:10001` with a read-only root, exposes canonical OCI labels, and returns successful help/version output before configuration startup.
-- Client: the Linux workspace/all-target Flutter feature suite passed (88 client, 98 protocol, 4 portable-packer, 30 screen-capture, and 6 input tests, with one documented long-running codec matrix ignored by the ordinary gate). Flutter analysis reported no errors or warnings and all 66 widget/unit tests passed; inherited information-level lint and Rust warning debt remains explicitly non-blocking. Portable generation is deterministic and rejects unsafe inputs.
+- Client: the Linux workspace/all-target Flutter feature suite passed (88 client, 98 protocol, 4 portable-packer, 30 screen-capture, and 6 input tests, with one documented long-running codec matrix ignored by the ordinary gate). Flutter analysis reported no errors or warnings and all 66 widget/unit tests passed. Rust dependency warnings are bounded by an owner/expiry/exit-condition register; every vulnerability, warning increase, or expired exception fails CI. Portable generation is deterministic and rejects unsafe inputs.
 - Web client: protobuf codecs were regenerated from the pinned protocol, the TypeScript bridge lint/build and CSP/provenance synchronization check passed, and npm reported no vulnerabilities at the configured threshold.
 - Management: Ruff format/check, Django migration drift, 48 ordinary tests (2 environment-specific skips), the real PostgreSQL test/deployment path, Compose expansion through Docker Desktop, release metadata, and systemd hardening analysis passed.
 - All 22 repository workflow files passed Actionlint 1.7.12; the vendored setup script also passed ShellCheck and resolved Flutter 3.44.5 manifests for Linux, Windows, Intel macOS, and Apple Silicon macOS. Final management-image/Web provenance, every target-platform package, and platform-native acceptance remain mandatory hosted gates even where an equivalent local runner is unavailable.
