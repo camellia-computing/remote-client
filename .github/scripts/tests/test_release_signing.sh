@@ -18,13 +18,38 @@ if APPLE_CERTIFICATE=partial SIGNING_ENV_FILE="$macos_env" \
   exit 1
 fi
 
+ios_env="$test_root/ios.env"
+SIGNING_ENV_FILE="$ios_env" SIGNING_TEMP_DIRECTORY="$test_root" \
+  bash "$repository/.github/scripts/resolve-ios-signing.sh" >/dev/null
+grep -Fqx 'IOS_NATIVE_SIGNING=unsigned' "$ios_env"
+grep -Fqx 'IOS_ARTIFACT_SUFFIX=-unsigned' "$ios_env"
+
+if IOS_TEAM_ID=partial SIGNING_ENV_FILE="$ios_env" \
+  SIGNING_TEMP_DIRECTORY="$test_root" \
+  bash "$repository/.github/scripts/resolve-ios-signing.sh" >/dev/null 2>&1; then
+  echo 'partial iOS signing configuration unexpectedly succeeded' >&2
+  exit 1
+fi
+
+IOS_CERTIFICATE_BASE64=dGVzdC1jZXJ0aWZpY2F0ZQ== \
+IOS_CERTIFICATE_PASSWORD=test-only-password \
+IOS_PROVISIONING_PROFILE_BASE64=dGVzdC1wcm9maWxl \
+IOS_SIGNING_IDENTITY='Apple Distribution: Camellia Test (A1B2C3D4E5)' \
+IOS_TEAM_ID=A1B2C3D4E5 \
+IOS_EXPORT_METHOD=app-store-connect \
+SIGNING_ENV_FILE="$ios_env" \
+SIGNING_TEMP_DIRECTORY="$test_root" \
+  bash "$repository/.github/scripts/resolve-ios-signing.sh" >/dev/null
+grep -Fqx 'IOS_NATIVE_SIGNING=signed' "$ios_env"
+grep -Fqx 'IOS_DISTRIBUTION_TRUST=platform-key' "$ios_env"
+
 android_env="$test_root/android.env"
 SIGNING_ENV_FILE="$android_env" SIGNING_TEMP_DIRECTORY="$test_root" \
   bash "$repository/.github/scripts/resolve-android-signing.sh" >/dev/null
 grep -Fqx 'ANDROID_NATIVE_SIGNING=unsigned' "$android_env"
 grep -Fqx 'ANDROID_ARTIFACT_SUFFIX=-unsigned' "$android_env"
 
-if ANDROID_KEY_ALIAS=partial SIGNING_ENV_FILE="$android_env" \
+if ANDROID_ALIAS=partial SIGNING_ENV_FILE="$android_env" \
   SIGNING_TEMP_DIRECTORY="$test_root" \
   bash "$repository/.github/scripts/resolve-android-signing.sh" >/dev/null 2>&1; then
   echo 'partial Android signing configuration unexpectedly succeeded' >&2
@@ -46,10 +71,10 @@ if command -v keytool >/dev/null 2>&1; then
     -keypass "$android_password" \
     >/dev/null 2>&1
   android_keystore_base64="$(base64 -w 0 "$android_keystore")"
-  ANDROID_KEYSTORE_BASE64="$android_keystore_base64" \
-  ANDROID_KEYSTORE_PASSWORD="$android_password" \
+  ANDROID_SIGNING_KEY="$android_keystore_base64" \
+  ANDROID_KEY_STORE_PASSWORD="$android_password" \
   ANDROID_KEY_PASSWORD="$android_password" \
-  ANDROID_KEY_ALIAS=release \
+  ANDROID_ALIAS=release \
   SIGNING_ENV_FILE="$android_env" \
   SIGNING_TEMP_DIRECTORY="$test_root" \
     bash "$repository/.github/scripts/resolve-android-signing.sh" >/dev/null

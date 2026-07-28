@@ -9,17 +9,17 @@ set -euo pipefail
 }
 
 signing_values=(
-  ANDROID_KEYSTORE_BASE64
-  ANDROID_KEYSTORE_PASSWORD
+  ANDROID_SIGNING_KEY
+  ANDROID_KEY_STORE_PASSWORD
   ANDROID_KEY_PASSWORD
-  ANDROID_KEY_ALIAS
+  ANDROID_ALIAS
 )
 signing_count=0
 for name in "${signing_values[@]}"; do
   [[ -z "${!name:-}" ]] || signing_count=$((signing_count + 1))
 done
 [[ "$signing_count" == 0 || "$signing_count" == 4 ]] || {
-  echo 'ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_PASSWORD and ANDROID_KEY_ALIAS must be configured together' >&2
+  echo 'ANDROID_SIGNING_KEY, ANDROID_KEY_STORE_PASSWORD, ANDROID_KEY_PASSWORD and ANDROID_ALIAS must be configured together' >&2
   exit 1
 }
 
@@ -32,8 +32,8 @@ if [[ "$signing_count" == 0 ]]; then
   exit 0
 fi
 
-[[ "$ANDROID_KEY_ALIAS" =~ ^[A-Za-z0-9._-]{1,128}$ ]] || {
-  echo 'ANDROID_KEY_ALIAS contains unsupported characters' >&2
+[[ "$ANDROID_ALIAS" =~ ^[A-Za-z0-9._-]{1,128}$ ]] || {
+  echo 'ANDROID_ALIAS contains unsupported characters' >&2
   exit 1
 }
 command -v keytool >/dev/null 2>&1 || {
@@ -43,7 +43,7 @@ command -v keytool >/dev/null 2>&1 || {
 
 keystore_path="$SIGNING_TEMP_DIRECTORY/camellia-remote-android-release.keystore"
 umask 077
-if ! printf '%s' "$ANDROID_KEYSTORE_BASE64" |
+if ! printf '%s' "$ANDROID_SIGNING_KEY" |
   python3 -c '
 import base64
 import sys
@@ -52,21 +52,21 @@ payload = b"".join(sys.stdin.buffer.read().split())
 try:
     decoded = base64.b64decode(payload, validate=True)
 except Exception as error:
-    raise SystemExit(f"ANDROID_KEYSTORE_BASE64 is invalid: {error}")
+    raise SystemExit(f"ANDROID_SIGNING_KEY is invalid: {error}")
 if not decoded:
-    raise SystemExit("ANDROID_KEYSTORE_BASE64 decoded to an empty file")
+    raise SystemExit("ANDROID_SIGNING_KEY decoded to an empty file")
 sys.stdout.buffer.write(decoded)
 ' > "$keystore_path"; then
   rm -f -- "$keystore_path"
   exit 1
 fi
 
-export ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS
+export ANDROID_KEY_STORE_PASSWORD ANDROID_ALIAS
 certificate_output="$(
   keytool -J-Duser.language=en -list -v \
     -keystore "$keystore_path" \
-    -storepass:env ANDROID_KEYSTORE_PASSWORD \
-    -alias "$ANDROID_KEY_ALIAS"
+    -storepass:env ANDROID_KEY_STORE_PASSWORD \
+    -alias "$ANDROID_ALIAS"
 )" || {
   rm -f -- "$keystore_path"
   echo 'Android keystore password or alias validation failed' >&2
@@ -88,7 +88,7 @@ certificate_sha256="$(
   echo 'ANDROID_NATIVE_SIGNING=signed'
   echo 'ANDROID_ARTIFACT_SUFFIX='
   echo "CAMELLIA_ANDROID_STORE_FILE=$keystore_path"
-  echo "CAMELLIA_ANDROID_KEY_ALIAS=$ANDROID_KEY_ALIAS"
+  echo "CAMELLIA_ANDROID_KEY_ALIAS=$ANDROID_ALIAS"
   echo "ANDROID_SIGNING_IDENTITY=$certificate_sha256"
 } >> "$SIGNING_ENV_FILE"
 echo "Android release signing enabled with certificate SHA-256 $certificate_sha256"

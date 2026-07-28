@@ -18,7 +18,7 @@ regardless of which values are configured.
 | macOS | Ad-hoc-signed app in ZIP/DMG; no publisher identity or notarization |
 | Linux | Unsigned tar/DEB/AppImage plus checksums and attestations; no detached OpenPGP signature |
 | Android | `-unsigned.apk` and `-unsigned.aab` re-signing inputs; the formal workflow never falls back to the debug keystore |
-| iOS | Unsigned xcarchive and `-unsigned.ipa` re-signing inputs |
+| iOS | Unsigned `-unsigned-xcarchive.zip` and `-unsigned.ipa` re-signing inputs |
 | Web | Deployment archives; native signing is not applicable |
 
 Unsigned Android/iOS outputs are not installable public releases. Sign and
@@ -124,18 +124,24 @@ beside its own signature is not independently trusted.
 
 Configure the complete group:
 
-- secret `ANDROID_KEYSTORE_BASE64`;
-- secret `ANDROID_KEYSTORE_PASSWORD`;
+- secret `ANDROID_SIGNING_KEY`: one-line base64 of the release keystore;
+- secret `ANDROID_KEY_STORE_PASSWORD`;
 - secret `ANDROID_KEY_PASSWORD`;
-- variable `ANDROID_KEY_ALIAS`.
+- secret `ANDROID_ALIAS`.
+
+These names match the source repository's existing secret inventory, but the
+new workflow fixes the old gap: merely storing the secrets is insufficient.
+The former workflow never passed them to Gradle and silently used the debug
+keystore. Formal Camellia Remote builds now consume and verify the complete
+group or produce explicitly unsigned re-signing inputs.
 
 ```bash
 repository=camellia-computing/remote-client
 base64 < android-release.keystore | tr -d '\n' |
-  gh secret set ANDROID_KEYSTORE_BASE64 --repo "$repository"
-gh secret set ANDROID_KEYSTORE_PASSWORD --repo "$repository"
+  gh secret set ANDROID_SIGNING_KEY --repo "$repository"
+gh secret set ANDROID_KEY_STORE_PASSWORD --repo "$repository"
 gh secret set ANDROID_KEY_PASSWORD --repo "$repository"
-gh variable set ANDROID_KEY_ALIAS --repo "$repository" --body '<release-alias>'
+gh secret set ANDROID_ALIAS --repo "$repository"
 ```
 
 The workflow validates the alias and certificate, builds without the debug-key
@@ -143,14 +149,74 @@ fallback, verifies the APK/AAB signatures, and records the full certificate
 SHA-256 digest. Back up the keystore and credentials separately: this key is the
 application update identity.
 
-## iOS status
+## iOS and iPadOS signing
 
-The current workflow deliberately supports only unsigned re-signing inputs. It
-does not accept iOS certificate/profile secrets yet, and filenames retain
-`unsigned`. Before an installable release, add a dedicated signing/export path
-with a distribution/development certificate, provisioning profile, matching
-entitlements, and reviewed export method. Do not reuse the macOS P12 group by
-assumption.
+Configure the complete, iOS-specific group:
+
+- secret `IOS_CERTIFICATE_BASE64`: one-line base64 of the P12 containing the
+  Apple distribution or development identity;
+- secret `IOS_CERTIFICATE_PASSWORD`;
+- secret `IOS_PROVISIONING_PROFILE_BASE64`: one-line base64 of the matching
+  `.mobileprovision`;
+- variable `IOS_SIGNING_IDENTITY`: exact identity name shown by
+  `security find-identity -v -p codesigning`;
+- variable `IOS_TEAM_ID`: the 10-character Apple Developer Team ID;
+- variable `IOS_EXPORT_METHOD`: one of `app-store-connect`,
+  `release-testing`, `debugging`, or `enterprise`.
+
+```bash
+repository=camellia-computing/remote-client
+base64 < camellia-remote-ios.p12 | tr -d '\n' |
+  gh secret set IOS_CERTIFICATE_BASE64 --repo "$repository"
+gh secret set IOS_CERTIFICATE_PASSWORD --repo "$repository"
+base64 < camellia-remote.mobileprovision | tr -d '\n' |
+  gh secret set IOS_PROVISIONING_PROFILE_BASE64 --repo "$repository"
+gh variable set IOS_SIGNING_IDENTITY \
+  --repo "$repository" \
+  --body 'Apple Distribution: <publisher> (<team-id>)'
+gh variable set IOS_TEAM_ID --repo "$repository" --body '<team-id>'
+gh variable set IOS_EXPORT_METHOD \
+  --repo "$repository" \
+  --body 'app-store-connect'
+```
+
+The workflow imports the P12 into an ephemeral keychain, verifies that the
+profile is current, explicitly targets `com.camellia.remote`, matches the Team
+ID and selected distribution type, and authorizes the exact certificate. It
+generates manual Xcode export options, signs and exports the IPA, then verifies
+the final bundle signature, authority, Team ID, embedded profile, bundle ID and
+entitlements. The keychain, profile, P12 and generated Xcode settings are
+removed by an always-run cleanup step.
+
+The four methods mean:
+
+| Value | Required profile | Intended output |
+| --- | --- | --- |
+| `app-store-connect` | App Store Connect distribution | Upload to App Store Connect |
+| `release-testing` | Ad Hoc profile with registered devices | Controlled device testing |
+| `debugging` | Development profile with registered devices | Development/testing only |
+| `enterprise` | In-house profile from an eligible enterprise account | Managed enterprise distribution |
+
+The iOS group is independent from the macOS Developer ID group. If the complete
+iOS group is absent, the workflow retains explicit `unsigned` filenames and
+`re-signing-input` metadata. A partial group, expired profile, wrong bundle,
+wrong Team ID, wrong profile type, or certificate/profile mismatch fails before
+publication.
+
+## Public identity synchronization
+
+Private keys, keystores, PFX/P12 files, passwords and provisioning profiles are
+never copied into Git repositories. Shared desktop publisher material should be
+held as organization secrets scoped only to the client repositories that
+consume it. Non-secret identities—certificate thumbprints, Apple identity/Team
+ID, OpenPGP fingerprint, Android certificate SHA-256, trust classification and
+validity/rotation state—belong in the organization signing registry and the
+machine-readable metadata produced by each release.
+
+Repository documentation must link to the organization policy rather than
+forking its own stale copy. A certificate rotation is complete only when the
+secret group, public identity registry, workflow verification and affected
+repository documentation all agree.
 
 ## Rotation and verification
 

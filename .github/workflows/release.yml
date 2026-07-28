@@ -70,6 +70,7 @@ env:
   FLUTTER_REVISION: f94f4fc76b4d74543ed9b085bbd75341ef65de22
   NODE_VERSION: "24.18.0"
   ANDROID_NDK_VERSION: "28.2.13676358"
+  IOS_BUNDLE_ID: com.camellia.remote
   DEPENDENCY_MODE: locked
   RS_PUB_KEY: ${{ secrets.RS_PUB_KEY }}
   RENDEZVOUS_SERVERS: ${{ vars.RENDEZVOUS_SERVERS || secrets.RENDEZVOUS_SERVERS }}
@@ -835,10 +836,10 @@ jobs:
       - name: Resolve Android signing mode
         shell: bash
         env:
-          ANDROID_KEYSTORE_BASE64: ${{ inputs.publish && secrets.ANDROID_KEYSTORE_BASE64 || '' }}
-          ANDROID_KEYSTORE_PASSWORD: ${{ inputs.publish && secrets.ANDROID_KEYSTORE_PASSWORD || '' }}
+          ANDROID_SIGNING_KEY: ${{ inputs.publish && secrets.ANDROID_SIGNING_KEY || '' }}
+          ANDROID_KEY_STORE_PASSWORD: ${{ inputs.publish && secrets.ANDROID_KEY_STORE_PASSWORD || '' }}
           ANDROID_KEY_PASSWORD: ${{ inputs.publish && secrets.ANDROID_KEY_PASSWORD || '' }}
-          ANDROID_KEY_ALIAS: ${{ inputs.publish && vars.ANDROID_KEY_ALIAS || '' }}
+          ANDROID_ALIAS: ${{ inputs.publish && secrets.ANDROID_ALIAS || '' }}
         run: |
           SIGNING_ENV_FILE="$GITHUB_ENV" SIGNING_TEMP_DIRECTORY="$RUNNER_TEMP" \
             bash .github/scripts/resolve-android-signing.sh
@@ -868,7 +869,7 @@ jobs:
       - name: Build
         shell: bash
         env:
-          ANDROID_KEYSTORE_PASSWORD: ${{ inputs.publish && secrets.ANDROID_KEYSTORE_PASSWORD || '' }}
+          ANDROID_KEY_STORE_PASSWORD: ${{ inputs.publish && secrets.ANDROID_KEY_STORE_PASSWORD || '' }}
           ANDROID_KEY_PASSWORD: ${{ inputs.publish && secrets.ANDROID_KEY_PASSWORD || '' }}
           CAMELLIA_FORMAL_RELEASE: "true"
         run: |
@@ -1026,6 +1027,18 @@ jobs:
           path: .
           github-token: ${{ github.token }}
           run-id: ${{ needs.prepare.outputs.ci_run_id }}
+      - name: Resolve iOS signing mode
+        shell: bash
+        env:
+          IOS_CERTIFICATE_BASE64: ${{ inputs.publish && secrets.IOS_CERTIFICATE_BASE64 || '' }}
+          IOS_CERTIFICATE_PASSWORD: ${{ inputs.publish && secrets.IOS_CERTIFICATE_PASSWORD || '' }}
+          IOS_PROVISIONING_PROFILE_BASE64: ${{ inputs.publish && secrets.IOS_PROVISIONING_PROFILE_BASE64 || '' }}
+          IOS_SIGNING_IDENTITY: ${{ inputs.publish && vars.IOS_SIGNING_IDENTITY || '' }}
+          IOS_TEAM_ID: ${{ inputs.publish && vars.IOS_TEAM_ID || '' }}
+          IOS_EXPORT_METHOD: ${{ inputs.publish && vars.IOS_EXPORT_METHOD || '' }}
+        run: |
+          SIGNING_ENV_FILE="$GITHUB_ENV" SIGNING_TEMP_DIRECTORY="$RUNNER_TEMP" \
+            bash .github/scripts/resolve-ios-signing.sh
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
@@ -1038,8 +1051,24 @@ jobs:
       - uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.6
         with:
           vcpkgDirectory: ${{ runner.temp }}/vcpkg
+      - name: Prepare iOS signing identity and profile
+        if: env.IOS_NATIVE_SIGNING == 'signed'
+        shell: bash
+        env:
+          IOS_CERTIFICATE_PASSWORD: ${{ inputs.publish && secrets.IOS_CERTIFICATE_PASSWORD || '' }}
+          IOS_SIGNING_IDENTITY: ${{ inputs.publish && vars.IOS_SIGNING_IDENTITY || '' }}
+          IOS_TEAM_ID: ${{ inputs.publish && vars.IOS_TEAM_ID || '' }}
+          IOS_EXPORT_METHOD: ${{ inputs.publish && vars.IOS_EXPORT_METHOD || '' }}
+          IOS_SIGNING_XCCONFIG_PATH: ${{ github.workspace }}/flutter/ios/Flutter/Signing.xcconfig
+        run: |
+          SIGNING_ENV_FILE="$GITHUB_ENV" SIGNING_TEMP_DIRECTORY="$RUNNER_TEMP" \
+            bash .github/scripts/prepare-ios-signing.sh
       - name: Build
         shell: bash
+        env:
+          IOS_SIGNING_IDENTITY: ${{ inputs.publish && vars.IOS_SIGNING_IDENTITY || '' }}
+          IOS_TEAM_ID: ${{ inputs.publish && vars.IOS_TEAM_ID || '' }}
+          IOS_EXPORT_METHOD: ${{ inputs.publish && vars.IOS_EXPORT_METHOD || '' }}
         run: |
           bash .github/scripts/sync-version.sh \
             "${{ needs.prepare.outputs.version }}" \
@@ -1050,28 +1079,33 @@ jobs:
           cargo build --locked --release --target aarch64-apple-ios --lib --features flutter
           mkdir -p flutter/ios/Runner
           cp target/aarch64-apple-ios/release/libcamellia_remote.a flutter/ios/Runner/camellia_remote.a
-          (cd flutter && flutter build ipa --release --no-codesign)
-          mkdir -p artifacts
-          archive="$(find flutter/build/ios/archive -maxdepth 1 -name '*.xcarchive' -print -quit)"
-          test -n "$archive"
-          ditto -c -k --keepParent "$archive" artifacts/camellia-remote-${{ needs.prepare.outputs.version }}-ios-xcarchive.zip
-          app="$(find "$archive/Products/Applications" -maxdepth 1 -name '*.app' -print -quit)"
-          test -n "$app"
-          ipa_root="$RUNNER_TEMP/camellia-ipa"
-          mkdir -p "$ipa_root/Payload"
-          cp -R "$app" "$ipa_root/Payload/"
-          (cd "$ipa_root" && zip -qry "$GITHUB_WORKSPACE/artifacts/camellia-remote-${{ needs.prepare.outputs.version }}-ios-unsigned.ipa" Payload)
+          bash .github/scripts/stage-ios-release.sh \
+            "${{ needs.prepare.outputs.version }}"
       - name: Record iOS signing metadata
         shell: bash
         run: |
-          python3 .github/scripts/signing_metadata.py write \
-            --output artifacts/native-signing-ios-arm64.json \
-            --artifact-directory artifacts \
-            --platform ios \
-            --architecture arm64 \
-            --native-signing unsigned \
-            --distribution-trust none \
-            --delivery re-signing-input
+          metadata=(
+            write
+            --output artifacts/native-signing-ios-arm64.json
+            --artifact-directory artifacts
+            --platform ios
+            --architecture arm64
+            --native-signing "$IOS_NATIVE_SIGNING"
+            --distribution-trust "$IOS_DISTRIBUTION_TRUST"
+          )
+          if [[ "$IOS_NATIVE_SIGNING" == signed ]]; then
+            metadata+=(
+              --identity "$IOS_SIGNING_IDENTITY_SHA256"
+              --delivery installable
+            )
+          else
+            metadata+=(--delivery re-signing-input)
+          fi
+          python3 .github/scripts/signing_metadata.py "${metadata[@]}"
+      - name: Remove iOS signing material
+        if: always()
+        shell: bash
+        run: bash .github/scripts/cleanup-ios-signing.sh
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: camellia-remote-${{ needs.prepare.outputs.version }}-ios

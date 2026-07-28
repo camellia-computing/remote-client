@@ -31,7 +31,7 @@ if [[ "$MACOS_NATIVE_SIGNING" == signed || "$MACOS_NATIVE_SIGNING" == notarized 
     --force
     --deep
     --options runtime
-    --preserve-metadata=identifier,entitlements,requirements
+    '--preserve-metadata=identifier,entitlements,requirements'
     --sign "$MACOS_SIGNING_IDENTITY"
   )
   if [[ "$MACOS_DISTRIBUTION_TRUST" == public-trust ]]; then
