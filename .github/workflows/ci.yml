@@ -249,6 +249,37 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  windows_rust:
+    name: Windows Rust smoke check (${{ matrix.target }})
+    if: needs.classify.outputs.runtime == 'true'
+    needs: classify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-pc-windows-gnu
+          - aarch64-pc-windows-msvc
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.target }}
+
+      - name: Check Windows input implementation
+        run: >-
+          cargo check --locked -p enigo
+          --target ${{ matrix.target }}
+          --features with_serde
+
   quality:
     name: Rust, Flutter, and Web quality
     if: needs.classify.outputs.runtime == 'true'
@@ -360,6 +391,7 @@ jobs:
       - dependency_review
       - automation
       - generate_bridge
+      - windows_rust
       - quality
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -376,6 +408,7 @@ jobs:
           DEPENDENCY_REVIEW_RESULT: ${{ needs.dependency_review.result }}
           AUTOMATION_RESULT: ${{ needs.automation.result }}
           BRIDGE_RESULT: ${{ needs.generate_bridge.result }}
+          WINDOWS_RUST_RESULT: ${{ needs.windows_rust.result }}
           QUALITY_RESULT: ${{ needs.quality.result }}
         run: |
           failure=false
@@ -395,6 +428,7 @@ jobs:
           fi
           if [[ "$RUNTIME_REQUIRED" == "true" ]]; then
             require_success "bridge generation" "$BRIDGE_RESULT"
+            require_success "Windows Rust smoke check" "$WINDOWS_RUST_RESULT"
             require_success "Rust, Flutter, and Web quality" "$QUALITY_RESULT"
           fi
           if [[ "$EVENT_NAME" == "pull_request" && "$DEPENDENCIES_CHANGED" == "true" ]]; then
