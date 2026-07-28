@@ -3,10 +3,9 @@ use nwg::NativeUi;
 use std::cell::RefCell;
 
 const GIF_DATA: &[u8] = include_bytes!("./res/spin.gif");
-const LABEL_DATA: &[u8] = include_bytes!("./res/label.png");
 const GIF_SIZE: i32 = 32;
-const BG_COLOR: [u8; 3] = [90, 90, 120];
-const BORDER_COLOR: [u8; 3] = [40, 40, 40];
+const BG_COLOR: [u8; 3] = [241, 246, 249];
+const BORDER_COLOR: [u8; 3] = [196, 210, 219];
 const GIF_DELAY: u64 = 30;
 
 #[derive(Default)]
@@ -16,7 +15,7 @@ pub struct BasicApp {
     border_image: nwg::ImageFrame,
     bg_image: nwg::ImageFrame,
     gif_image: nwg::ImageFrame,
-    label_image: nwg::ImageFrame,
+    loading_label: nwg::Label,
 
     border_layout: nwg::GridLayout,
     bg_layout: nwg::GridLayout,
@@ -68,7 +67,7 @@ impl BasicApp {
 
 mod basic_app_ui {
     use super::*;
-    use native_windows_gui::{self as nwg, Bitmap};
+    use native_windows_gui as nwg;
     use nwg::{Event, GridLayoutItem};
     use std::cell::RefCell;
     use std::ops::Deref;
@@ -115,11 +114,12 @@ mod basic_app_ui {
                 .background_color(Some(BG_COLOR))
                 .build(&mut data.gif_image)?;
 
-            nwg::ImageFrame::builder()
+            nwg::Label::builder()
                 .parent(&data.bg_image)
+                .text("Loading...")
+                .h_align(nwg::HTextAlign::Center)
                 .background_color(Some(BG_COLOR))
-                .bitmap(Some(&Bitmap::from_bin(LABEL_DATA)?))
-                .build(&mut data.label_image)?;
+                .build(&mut data.loading_label)?;
 
             nwg::AnimationTimer::builder()
                 .parent(&data.window)
@@ -163,7 +163,7 @@ mod basic_app_ui {
                 .max_column(Some(col_cnt as _))
                 .max_row(Some(row_cnt as _))
                 .child_item(GridLayoutItem::new(&ui.gif_image, 2, 1, 1, 1))
-                .child_item(GridLayoutItem::new(&ui.label_image, 3, 1, 3, 1))
+                .child_item(GridLayoutItem::new(&ui.loading_label, 3, 1, 3, 1))
                 .build(&ui.inner_layout)?;
 
             // Events

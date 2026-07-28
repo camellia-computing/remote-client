@@ -32,6 +32,11 @@ fi
 
 expected_sha256="$(printf '%s' "$expected_sha256" | tr '[:upper:]' '[:lower:]')"
 actual_sha256="$(printf '%s' "$actual_sha256" | tr '[:upper:]' '[:lower:]')"
+# Both GNU sha256sum and Perl shasum prefix the digest with a backslash when
+# their displayed filename contains a backslash. Git for Windows passes native
+# paths in that form, so remove only that output-format marker before applying
+# the strict digest validation below.
+actual_sha256="${actual_sha256#\\}"
 if [[ ! "$actual_sha256" =~ ^[0-9a-f]{64}$ ]]; then
 	echo "SHA-256 utility returned an invalid digest" >&2
 	exit 1

@@ -185,6 +185,22 @@ jobs:
           bash .github/scripts/tests/test_release_signing.sh
           pwsh -NoProfile -File .github/scripts/tests/test_windows_signing_resolver.ps1
 
+  windows_automation:
+    name: Windows build automation
+    if: needs.classify.outputs.automation == 'true'
+    needs: classify
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Test Flutter archive verification under Git for Windows
+        shell: bash
+        run: bash .github/scripts/tests/test_flutter_archive_verification.sh
+
   generate_bridge:
     name: Generate Flutter Rust bridge
     if: needs.classify.outputs.runtime == 'true'
@@ -279,6 +295,47 @@ jobs:
           cargo check --locked -p enigo
           --target ${{ matrix.target }}
           --features with_serde
+
+  windows_portable:
+    name: Windows portable smoke check (${{ matrix.target }})
+    if: needs.classify.outputs.runtime == 'true'
+    needs: classify
+    runs-on: windows-2022
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-pc-windows-msvc
+          - aarch64-pc-windows-msvc
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.target }}
+
+      - name: Build deterministic portable launcher fixture
+        shell: pwsh
+        run: |
+          $payload = Join-Path $env:RUNNER_TEMP 'camellia-portable-smoke-payload'
+          New-Item -ItemType Directory -Force -Path $payload | Out-Null
+          [System.IO.File]::WriteAllBytes(
+            (Join-Path $payload 'camellia-remote.exe'),
+            [byte[]](0x4d, 0x5a)
+          )
+          python -m pip install --disable-pip-version-check -r libs/portable/requirements.txt
+          python libs/portable/generate.py `
+            --folder $payload `
+            --output libs/portable `
+            --executable camellia-remote.exe `
+            --target '${{ matrix.target }}'
 
   quality:
     name: Rust, Flutter, and Web quality
@@ -390,8 +447,10 @@ jobs:
       - metadata
       - dependency_review
       - automation
+      - windows_automation
       - generate_bridge
       - windows_rust
+      - windows_portable
       - quality
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -407,8 +466,10 @@ jobs:
           METADATA_RESULT: ${{ needs.metadata.result }}
           DEPENDENCY_REVIEW_RESULT: ${{ needs.dependency_review.result }}
           AUTOMATION_RESULT: ${{ needs.automation.result }}
+          WINDOWS_AUTOMATION_RESULT: ${{ needs.windows_automation.result }}
           BRIDGE_RESULT: ${{ needs.generate_bridge.result }}
           WINDOWS_RUST_RESULT: ${{ needs.windows_rust.result }}
+          WINDOWS_PORTABLE_RESULT: ${{ needs.windows_portable.result }}
           QUALITY_RESULT: ${{ needs.quality.result }}
         run: |
           failure=false
@@ -425,10 +486,12 @@ jobs:
           require_success "component version validation" "$METADATA_RESULT"
           if [[ "$AUTOMATION_REQUIRED" == "true" ]]; then
             require_success "workflow and build automation" "$AUTOMATION_RESULT"
+            require_success "Windows build automation" "$WINDOWS_AUTOMATION_RESULT"
           fi
           if [[ "$RUNTIME_REQUIRED" == "true" ]]; then
             require_success "bridge generation" "$BRIDGE_RESULT"
             require_success "Windows Rust smoke check" "$WINDOWS_RUST_RESULT"
+            require_success "Windows portable smoke checks" "$WINDOWS_PORTABLE_RESULT"
             require_success "Rust, Flutter, and Web quality" "$QUALITY_RESULT"
           fi
           if [[ "$EVENT_NAME" == "pull_request" && "$DEPENDENCIES_CHANGED" == "true" ]]; then
