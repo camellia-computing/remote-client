@@ -2143,23 +2143,12 @@ impl Connection {
     }
 
     fn validate_password_storage(&self, storage: &str) -> bool {
-        if storage.is_empty() {
-            return false;
-        }
-
-        // Use strict decode success to detect hashed storage.
-        // If decode fails, treat as legacy plaintext storage for compatibility.
-        if let Some(h1) = decode_permanent_password_h1_from_storage(storage) {
-            return self.verify_h1(&h1[..]);
-        }
-
-        // Legacy plaintext storage path.
-        self.validate_password_plain(storage)
+        decode_permanent_password_h1_from_storage(storage).is_some_and(|h1| self.verify_h1(&h1))
     }
 
     fn validate_preset_password_storage(&self, storage: &str, salt: &str) -> bool {
         if salt.is_empty() {
-            return self.validate_password_plain(storage);
+            return false;
         }
         let Some(h1) = decode_preset_password_h1_from_storage(storage) else {
             return false;
@@ -2239,8 +2228,7 @@ impl Connection {
                     log::info!("Permanent password accepted via logon-screen fallback");
                 }
             };
-            // Strictly check storage usability before auth so malformed encrypted/hash storage
-            // cannot fall back to being accepted as legacy plaintext.
+            // Validate the current salted hash formats before authentication.
             let (local_storage, local_salt) =
                 Config::get_local_permanent_password_storage_and_salt();
             if !local_storage.is_empty() {

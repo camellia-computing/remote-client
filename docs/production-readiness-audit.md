@@ -49,7 +49,14 @@ Resolved by invoking only `pwsh` and the current PowerShell 7 installation path.
 
 ### RM-P1-04 — Pre-release compatibility left credential and transfer limits fail-open
 
-Resolved by accepting only the current random-nonce local encryption envelope and current salted permanent-password storage, regenerating rather than importing plaintext device IDs, and removing obsolete installer/CLI aliases. File-transfer requests now use a 10,000-file safe default for missing or invalid configuration and a non-removable 100,000-file hard ceiling.
+Resolved by exposing only fallible local secret-storage APIs, accepting only the
+current random-nonce authenticated envelope and salted permanent-password
+storage, requiring hashed and salted preset passwords, and regenerating rather
+than importing plaintext device IDs. 2FA and notification tokens propagate
+encryption and authentication failures instead of storing or accepting their
+input unchanged. Obsolete installer/CLI aliases were removed. File-transfer
+requests use a 10,000-file safe default for missing or invalid configuration and
+a non-removable 100,000-file hard ceiling.
 
 ### RM-P1-05 — A pinned Flutter action retained a transitive floating dependency
 
@@ -168,9 +175,9 @@ build/stage boundary, and absence of the stale archive copy.
 
 ## Verification evidence
 
-- Shared protocol: the client and server pin commit `b2109000bbfccdee7aac32a2f3c9787d922086ae`; format, Clippy with warnings denied, 102 current-format unit tests, dependency audit, and the Apple-specific hosted compile gate passed.
+- Shared protocol: the client pins commit `15bc4cf00476ea7cc98fc11a52062385ea53af5f`; the paired server update is a merge-order prerequisite. Format, Clippy with warnings denied, 103 current-format unit tests, dependency audit, and the Apple-specific hosted compile gate are required.
 - Identity/relay server: Rust check/format and protocol (98), identity (33), relay (21), utilities (2), and recursion (1) tests passed. The production image built successfully, runs as `10001:10001` with a read-only root, exposes canonical OCI labels, and returns successful help/version output before configuration startup.
-- Client: the Linux workspace/all-target Flutter feature suite passed (88 client, 98 protocol, 4 portable-packer, 30 screen-capture, and 6 input tests, with one documented long-running codec matrix ignored by the ordinary gate). Vendored input implementations are compiled on hosted Windows x64/arm64 and macOS. The required Xcode 26.2 gate links the iOS Rust library, compiles the complete unsigned iOS application, and must revalidate the exact locked Apple dependency graph before merge. Flutter analysis reported no errors or warnings and all 66 widget/unit tests passed. Rust dependency warnings are bounded by an owner/expiry/exit-condition register; every vulnerability, warning increase, or expired exception fails CI. Portable generation is deterministic and rejects unsafe inputs.
+- Client: the Linux Flutter-feature suite contains 92 client tests and 103 shared-protocol tests, including fail-closed signed-session and local 2FA storage contracts. Vendored input implementations are compiled on hosted Windows x64/arm64 and macOS. The required Xcode 26.2 gate links the iOS Rust library, compiles the complete unsigned iOS application, and must revalidate the exact locked Apple dependency graph before merge. Flutter analysis and widget/unit tests remain required hosted gates. Rust dependency warnings are bounded by an owner/expiry/exit-condition register; every vulnerability, warning increase, or expired exception fails CI. Portable generation is deterministic and rejects unsafe inputs.
 - Web client: protobuf codecs were regenerated from the pinned protocol, the TypeScript bridge lint/build and CSP/provenance synchronization check passed, and npm reported no vulnerabilities at the configured threshold.
 - Management: Ruff format/check, Django migration drift, 48 ordinary tests (2 environment-specific skips), the real PostgreSQL test/deployment path, Compose expansion through Docker Desktop, release metadata, and systemd hardening analysis passed.
 - All 22 repository workflow files passed Actionlint 1.7.12; the vendored setup script also passed ShellCheck and resolved Flutter 3.44.5 manifests for Linux, Windows, Intel macOS, and Apple Silicon macOS. Final management-image/Web provenance, every target-platform package, and platform-native acceptance remain mandatory hosted gates even where an equivalent local runner is unavailable.
