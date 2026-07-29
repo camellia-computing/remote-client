@@ -1,6 +1,6 @@
 # Camellia Remote production-readiness audit
 
-Audit date: 2026-07-28
+Audit date: 2026-07-29
 Scope: `remote-client`, `remote-protocol`, `remote-server`, and `remote-management-server`
 Baseline policy: fresh repositories and current product/data identities only
 
@@ -106,11 +106,37 @@ instead of embedding an untracked PNG. The launcher now has no hidden local
 resource dependency, and required clean-checkout x64 and arm64 MSVC jobs compile
 the portable package itself before release packaging can run.
 
+### RM-P1-13 — The vendored macOS input implementation was not compiled by required CI
+
+Resolved by correcting the input crate's crate-root CoreGraphics imports and
+adding a hosted macOS input compile to the protected aggregate. The same Apple
+job also compiles the complete iOS Rust library, so platform-conditional native
+code and linker failures are rejected before a release candidate starts.
+
+### RM-P1-14 — Apple build systems declared conflicting deployment targets
+
+Resolved by adopting the current supported floors of iOS 13.0 and macOS 10.15
+across Flutter/Xcode, CocoaPods, Rust and native C/C++ builds. The universal
+macOS package preserves 10.15 for x86_64 and uses the required macOS 11.0 floor
+for Apple Silicon. Repository-owned vcpkg triplets encode those slice-specific
+targets, FFmpeg inherits the triplet instead of hard-coding iOS 8 with obsolete
+bitcode flags, and a fail-closed policy validator checks every declaration in
+both CI and release workflows.
+
+### RM-P1-15 — Cross-target vcpkg builds compiled unused host media libraries
+
+Resolved by removing legacy host duplicates of runtime codec/image libraries
+from the root manifest. Build scripts link and generate bindings from the target
+triplet, while actual build tools remain host dependencies of their owning
+ports. The libvpx overlay now passes configure options as discrete arguments,
+uses NASM only for x86/x64, and derives both macOS and iOS compiler minimums from
+the selected triplet.
+
 ## Verification evidence
 
 - Shared protocol: the client and server pin commit `2daff94dc8d4dae97b04ff47563f70842c47e28b`; format, Clippy with warnings denied, 98 current-format unit tests, and the Apple-specific hosted compile gate passed.
 - Identity/relay server: Rust check/format and protocol (98), identity (33), relay (21), utilities (2), and recursion (1) tests passed. The production image built successfully, runs as `10001:10001` with a read-only root, exposes canonical OCI labels, and returns successful help/version output before configuration startup.
-- Client: the Linux workspace/all-target Flutter feature suite passed (88 client, 98 protocol, 4 portable-packer, 30 screen-capture, and 6 input tests, with one documented long-running codec matrix ignored by the ordinary gate). The vendored Windows input implementation also passes locked x64 and arm64 MSVC target checks. Flutter analysis reported no errors or warnings and all 66 widget/unit tests passed. Rust dependency warnings are bounded by an owner/expiry/exit-condition register; every vulnerability, warning increase, or expired exception fails CI. Portable generation is deterministic and rejects unsafe inputs.
+- Client: the Linux workspace/all-target Flutter feature suite passed (88 client, 98 protocol, 4 portable-packer, 30 screen-capture, and 6 input tests, with one documented long-running codec matrix ignored by the ordinary gate). Vendored input implementations are compiled on hosted Windows x64/arm64 and macOS, and the iOS Rust library is linked on a hosted Apple runner. Flutter analysis reported no errors or warnings and all 66 widget/unit tests passed. Rust dependency warnings are bounded by an owner/expiry/exit-condition register; every vulnerability, warning increase, or expired exception fails CI. Portable generation is deterministic and rejects unsafe inputs.
 - Web client: protobuf codecs were regenerated from the pinned protocol, the TypeScript bridge lint/build and CSP/provenance synchronization check passed, and npm reported no vulnerabilities at the configured threshold.
 - Management: Ruff format/check, Django migration drift, 48 ordinary tests (2 environment-specific skips), the real PostgreSQL test/deployment path, Compose expansion through Docker Desktop, release metadata, and systemd hardening analysis passed.
 - All 22 repository workflow files passed Actionlint 1.7.12; the vendored setup script also passed ShellCheck and resolved Flutter 3.44.5 manifests for Linux, Windows, Intel macOS, and Apple Silicon macOS. Final management-image/Web provenance, every target-platform package, and platform-native acceptance remain mandatory hosted gates even where an equivalent local runner is unavailable.

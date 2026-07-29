@@ -173,14 +173,17 @@ elseif(VCPKG_TARGET_IS_OSX)
 --enable-hwaccel=h264_videotoolbox,hevc_videotoolbox \
 ")
 elseif(VCPKG_TARGET_IS_IOS)
+    if(NOT VCPKG_OSX_DEPLOYMENT_TARGET)
+        message(FATAL_ERROR "The iOS triplet must define VCPKG_OSX_DEPLOYMENT_TARGET")
+    endif()
     string(APPEND OPTIONS "\
 --arch=arm64 \
 --disable-autodetect \
 --disable-hwaccels \
 --disable-encoders \
 --disable-videotoolbox \
---extra-cflags=\"-arch arm64 -mios-version-min=8.0 -fembed-bitcode\" \
---extra-ldflags=\"-arch arm64 -mios-version-min=8.0 -fembed-bitcode\" \
+--extra-cflags=\"-arch arm64 -mios-version-min=${VCPKG_OSX_DEPLOYMENT_TARGET}\" \
+--extra-ldflags=\"-arch arm64 -mios-version-min=${VCPKG_OSX_DEPLOYMENT_TARGET}\" \
 ")
 elseif(VCPKG_CMAKE_SYSTEM_NAME STREQUAL "Android")
     string(APPEND OPTIONS "\

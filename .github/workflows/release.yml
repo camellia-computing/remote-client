@@ -575,6 +575,8 @@ jobs:
       inputs.build_macos_universal
     runs-on: macos-15
     timeout-minutes: 90
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "10.15"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1062,6 +1064,8 @@ jobs:
       inputs.build_ios
     runs-on: macos-15
     timeout-minutes: 90
+    env:
+      IPHONEOS_DEPLOYMENT_TARGET: "13.0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
