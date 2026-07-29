@@ -3,6 +3,7 @@ name = "camellia-remote"
 version = "0.1.0"
 authors = ["Camellia Computing", "RustDesk contributors"]
 edition = "2021"
+rust-version = "1.97"
 build= "build.rs"
 description = "Secure cross-platform remote desktop client for Camellia Remote"
 license = "AGPL-3.0-only"

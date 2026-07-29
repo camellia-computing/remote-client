@@ -13,20 +13,20 @@ use camellia_remote_protocol::whoami;
 use camellia_remote_protocol::{
     allow_err,
     anyhow::{anyhow, Context},
-    bail, base64,
+    bail,
+    base64::{engine::general_purpose::STANDARD as BASE64, Engine as _},
     bytes::Bytes,
     config::{
         self, keys, use_ws, Config, LocalConfig, CONNECT_TIMEOUT, READ_TIMEOUT, RENDEZVOUS_PORT,
     },
+    crypto::{box_, secretbox, sign},
     futures::future::join_all,
     futures_util::future::poll_fn,
     get_version_number, log,
     message_proto::*,
     protobuf::{Enum, Message as _},
     rendezvous_proto::*,
-    socket_client,
-    sodiumoxide::crypto::{box_, secretbox, sign},
-    timeout,
+    socket_client, timeout,
     tls::{get_cached_tls_type, upsert_tls_cache, TlsType},
     tokio::{
         self,
@@ -1591,14 +1591,14 @@ pub fn handle_url_scheme(url: String) {
 
 #[inline]
 pub fn encode64<T: AsRef<[u8]>>(input: T) -> String {
-    #[allow(deprecated)]
-    base64::encode(input)
+    BASE64.encode(input)
 }
 
 #[inline]
-pub fn decode64<T: AsRef<[u8]>>(input: T) -> Result<Vec<u8>, base64::DecodeError> {
-    #[allow(deprecated)]
-    base64::decode(input)
+pub fn decode64<T: AsRef<[u8]>>(
+    input: T,
+) -> Result<Vec<u8>, camellia_remote_protocol::base64::DecodeError> {
+    BASE64.decode(input)
 }
 
 pub async fn get_key(sync: bool) -> String {
@@ -1755,7 +1755,7 @@ async fn secure_tcp_impl(conn: &mut Stream, key: &str, log_on_success: bool) -> 
         .map_err(|_| anyhow!("Signature mismatch in key exchange"))?;
     let (asymmetric_value, symmetric_value, key) = create_symmetric_key_msg(
         get_pk(&their_pk_b).context("Wrong their public length in key exchange")?,
-    );
+    )?;
     let mut msg_out = RendezvousMessage::new();
     msg_out.set_key_exchange(KeyExchange {
         keys: vec![asymmetric_value, symmetric_value],
@@ -1794,7 +1794,7 @@ fn get_pk(pk: &[u8]) -> Option<[u8; 32]> {
 #[inline]
 pub fn get_rs_pk(str_base64: &str) -> Option<sign::PublicKey> {
     if let Ok(pk) = crate::decode64(str_base64) {
-        get_pk(&pk).map(|x| sign::PublicKey(x))
+        get_pk(&pk).and_then(|x| sign::PublicKey::from_slice(&x))
     } else {
         None
     }
@@ -1811,13 +1811,16 @@ pub fn decode_id_pk(signed: &[u8], key: &sign::PublicKey) -> ResultType<(String,
     }
 }
 
-pub fn create_symmetric_key_msg(their_pk_b: [u8; 32]) -> (Bytes, Bytes, secretbox::Key) {
+pub fn create_symmetric_key_msg(
+    their_pk_b: [u8; 32],
+) -> ResultType<(Bytes, Bytes, secretbox::Key)> {
     let their_pk_b = box_::PublicKey(their_pk_b);
     let (our_pk_b, out_sk_b) = box_::gen_keypair();
     let key = secretbox::gen_key();
     let nonce = box_::Nonce([0u8; box_::NONCEBYTES]);
-    let sealed_key = box_::seal(&key.0, &nonce, &their_pk_b, &out_sk_b);
-    (Vec::from(our_pk_b.0).into(), sealed_key.into(), key)
+    let sealed_key = box_::seal(&key.0, &nonce, &their_pk_b, &out_sk_b)
+        .map_err(|_| anyhow!("Handshake failed: session key encryption failed"))?;
+    Ok((Vec::from(our_pk_b.0).into(), sealed_key.into(), key))
 }
 
 #[inline]
