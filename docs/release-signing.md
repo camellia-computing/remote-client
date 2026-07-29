@@ -215,6 +215,25 @@ replacement and claim update continuity. For this pre-launch product, choose a
 new identity only after explicitly confirming that no update lineage needs the
 old key.
 
+When the original controlled keystore is available, use the organization
+preparation command to validate it and create the exact GitHub Actions group
+without modifying the historical key:
+
+```bash
+bash scripts/prepare-camellia-android-release-keystore.sh \
+  "$HOME/Secure/camellia-android-existing-update-key" \
+  /controlled-inputs/original-release.keystore \
+  original-release-alias
+```
+
+Review the resulting public identity JSON, `github-actions/metadata.json`, and
+`github-actions/variables.env`, then use its PowerShell 7 or Bash uploader with
+the single repository scope `camellia-computing/remote-client`. The prepared
+bundle supports historical JKS and PKCS#12 stores, including distinct JKS store
+and key passwords; its SHA-256 value is the one the release workflow and the
+organization registry must both verify. Preserve the original offline backup
+before uploading anything.
+
 The workflow validates the alias and certificate, builds without the debug-key
 fallback, verifies the APK/AAB signatures, and records the full certificate
 SHA-256 digest. Back up the keystore and credentials separately: this key is the
