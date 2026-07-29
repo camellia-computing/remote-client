@@ -123,6 +123,39 @@ class SigningMetadataTests(unittest.TestCase):
                 expect_success=False,
             )
 
+    def test_unclaimed_artifact_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "client.zip").write_bytes(b"zip")
+            (root / "unexpected.bin").write_bytes(b"unexpected")
+            record = {
+                "schema_version": 1,
+                "platform": "windows",
+                "architecture": "x64",
+                "native_signing": "unsigned",
+                "distribution_trust": "none",
+                "identity": None,
+                "artifact_signing": "none",
+                "artifact_signing_identity": None,
+                "delivery": "installable",
+                "artifacts": ["client.zip"],
+            }
+            (root / "native-signing-windows-x64.json").write_text(
+                json.dumps(record), encoding="utf-8"
+            )
+            manifest = root / "versions.json"
+            manifest.write_text('{"version":"1.2.3"}\n', encoding="utf-8")
+            self.run_script(
+                "aggregate",
+                "--asset-directory",
+                str(root),
+                "--manifest",
+                str(manifest),
+                "--report",
+                str(root / "report.md"),
+                expect_success=False,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

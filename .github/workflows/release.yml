@@ -405,7 +405,7 @@ jobs:
           }
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: camellia-remote-${{ needs.prepare.outputs.version }}-windows-x64
+          name: camellia-remote-${{ needs.prepare.outputs.version }}-windows-x64-run-${{ github.run_id }}-${{ github.run_attempt }}
           path: artifacts/*
           if-no-files-found: error
           retention-days: 7
@@ -557,7 +557,7 @@ jobs:
           }
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: camellia-remote-${{ needs.prepare.outputs.version }}-windows-arm64
+          name: camellia-remote-${{ needs.prepare.outputs.version }}-windows-arm64-run-${{ github.run_id }}-${{ github.run_attempt }}
           path: artifacts/*
           if-no-files-found: error
           retention-days: 7
@@ -670,7 +670,7 @@ jobs:
         run: bash .github/scripts/cleanup-macos-signing.sh
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: camellia-remote-${{ needs.prepare.outputs.version }}-macos-universal
+          name: camellia-remote-${{ needs.prepare.outputs.version }}-macos-universal-run-${{ github.run_id }}-${{ github.run_attempt }}
           path: artifacts/*
           if-no-files-found: error
           retention-days: 7
@@ -831,7 +831,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: ${{ matrix.enabled }}
         with:
-          name: camellia-remote-${{ needs.prepare.outputs.version }}-linux-${{ matrix.arch }}
+          name: camellia-remote-${{ needs.prepare.outputs.version }}-linux-${{ matrix.arch }}-run-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             artifacts/*.tar.gz
             artifacts/*.deb
@@ -1046,7 +1046,7 @@ jobs:
         run: rm -f -- "${CAMELLIA_ANDROID_STORE_FILE:-}"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: camellia-remote-${{ needs.prepare.outputs.version }}-android-arm64
+          name: camellia-remote-${{ needs.prepare.outputs.version }}-android-arm64-run-${{ github.run_id }}-${{ github.run_attempt }}
           path: artifacts/*
           if-no-files-found: error
           retention-days: 7
@@ -1159,7 +1159,7 @@ jobs:
         run: bash .github/scripts/cleanup-ios-signing.sh
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: camellia-remote-${{ needs.prepare.outputs.version }}-ios
+          name: camellia-remote-${{ needs.prepare.outputs.version }}-ios-run-${{ github.run_id }}-${{ github.run_attempt }}
           path: artifacts/*
           if-no-files-found: error
           retention-days: 7
@@ -1213,13 +1213,13 @@ jobs:
             --delivery deployment-artifact
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: camellia-remote-${{ needs.prepare.outputs.version }}-web
+          name: camellia-remote-${{ needs.prepare.outputs.version }}-web-run-${{ github.run_id }}-${{ github.run_attempt }}
           path: artifacts/*
           if-no-files-found: error
           retention-days: 7
 
-  publish_release:
-    name: Publish Release Assets
+  finalize_candidate:
+    name: Candidate evidence
     needs:
       - prepare
       - approval
@@ -1231,8 +1231,8 @@ jobs:
       - build_ios
       - build_web
     if: >-
-      always() && inputs.publish &&
-      needs.prepare.result == 'success' && needs.approval.result == 'success' &&
+      always() && needs.prepare.result == 'success' &&
+      (needs.approval.result == 'success' || needs.approval.result == 'skipped') &&
       (!inputs.build_windows_x64 || needs.build_windows_x64.result == 'success') &&
       (!inputs.build_windows_arm64 || needs.build_windows_arm64.result == 'success') &&
       (!inputs.build_macos_universal || needs.build_macos_universal.result == 'success') &&
@@ -1241,11 +1241,194 @@ jobs:
       (!inputs.build_ios || needs.build_ios.result == 'success') &&
       (!inputs.build_web || needs.build_web.result == 'success')
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30
     permissions:
+      actions: read
       attestations: write
       contents: read
       id-token: write
+    steps:
+      - name: Checkout immutable candidate source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.prepare.outputs.commit }}
+          submodules: recursive
+
+      - name: Download exact-attempt platform artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: camellia-remote-${{ needs.prepare.outputs.version }}-*-run-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-inputs
+
+      - name: Assemble exact candidate inventory
+        shell: bash
+        env:
+          ANDROID: ${{ inputs.build_android_arm64 }}
+          APP_VERSION: ${{ needs.prepare.outputs.app_version }}
+          BUILD_NUMBER: ${{ needs.prepare.outputs.build_number }}
+          CI_RUN_ID: ${{ needs.prepare.outputs.ci_run_id }}
+          HBB_COMMON_COMMIT: ${{ needs.prepare.outputs.camellia_remote_protocol }}
+          IOS: ${{ inputs.build_ios }}
+          LINUX_ARM64: ${{ inputs.build_linux_arm64 }}
+          LINUX_X64: ${{ inputs.build_linux_x64 }}
+          MACOS: ${{ inputs.build_macos_universal }}
+          PUBLISH: ${{ inputs.publish }}
+          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          SOURCE_DATE_EPOCH: ${{ needs.prepare.outputs.source_date_epoch }}
+          WEB: ${{ inputs.build_web }}
+          WINDOWS_ARM64: ${{ inputs.build_windows_arm64 }}
+          WINDOWS_X64: ${{ inputs.build_windows_x64 }}
+        run: |
+          args=(
+            assemble
+            --input-directory "$RUNNER_TEMP/release-inputs"
+            --output-directory "$RUNNER_TEMP/release-assets"
+            --version "$RELEASE_VERSION"
+            --app-version "$APP_VERSION"
+            --build-number "$BUILD_NUMBER"
+            --tag "$RELEASE_TAG"
+            --source-commit "$RELEASE_COMMIT"
+            --protocol-commit "$HBB_COMMON_COMMIT"
+            --verified-ci-run-id "$CI_RUN_ID"
+            --source-date-epoch "$SOURCE_DATE_EPOCH"
+            --candidate-run-id "$GITHUB_RUN_ID"
+            --candidate-run-attempt "$GITHUB_RUN_ATTEMPT"
+            --repository "$GITHUB_REPOSITORY"
+            --workflow-ref "$GITHUB_WORKFLOW_REF"
+            --publication-requested "$PUBLISH"
+            --rust-toolchain "$RUST_TOOLCHAIN"
+            --flutter-version "$FLUTTER_VERSION"
+            --flutter-revision "$FLUTTER_REVISION"
+            --node-version "$NODE_VERSION"
+            --android-ndk-version "$ANDROID_NDK_VERSION"
+          )
+          if [[ "$WINDOWS_X64" == "true" ]]; then args+=(--selected-platform windows-x64); fi
+          if [[ "$WINDOWS_ARM64" == "true" ]]; then args+=(--selected-platform windows-arm64); fi
+          if [[ "$MACOS" == "true" ]]; then args+=(--selected-platform macos-universal); fi
+          if [[ "$LINUX_X64" == "true" ]]; then args+=(--selected-platform linux-x64); fi
+          if [[ "$LINUX_ARM64" == "true" ]]; then args+=(--selected-platform linux-arm64); fi
+          if [[ "$ANDROID" == "true" ]]; then args+=(--selected-platform android-arm64); fi
+          if [[ "$IOS" == "true" ]]; then args+=(--selected-platform ios); fi
+          if [[ "$WEB" == "true" ]]; then args+=(--selected-platform web); fi
+          python3 .github/scripts/candidate_evidence.py "${args[@]}"
+
+      - name: Aggregate native signing evidence
+        shell: bash
+        run: |
+          python3 .github/scripts/signing_metadata.py aggregate \
+            --asset-directory "$RUNNER_TEMP/release-assets" \
+            --manifest "$RUNNER_TEMP/release-assets/versions.json" \
+            --report "$RUNNER_TEMP/release-assets/NATIVE-SIGNING.md"
+
+      - name: Generate pinned SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          artifact-name: camellia-remote-${{ needs.prepare.outputs.version }}.spdx.json
+          format: spdx-json
+          output-file: ${{ runner.temp }}/release-assets/camellia-remote-${{ needs.prepare.outputs.version }}.spdx.json
+          path: .
+          syft-version: v1.50.0
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Generate attestation subject inventory
+        run: >-
+          python3 .github/scripts/candidate_evidence.py checksums
+          --asset-directory "$RUNNER_TEMP/release-assets"
+
+      - name: Attest exact candidate inventory
+        id: attest
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        with:
+          create-storage-record: false
+          subject-checksums: ${{ runner.temp }}/release-assets/SHA256SUMS
+
+      - name: Cryptographically verify provenance bundle
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROVENANCE_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+          SIGNER_WORKFLOW: ${{ github.repository }}/.github/workflows/release.yml
+        run: |
+          [[ -f "$PROVENANCE_BUNDLE" ]] || {
+            echo "attestation action did not produce a provenance bundle" >&2
+            exit 1
+          }
+          while IFS= read -r checksum; do
+            name="${checksum#*  }"
+            gh attestation verify "$RUNNER_TEMP/release-assets/$name" \
+              --bundle "$PROVENANCE_BUNDLE" \
+              --deny-self-hosted-runners \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$SIGNER_WORKFLOW" >/dev/null
+          done < "$RUNNER_TEMP/release-assets/SHA256SUMS"
+
+      - name: Preserve provenance bundle and finalize checksums
+        shell: bash
+        env:
+          PROVENANCE_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          [[ -f "$PROVENANCE_BUNDLE" ]] || {
+            echo "attestation action did not produce a provenance bundle" >&2
+            exit 1
+          }
+          cp -- "$PROVENANCE_BUNDLE" \
+            "$RUNNER_TEMP/release-assets/camellia-remote-${RELEASE_VERSION}.provenance.intoto.jsonl"
+          python3 .github/scripts/candidate_evidence.py checksums \
+            --asset-directory "$RUNNER_TEMP/release-assets"
+
+      - name: Verify final candidate evidence
+        run: >-
+          python3 .github/scripts/candidate_evidence.py verify
+          --asset-directory "$RUNNER_TEMP/release-assets"
+          --version '${{ needs.prepare.outputs.version }}'
+          --source-commit '${{ needs.prepare.outputs.commit }}'
+
+      - name: Upload consolidated candidate evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: candidate-assets-${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.commit }}-run-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-assets/*
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Summarize candidate evidence
+        shell: bash
+        env:
+          CANDIDATE_ARTIFACT: candidate-assets-${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.commit }}-run-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          {
+            echo "### Consolidated candidate evidence"
+            echo
+            echo "- Artifact: \`$CANDIDATE_ARTIFACT\`"
+            echo "- Retention: 7 days"
+            echo "- SPDX generator: \`syft v1.50.0\`"
+            echo
+            echo '```text'
+            cat "$RUNNER_TEMP/release-assets/SHA256SUMS"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  publish_release:
+    name: Publish Release Assets
+    needs:
+      - prepare
+      - approval
+      - finalize_candidate
+    if: >-
+      always() && inputs.publish &&
+      needs.prepare.result == 'success' &&
+      needs.approval.result == 'success' &&
+      needs.finalize_candidate.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
     steps:
       - name: Checkout immutable release metadata
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1279,96 +1462,19 @@ jobs:
             fi
           done
 
-      - name: Download release artifacts
+      - name: Download consolidated candidate evidence
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: camellia-remote-*
-          path: release-inputs
-      - name: Generate checksums and version manifest
-        env:
-          APP_VERSION: ${{ needs.prepare.outputs.app_version }}
-          BUILD_NUMBER: ${{ needs.prepare.outputs.build_number }}
-          CI_RUN_ID: ${{ needs.prepare.outputs.ci_run_id }}
-          HBB_COMMON_COMMIT: ${{ needs.prepare.outputs.camellia_remote_protocol }}
-          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
-          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
-          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
-          SOURCE_DATE_EPOCH: ${{ needs.prepare.outputs.source_date_epoch }}
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import json
-          import os
-          import shutil
+          name: candidate-assets-${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.commit }}-run-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-assets
 
-          source = Path("release-inputs")
-          output = Path("release-assets")
-          output.mkdir()
+      - name: Reverify candidate before publication
+        run: >-
+          python3 .github/scripts/candidate_evidence.py verify
+          --asset-directory release-assets
+          --version '${{ needs.prepare.outputs.version }}'
+          --source-commit '${{ needs.prepare.outputs.commit }}'
 
-          for path in sorted(source.glob("*/*")):
-              if not path.is_file():
-                  continue
-              destination = output / path.name
-              if destination.exists():
-                  raise RuntimeError(f"duplicate release filename: {path.name}")
-              shutil.copy2(path, destination)
-
-          artifacts = sorted(output.iterdir())
-          if not artifacts:
-              raise RuntimeError("no release artifacts were downloaded")
-
-          manifest = {
-              "version": os.environ["RELEASE_VERSION"],
-              "app_version": os.environ["APP_VERSION"],
-              "build_number": int(os.environ["BUILD_NUMBER"]),
-              "tag": os.environ["RELEASE_TAG"],
-              "source_commit": os.environ["RELEASE_COMMIT"],
-              "camellia_remote_protocol_commit": os.environ["HBB_COMMON_COMMIT"],
-              "verified_ci_run_id": int(os.environ["CI_RUN_ID"]),
-              "source_date_epoch": int(os.environ["SOURCE_DATE_EPOCH"]),
-              "dependency_mode": "locked",
-              "rust_toolchain": os.environ["RUST_TOOLCHAIN"],
-              "flutter_version": os.environ["FLUTTER_VERSION"],
-              "flutter_revision": os.environ["FLUTTER_REVISION"],
-              "node_version": os.environ["NODE_VERSION"],
-              "android_ndk_version": os.environ["ANDROID_NDK_VERSION"],
-          }
-          (output / "versions.json").write_text(
-              json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-              encoding="utf-8",
-          )
-
-          PY
-      - name: Aggregate signing metadata and generate checksums
-        shell: bash
-        run: |
-          python3 .github/scripts/signing_metadata.py aggregate \
-            --asset-directory release-assets \
-            --manifest release-assets/versions.json \
-            --report release-assets/NATIVE-SIGNING.md
-          python3 - <<'PY'
-          from pathlib import Path
-          import hashlib
-
-          output = Path("release-assets")
-          checksums = []
-          for path in sorted(output.iterdir()):
-              if not path.is_file() or path.name == "SHA256SUMS":
-                  continue
-              digest = hashlib.sha256(path.read_bytes()).hexdigest()
-              checksums.append(f"{digest}  {path.name}")
-          if not checksums:
-              raise RuntimeError("no release assets are available for checksums")
-          (output / "SHA256SUMS").write_text(
-              "\n".join(checksums) + "\n",
-              encoding="utf-8",
-          )
-          PY
-      - name: Attest release artifacts
-        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
-        with:
-          create-storage-record: false
-          subject-path: release-assets/*
       - name: Create, read back, and publish immutable Release
         env:
           GH_TOKEN: ${{ steps.release-token.outputs.token }}

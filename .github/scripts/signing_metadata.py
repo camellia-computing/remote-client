@@ -105,6 +105,22 @@ def aggregate(args: argparse.Namespace) -> None:
         records.append(record)
 
     manifest_path = Path(args.manifest)
+    if manifest_path.parent.resolve() != asset_directory.resolve():
+        raise ValueError("signing manifest must be inside the asset directory")
+    expected_artifacts = {
+        path.name
+        for path in asset_directory.iterdir()
+        if path.is_file()
+        and path.name != manifest_path.name
+        and not path.name.startswith("native-signing-")
+    }
+    unclaimed_artifacts = sorted(expected_artifacts - claimed_artifacts)
+    if unclaimed_artifacts:
+        raise ValueError(
+            "release artifacts are missing signing metadata claims: "
+            + ", ".join(unclaimed_artifacts)
+        )
+
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["native_artifacts"] = sorted(
         records, key=lambda item: (item["platform"], item["architecture"])
