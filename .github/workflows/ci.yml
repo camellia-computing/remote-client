@@ -351,8 +351,6 @@ jobs:
     env:
       XCODE_VERSION: "26.2"
       DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
-      IPHONEOS_DEPLOYMENT_TARGET: "13.0"
-      MACOSX_DEPLOYMENT_TARGET: "10.15"
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -417,10 +415,13 @@ jobs:
 
       - name: Check macOS input implementation
         env:
+          MACOSX_DEPLOYMENT_TARGET: "10.15"
           RUSTFLAGS: -D warnings
         run: cargo check --locked -p enigo --features with_serde
 
       - name: Compile iOS Rust library
+        env:
+          IPHONEOS_DEPLOYMENT_TARGET: "13.0"
         run: |
           "$VCPKG_ROOT/vcpkg" install \
             --triplet arm64-ios \
@@ -432,6 +433,8 @@ jobs:
 
       - name: Compile unsigned iOS application
         working-directory: flutter
+        env:
+          IPHONEOS_DEPLOYMENT_TARGET: "13.0"
         run: flutter build ipa --release --no-codesign
 
       - name: Reject Apple build source migrations

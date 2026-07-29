@@ -84,6 +84,41 @@ def require_job_environment(
     require_values(values, expected, f"{source} {variable}")
 
 
+def reject_job_environment(job: str, variable: str, source: str) -> None:
+    if re.search(rf"^ {{6}}{re.escape(variable)}:", job, re.MULTILINE):
+        raise PolicyError(
+            f"{source} must not expose {variable} to every step in a mixed-platform job"
+        )
+
+
+def workflow_step(job: str, step_name: str, source: str) -> str:
+    match = re.search(
+        rf"^      - name: {re.escape(step_name)}\n"
+        r"(?P<body>.*?)(?=^      - (?:name:|uses:)|\Z)",
+        job,
+        re.MULTILINE | re.DOTALL,
+    )
+    if match is None:
+        raise PolicyError(f"{source} is missing the {step_name} step")
+    return match.group("body")
+
+
+def require_step_environment(
+    step: str, variable: str, expected: str, source: str
+) -> None:
+    values = unique_values(
+        rf"^ {{10}}{re.escape(variable)}:\s*([^\s#]+)",
+        step,
+        f"{source} {variable}",
+    )
+    require_values(values, expected, f"{source} {variable}")
+
+
+def reject_step_environment(step: str, variable: str, source: str) -> None:
+    if re.search(rf"^ {{10}}{re.escape(variable)}:", step, re.MULTILINE):
+        raise PolicyError(f"{source} must not declare {variable}")
+
+
 def require_job_runner(job: str, expected: str, source: str) -> None:
     values = unique_values(
         r"^ {4}runs-on:\s*([^\s#]+)",
@@ -323,6 +358,14 @@ def verify() -> tuple[str, str]:
         macos_target,
         "release build_macos_universal",
     )
+    reject_job_environment(
+        release_ios_job, "MACOSX_DEPLOYMENT_TARGET", "release build_ios"
+    )
+    reject_job_environment(
+        release_macos_job,
+        "IPHONEOS_DEPLOYMENT_TARGET",
+        "release build_macos_universal",
+    )
     verify_apple_job_toolchain(release_ios_job, "release build_ios")
     verify_apple_job_toolchain(
         release_macos_job, "release build_macos_universal"
@@ -345,17 +388,43 @@ def verify() -> tuple[str, str]:
 
     ci = read(".github/workflows/ci.yml")
     apple_job = workflow_job(ci, "apple_native", ".github/workflows/ci.yml")
-    require_job_environment(
-        apple_job,
-        "IPHONEOS_DEPLOYMENT_TARGET",
-        ios_target,
-        "CI apple_native",
+    reject_job_environment(apple_job, "IPHONEOS_DEPLOYMENT_TARGET", "CI apple_native")
+    reject_job_environment(apple_job, "MACOSX_DEPLOYMENT_TARGET", "CI apple_native")
+    macos_check_step = workflow_step(
+        apple_job, "Check macOS input implementation", "CI apple_native"
     )
-    require_job_environment(
-        apple_job,
+    ios_rust_step = workflow_step(
+        apple_job, "Compile iOS Rust library", "CI apple_native"
+    )
+    ios_app_step = workflow_step(
+        apple_job, "Compile unsigned iOS application", "CI apple_native"
+    )
+    require_step_environment(
+        macos_check_step,
         "MACOSX_DEPLOYMENT_TARGET",
         macos_target,
-        "CI apple_native",
+        "CI macOS input check",
+    )
+    reject_step_environment(
+        macos_check_step, "IPHONEOS_DEPLOYMENT_TARGET", "CI macOS input check"
+    )
+    require_step_environment(
+        ios_rust_step,
+        "IPHONEOS_DEPLOYMENT_TARGET",
+        ios_target,
+        "CI iOS Rust build",
+    )
+    reject_step_environment(
+        ios_rust_step, "MACOSX_DEPLOYMENT_TARGET", "CI iOS Rust build"
+    )
+    require_step_environment(
+        ios_app_step,
+        "IPHONEOS_DEPLOYMENT_TARGET",
+        ios_target,
+        "CI iOS application build",
+    )
+    reject_step_environment(
+        ios_app_step, "MACOSX_DEPLOYMENT_TARGET", "CI iOS application build"
     )
     verify_apple_job_toolchain(apple_job, "CI apple_native")
     require_job_command(
