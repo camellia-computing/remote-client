@@ -5,6 +5,81 @@ repository="$(cd "$(dirname "$0")/../../.." && pwd)"
 test_root="$(mktemp -d "${RUNNER_TEMP:-/tmp}/camellia-remote-signing-tests.XXXXXX")"
 trap 'rm -rf -- "$test_root"' EXIT
 
+ios_build_script="$repository/.github/scripts/build-ios-release.sh"
+ios_workspace="$test_root/ios-workspace"
+fake_bin="$test_root/fake-bin"
+flutter_log="$test_root/flutter.log"
+mkdir -p "$ios_workspace/flutter" "$fake_bin"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  "printf '%s\n' \"\$*\" >> \"\$FLUTTER_LOG\"" \
+  > "$fake_bin/flutter"
+chmod +x "$fake_bin/flutter"
+
+PATH="$fake_bin:$PATH" \
+FLUTTER_LOG="$flutter_log" \
+GITHUB_WORKSPACE="$ios_workspace" \
+IOS_NATIVE_SIGNING=unsigned \
+  bash "$ios_build_script"
+grep -Fqx 'build ipa --release --no-codesign' "$flutter_log"
+
+if PATH="$fake_bin:$PATH" \
+  FLUTTER_LOG="$flutter_log" \
+  GITHUB_WORKSPACE="$ios_workspace" \
+  IOS_NATIVE_SIGNING=unexpected \
+  bash "$ios_build_script" >/dev/null 2>&1; then
+  echo 'unknown iOS signing mode unexpectedly succeeded' >&2
+  exit 1
+fi
+
+if PATH="$fake_bin:$PATH" \
+  FLUTTER_LOG="$flutter_log" \
+  GITHUB_WORKSPACE="$ios_workspace" \
+  IOS_NATIVE_SIGNING=signed \
+  bash "$ios_build_script" >/dev/null 2>&1; then
+  echo 'signed iOS build without export options unexpectedly succeeded' >&2
+  exit 1
+fi
+
+ios_export_options="$test_root/ExportOptions.plist"
+: > "$ios_export_options"
+: > "$flutter_log"
+PATH="$fake_bin:$PATH" \
+FLUTTER_LOG="$flutter_log" \
+GITHUB_WORKSPACE="$ios_workspace" \
+IOS_EXPORT_OPTIONS_PLIST="$ios_export_options" \
+IOS_NATIVE_SIGNING=signed \
+  bash "$ios_build_script"
+grep -Fqx \
+  "build ipa --release --export-options-plist=$ios_export_options" \
+  "$flutter_log"
+
+macos_stage_script="$repository/.github/scripts/stage-macos-release.sh"
+empty_products="$test_root/empty-macos-products"
+multiple_products="$test_root/multiple-macos-products"
+symlink_products="$test_root/symlink-macos-products"
+mkdir -p \
+  "$empty_products" \
+  "$multiple_products/First.app" \
+  "$multiple_products/Second.app" \
+  "$symlink_products"
+ln -s "$multiple_products/First.app" "$symlink_products/Camellia.app"
+for invalid_products in \
+  "$empty_products" \
+  "$multiple_products" \
+  "$symlink_products"; do
+  if MACOS_DISTRIBUTION_TRUST=none \
+    MACOS_NATIVE_SIGNING=ad-hoc \
+    RELEASE_VERSION=0.1.0 \
+    bash "$macos_stage_script" \
+      "$invalid_products" \
+      "$test_root/staged-macos" >/dev/null 2>&1; then
+    echo "invalid macOS product discovery unexpectedly succeeded: $invalid_products" >&2
+    exit 1
+  fi
+done
+
 macos_env="$test_root/macos.env"
 SIGNING_ENV_FILE="$macos_env" SIGNING_TEMP_DIRECTORY="$test_root" \
   bash "$repository/.github/scripts/resolve-macos-signing.sh" >/dev/null

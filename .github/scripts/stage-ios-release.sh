@@ -11,29 +11,24 @@ version="${1:?version is required}"
   echo 'version contains unsupported characters' >&2
   exit 2
 }
+if [[ "$IOS_NATIVE_SIGNING" == signed ]]; then
+  [[ -z "$IOS_ARTIFACT_SUFFIX" ]] || {
+    echo "Signed iOS artifacts must not use a filename suffix" >&2
+    exit 2
+  }
+elif [[ "$IOS_NATIVE_SIGNING" == unsigned ]]; then
+  [[ "$IOS_ARTIFACT_SUFFIX" == -unsigned ]] || {
+    echo "Unsigned iOS artifacts must use the -unsigned filename suffix" >&2
+    exit 2
+  }
+else
+  echo "Unsupported IOS_NATIVE_SIGNING mode: $IOS_NATIVE_SIGNING" >&2
+  exit 2
+fi
 
 flutter_directory="$GITHUB_WORKSPACE/flutter"
 artifact_directory="$GITHUB_WORKSPACE/artifacts"
 mkdir -p "$artifact_directory"
-if [[ "$IOS_NATIVE_SIGNING" == signed ]]; then
-  : "${IOS_EXPORT_OPTIONS_PLIST:?IOS_EXPORT_OPTIONS_PLIST is required}"
-  : "${IOS_PROFILE_UUID:?IOS_PROFILE_UUID is required}"
-  : "${IOS_TEAM_ID:?IOS_TEAM_ID is required}"
-  : "${IOS_EXPORT_METHOD:?IOS_EXPORT_METHOD is required}"
-  : "${IOS_SIGNING_IDENTITY:?IOS_SIGNING_IDENTITY is required}"
-  : "${IOS_SIGNING_IDENTITY_SHA256:?IOS_SIGNING_IDENTITY_SHA256 is required}"
-  (
-    cd "$flutter_directory"
-    flutter build ipa \
-      --release \
-      --export-options-plist="$IOS_EXPORT_OPTIONS_PLIST"
-  )
-else
-  (
-    cd "$flutter_directory"
-    flutter build ipa --release --no-codesign
-  )
-fi
 
 shopt -s nullglob
 archives=("$flutter_directory"/build/ios/archive/*.xcarchive)
@@ -46,6 +41,11 @@ archive_output="$artifact_directory/camellia-remote-${version}-ios${IOS_ARTIFACT
 ditto -c -k --keepParent "$archive" "$archive_output"
 
 if [[ "$IOS_NATIVE_SIGNING" == signed ]]; then
+  : "${IOS_PROFILE_UUID:?IOS_PROFILE_UUID is required}"
+  : "${IOS_TEAM_ID:?IOS_TEAM_ID is required}"
+  : "${IOS_EXPORT_METHOD:?IOS_EXPORT_METHOD is required}"
+  : "${IOS_SIGNING_IDENTITY:?IOS_SIGNING_IDENTITY is required}"
+  : "${IOS_SIGNING_IDENTITY_SHA256:?IOS_SIGNING_IDENTITY_SHA256 is required}"
   ipa_candidates=("$flutter_directory"/build/ios/ipa/*.ipa)
   if ((${#ipa_candidates[@]} != 1)); then
     echo "Expected exactly one signed IPA, found ${#ipa_candidates[@]}" >&2

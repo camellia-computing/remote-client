@@ -68,6 +68,7 @@ env:
   FLUTTER_CHANNEL: stable
   FLUTTER_VERSION: "3.44.5"
   FLUTTER_REVISION: f94f4fc76b4d74543ed9b085bbd75341ef65de22
+  COCOAPODS_VERSION: "1.17.0"
   NODE_VERSION: "24.18.0"
   ANDROID_NDK_VERSION: "28.2.13676358"
   IOS_BUNDLE_ID: com.camellia.remote
@@ -569,9 +570,11 @@ jobs:
       always() && needs.prepare.result == 'success' &&
       (needs.approval.result == 'success' || needs.approval.result == 'skipped') &&
       inputs.build_macos_universal
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 90
     env:
+      XCODE_VERSION: "26.2"
+      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
       MACOSX_DEPLOYMENT_TARGET: "10.15"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -579,6 +582,8 @@ jobs:
           ref: ${{ needs.prepare.outputs.commit }}
           persist-credentials: false
           submodules: recursive
+      - name: Verify Xcode toolchain
+        run: bash .github/scripts/verify-xcode.sh "${{ env.XCODE_VERSION }}"
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ needs.prepare.outputs.bridge_artifact }}
@@ -617,7 +622,7 @@ jobs:
           SIGNING_ENV_FILE="$GITHUB_ENV" SIGNING_TEMP_DIRECTORY="$RUNNER_TEMP" \
             bash .github/scripts/prepare-macos-signing.sh
       - name: Install macOS prerequisites
-        run: brew install nasm
+        run: bash .github/scripts/install-apple-prerequisites.sh
       - uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.6
         with:
           vcpkgDirectory: ${{ runner.temp }}/vcpkg
@@ -629,6 +634,7 @@ jobs:
             "${{ needs.prepare.outputs.build_number }}" \
             "${{ needs.prepare.outputs.source_date_epoch }}"
           bash .github/scripts/prepare-dependencies.sh "${{ env.DEPENDENCY_MODE }}"
+          bash .github/scripts/verify-apple-pod-locks.sh macos
           "$VCPKG_ROOT/vcpkg" install --triplet arm64-osx --x-install-root="$VCPKG_ROOT/installed"
           cargo build --locked --release --target aarch64-apple-darwin --lib --features flutter,hwcodec,screencapturekit,unix-file-copy-paste
           "$VCPKG_ROOT/vcpkg" install --triplet x64-osx --x-install-root="$VCPKG_ROOT/installed"
@@ -639,13 +645,16 @@ jobs:
             target/x86_64-apple-darwin/release/libcamellia_remote.dylib \
             -output target/release/libcamellia_remote.dylib
           (cd flutter && FLUTTER_XCODE_ARCHS="arm64 x86_64" flutter build macos --release)
+      - name: Reject Apple build source migrations
+        if: always()
+        run: bash .github/scripts/verify-clean-source.sh
       - name: Stage and verify macOS artifacts
         shell: bash
         env:
           RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           bash .github/scripts/stage-macos-release.sh \
-            flutter/build/macos/Build/Products/Release/Camellia.app \
+            flutter/build/macos/Build/Products/Release \
             artifacts
       - name: Record macOS signing metadata
         shell: bash
@@ -1058,9 +1067,11 @@ jobs:
       always() && needs.prepare.result == 'success' &&
       (needs.approval.result == 'success' || needs.approval.result == 'skipped') &&
       inputs.build_ios
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 90
     env:
+      XCODE_VERSION: "26.2"
+      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
       IPHONEOS_DEPLOYMENT_TARGET: "13.0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1068,6 +1079,8 @@ jobs:
           ref: ${{ needs.prepare.outputs.commit }}
           persist-credentials: false
           submodules: recursive
+      - name: Verify Xcode toolchain
+        run: bash .github/scripts/verify-xcode.sh "${{ env.XCODE_VERSION }}"
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ needs.prepare.outputs.bridge_artifact }}
@@ -1097,7 +1110,7 @@ jobs:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: true
       - name: Install iOS prerequisites
-        run: brew install nasm
+        run: bash .github/scripts/install-apple-prerequisites.sh
       - uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.6
         with:
           vcpkgDirectory: ${{ runner.temp }}/vcpkg
@@ -1126,12 +1139,18 @@ jobs:
             "${{ needs.prepare.outputs.build_number }}" \
             "${{ needs.prepare.outputs.source_date_epoch }}"
           bash .github/scripts/prepare-dependencies.sh "${{ env.DEPENDENCY_MODE }}"
+          bash .github/scripts/verify-apple-pod-locks.sh ios
           "$VCPKG_ROOT/vcpkg" install --triplet arm64-ios --x-install-root="$VCPKG_ROOT/installed"
           cargo build --locked --release --target aarch64-apple-ios --lib --features flutter
-          mkdir -p flutter/ios/Runner
-          cp target/aarch64-apple-ios/release/libcamellia_remote.a flutter/ios/Runner/camellia_remote.a
-          bash .github/scripts/stage-ios-release.sh \
-            "${{ needs.prepare.outputs.version }}"
+          bash .github/scripts/build-ios-release.sh
+      - name: Reject Apple build source migrations
+        if: always()
+        run: bash .github/scripts/verify-clean-source.sh
+      - name: Stage and verify iOS artifacts
+        shell: bash
+        run: >-
+          bash .github/scripts/stage-ios-release.sh
+          "${{ needs.prepare.outputs.version }}"
       - name: Record iOS signing metadata
         shell: bash
         run: |

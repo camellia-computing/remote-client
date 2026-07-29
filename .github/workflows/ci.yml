@@ -19,6 +19,7 @@ env:
   RUST_TOOLCHAIN: "1.93.0"
   FLUTTER_CHANNEL: stable
   FLUTTER_VERSION: "3.44.5"
+  COCOAPODS_VERSION: "1.17.0"
   NODE_VERSION: "24.18.0"
   DEPENDENCY_MODE: locked
 
@@ -184,6 +185,7 @@ jobs:
           python3 .github/scripts/verify_apple_deployment.py
           python3 -m unittest discover -s .github/scripts/tests -v
           python3 -m unittest discover -s libs/portable/tests -v
+          bash .github/scripts/tests/test_clean_source.sh
           bash .github/scripts/tests/test_dependency_lock_scope.sh
           bash .github/scripts/tests/test_flutter_archive_verification.sh
           bash .github/scripts/tests/test_release_publication.sh
@@ -346,17 +348,20 @@ jobs:
     name: Apple native smoke checks
     if: needs.classify.outputs.runtime == 'true'
     needs: [classify, metadata, generate_bridge]
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 90
     env:
-      IPHONEOS_DEPLOYMENT_TARGET: "13.0"
-      MACOSX_DEPLOYMENT_TARGET: "10.15"
+      XCODE_VERSION: "26.2"
+      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           submodules: recursive
+
+      - name: Verify Xcode toolchain
+        run: bash .github/scripts/verify-xcode.sh "${{ env.XCODE_VERSION }}"
 
       - name: Download generated bridge
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -390,7 +395,7 @@ jobs:
           cache-dependency-path: flutter/web/js/package-lock.json
 
       - name: Install Apple build prerequisites
-        run: brew install nasm
+        run: bash .github/scripts/install-apple-prerequisites.sh
 
       - name: Configure vcpkg
         uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.6
@@ -410,12 +415,18 @@ jobs:
       - name: Prepare locked dependencies
         run: bash .github/scripts/prepare-dependencies.sh "${{ env.DEPENDENCY_MODE }}"
 
+      - name: Verify Apple Pod locks
+        run: bash .github/scripts/verify-apple-pod-locks.sh ios macos
+
       - name: Check macOS input implementation
         env:
+          MACOSX_DEPLOYMENT_TARGET: "10.15"
           RUSTFLAGS: -D warnings
         run: cargo check --locked -p enigo --features with_serde
 
       - name: Compile iOS Rust library
+        env:
+          IPHONEOS_DEPLOYMENT_TARGET: "13.0"
         run: |
           "$VCPKG_ROOT/vcpkg" install \
             --triplet arm64-ios \
@@ -424,6 +435,16 @@ jobs:
             --target aarch64-apple-ios \
             --lib \
             --features flutter
+
+      - name: Compile unsigned iOS application
+        working-directory: flutter
+        env:
+          IPHONEOS_DEPLOYMENT_TARGET: "13.0"
+        run: flutter build ipa --release --no-codesign
+
+      - name: Reject Apple build source migrations
+        if: always()
+        run: bash .github/scripts/verify-clean-source.sh
 
   quality:
     name: Rust, Flutter, and Web quality

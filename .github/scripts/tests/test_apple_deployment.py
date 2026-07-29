@@ -38,6 +38,72 @@ class AppleDeploymentPolicyTests(unittest.TestCase):
                 "test job",
             )
 
+    def test_mixed_platform_job_rejects_global_deployment_target(self) -> None:
+        job = '    env:\n      IPHONEOS_DEPLOYMENT_TARGET: "13.0"\n    steps:\n'
+        with self.assertRaises(apple_policy.PolicyError):
+            apple_policy.reject_job_environment(
+                job, "IPHONEOS_DEPLOYMENT_TARGET", "test job"
+            )
+        apple_policy.reject_job_environment(
+            "    env:\n      XCODE_VERSION: 26.2\n",
+            "IPHONEOS_DEPLOYMENT_TARGET",
+            "test job",
+        )
+
+    def test_step_environment_is_platform_specific(self) -> None:
+        job = """    steps:
+      - name: Compile iOS
+        env:
+          IPHONEOS_DEPLOYMENT_TARGET: "13.0"
+        run: flutter build ipa
+      - uses: example/action@sha
+"""
+        step = apple_policy.workflow_step(job, "Compile iOS", "test job")
+        apple_policy.require_step_environment(
+            step, "IPHONEOS_DEPLOYMENT_TARGET", "13.0", "test step"
+        )
+        apple_policy.reject_step_environment(
+            step, "MACOSX_DEPLOYMENT_TARGET", "test step"
+        )
+        with self.assertRaises(apple_policy.PolicyError):
+            apple_policy.require_step_environment(
+                step, "MACOSX_DEPLOYMENT_TARGET", "10.15", "test step"
+            )
+        with self.assertRaises(apple_policy.PolicyError):
+            apple_policy.reject_step_environment(
+                step, "IPHONEOS_DEPLOYMENT_TARGET", "test step"
+            )
+
+    def test_step_condition_requires_one_exact_value(self) -> None:
+        step = "        if: always()\n        run: verify\n"
+        apple_policy.require_step_condition(step, "always()", "test step")
+        for invalid in ("        run: verify\n", "        if: success()\n"):
+            with self.subTest(invalid=invalid), self.assertRaises(
+                apple_policy.PolicyError
+            ):
+                apple_policy.require_step_condition(
+                    invalid, "always()", "test step"
+                )
+
+    def test_job_runner_requires_one_exact_label(self) -> None:
+        job = "    runs-on: macos-26\n    steps:\n"
+        apple_policy.require_job_runner(job, "macos-26", "test job")
+        with self.assertRaises(apple_policy.PolicyError):
+            apple_policy.require_job_runner(job, "macos-15", "test job")
+
+    def test_job_command_requires_one_exact_occurrence(self) -> None:
+        job = "    steps:\n      - run: git diff --exit-code\n"
+        apple_policy.require_job_command(
+            job, "git diff --exit-code", "test command"
+        )
+        for invalid in ("", job + "      - run: git diff --exit-code\n"):
+            with self.subTest(invalid=invalid), self.assertRaises(
+                apple_policy.PolicyError
+            ):
+                apple_policy.require_job_command(
+                    invalid, "git diff --exit-code", "test command"
+                )
+
     def test_missing_workflow_job_is_rejected(self) -> None:
         with self.assertRaises(apple_policy.PolicyError):
             apple_policy.workflow_job("jobs:\n", "apple_native", "test workflow")
