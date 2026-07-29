@@ -10,6 +10,36 @@ publishes `NATIVE-SIGNING.md`. A partial signing group fails before packaging.
 Candidate runs (`publish=false`) never receive repository signing secrets,
 regardless of which values are configured.
 
+## Canonical configuration source
+
+Do not hand-transcribe certificate fingerprints, base64 payloads, or password
+values from an old release ticket. The organization-owned signing tools generate
+a protected local `github-actions/` bundle with the exact variable and Secret
+names consumed below. Its `metadata.json` is public review material,
+`variables.env` is directly copyable, and `secrets/` is uploaded without being
+printed by its `upload.sh` or PowerShell 7 `Upload.ps1` helper.
+
+Use the relevant generator or Apple preparation command from the
+[organization signing baseline](https://github.com/camellia-computing/.github/blob/main/docs/ARTIFACT_SIGNING.md),
+then deliberately apply it only to this repository:
+
+The `scripts/...` commands later in this document are run from a checked-out
+`camellia-computing/.github` repository, not from this client repository.
+
+```bash
+./github-actions/upload.sh --apply --repo camellia-computing/remote-client
+```
+
+```powershell
+pwsh -NoProfile -File .\github-actions\Upload.ps1 -Apply `
+  -Repository camellia-computing/remote-client
+```
+
+The generated configuration is not an approval or registration event. Update
+the public registry through review, then run a non-publishing candidate before
+any formal promotion. Never commit the generated directory or paste a Secret
+payload into chat.
+
 ## Result when no native credentials are configured
 
 | Platform | Output |
@@ -41,24 +71,20 @@ Configure the complete group in `camellia-computing/remote-client`:
 - optional variable `WINDOWS_TIMESTAMP_URL` (the workflow defaults to
   `http://timestamp.digicert.com`).
 
-Example using PowerShell 7.6 or later:
+For a managed-device private hierarchy, run the organization Windows generator
+with PowerShell 7.6 or later. It writes the public certificate information and
+the exact three Variables plus two Secret payloads into `github-actions/`:
 
 ```powershell
-$repository = 'camellia-computing/remote-client'
-[Convert]::ToBase64String(
-  [IO.File]::ReadAllBytes((Resolve-Path '.\camellia-code-signing.pfx'))
-) | gh secret set WINDOWS_CODESIGN_PFX_BASE64 --repo $repository
-gh secret set WINDOWS_CODESIGN_PFX_PASSWORD --repo $repository
-gh variable set WINDOWS_CODESIGN_CERTIFICATE_SHA256 `
-  --repo $repository `
-  --body '<UPPERCASE-64-HEX-LEAF-FINGERPRINT>'
-gh variable set WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT `
-  --repo $repository `
-  --body '<UPPERCASE-40-HEX-LEAF-THUMBPRINT>'
-gh variable set WINDOWS_SIGNING_TRUST_MODE `
-  --repo $repository `
-  --body 'private-trust'
+pwsh -NoProfile -File .\scripts\New-CamelliaWindowsPrivateCodeSigningCertificate.ps1 `
+  -OutputDirectory C:\Secure\camellia-windows-signing
 ```
+
+Review `camellia-private-code-signing-identity.json` and
+`github-actions\variables.env`, then use the generated upload helper from the
+canonical configuration section. A privately generated chain is always
+`private-trust`; a public certificate requires independently reviewed
+`public-trust` values and must never be relabelled as private output.
 
 The PFX must contain exactly one current certificate with a private key and the
 code-signing extended key usage. Its derived canonical SHA-256 fingerprint and
@@ -100,6 +126,23 @@ A private CA is valid for controlled devices that trust its public root, but it
 cannot obtain Apple notarization. Public downloads should use a current
 Developer ID Application identity and notarization.
 
+For either a private test P12 or an Apple-issued Developer ID P12, use the
+organization tool to calculate the exact leaf SHA-256 and emit the matching
+bundle rather than manually encoding the P12:
+
+```bash
+bash scripts/prepare-camellia-apple-signing-bundle.sh macos \
+  "$HOME/Secure/camellia-macos-signing" \
+  /controlled-inputs/developer-id.p12 \
+  'Developer ID Application: Camellia Computing (TEAMID)' \
+  public-trust
+```
+
+The hosted macOS job remains the authority that imports the P12 into an
+ephemeral keychain and verifies `APPLE_SIGNING_IDENTITY`. Keep notarization API
+credentials separate; configure them only for a mature public-trust Developer
+ID release, never for the private test hierarchy.
+
 To request intentional ad-hoc mode explicitly, set only:
 
 ```bash
@@ -120,16 +163,19 @@ Configure all three values or leave all three absent:
 - secret `LINUX_GPG_PRIVATE_KEY`: ASCII-armored secret-key/subkey export;
 - secret `LINUX_GPG_PASSPHRASE`.
 
+Generate the offline primary key and signing subkey through the organization
+tool, which creates the exact `LINUX_GPG_*` bundle:
+
 ```bash
-repository=camellia-computing/remote-client
-gh variable set LINUX_GPG_FINGERPRINT \
-  --repo "$repository" \
-  --body '<full-signing-fingerprint>'
-gh secret set LINUX_GPG_PRIVATE_KEY \
-  --repo "$repository" \
-  < linux-release-private.asc
-gh secret set LINUX_GPG_PASSPHRASE --repo "$repository"
+bash scripts/new-camellia-linux-openpgp-key.sh \
+  "$HOME/Secure/camellia-linux-signing" \
+  'Camellia Computing Release <release@example.invalid>'
 ```
+
+Review the printed signing-subkey fingerprint and public identity metadata;
+then use the generated uploader. The private subkey export and passphrase are
+not release artifacts or backups, even though the uploader can transfer them to
+the selected GitHub Actions scope.
 
 The workflow creates and independently verifies one detached `.asc` signature
 per tar/DEB/AppImage plus an architecture-specific public-key asset. Publish the
@@ -153,17 +199,21 @@ The former workflow never passed them to Gradle and silently used the debug
 keystore. Formal Camellia Remote builds now consume and verify the complete
 group or produce explicitly unsigned re-signing inputs.
 
+For a fresh application/update lineage, the organization generator creates a
+PKCS#12 keystore, public identity JSON, and the exact Android bundle:
+
 ```bash
-repository=camellia-computing/remote-client
-base64 < android-release.keystore | tr -d '\n' |
-  gh secret set ANDROID_SIGNING_KEY --repo "$repository"
-gh secret set ANDROID_KEY_STORE_PASSWORD --repo "$repository"
-gh secret set ANDROID_KEY_PASSWORD --repo "$repository"
-gh secret set ANDROID_ALIAS --repo "$repository"
-gh variable set ANDROID_SIGNING_CERTIFICATE_SHA256 \
-  --repo "$repository" \
-  --body '<UPPERCASE-64-HEX-CERTIFICATE-FINGERPRINT>'
+bash scripts/new-camellia-android-release-keystore.sh \
+  "$HOME/Secure/camellia-android-signing"
 ```
+
+The new-key generator is not a substitute for the historical update key. If
+the package has ever been installed under an existing signing certificate,
+retrieve and re-upload that original reviewed keystore instead. GitHub cannot
+reveal the legacy XavierAlpha/RustDesk Secret values, so do not generate a
+replacement and claim update continuity. For this pre-launch product, choose a
+new identity only after explicitly confirming that no update lineage needs the
+old key.
 
 The workflow validates the alias and certificate, builds without the debug-key
 fallback, verifies the APK/AAB signatures, and records the full certificate
@@ -187,24 +237,24 @@ Configure the complete, iOS-specific group:
 - variable `IOS_EXPORT_METHOD`: one of `app-store-connect`,
   `release-testing`, `debugging`, or `enterprise`.
 
+Prepare the P12 and matching profile as one group through the organization
+tool; it calculates the P12 fingerprint and creates every required `IOS_*`
+value without printing the profile or P12 payload:
+
 ```bash
-repository=camellia-computing/remote-client
-base64 < camellia-remote-ios.p12 | tr -d '\n' |
-  gh secret set IOS_CERTIFICATE_BASE64 --repo "$repository"
-gh secret set IOS_CERTIFICATE_PASSWORD --repo "$repository"
-base64 < camellia-remote.mobileprovision | tr -d '\n' |
-  gh secret set IOS_PROVISIONING_PROFILE_BASE64 --repo "$repository"
-gh variable set IOS_SIGNING_IDENTITY \
-  --repo "$repository" \
-  --body 'Apple Distribution: <publisher> (<team-id>)'
-gh variable set IOS_SIGNING_CERTIFICATE_SHA256 \
-  --repo "$repository" \
-  --body '<UPPERCASE-64-HEX-CERTIFICATE-FINGERPRINT>'
-gh variable set IOS_TEAM_ID --repo "$repository" --body '<team-id>'
-gh variable set IOS_EXPORT_METHOD \
-  --repo "$repository" \
-  --body 'app-store-connect'
+bash scripts/prepare-camellia-apple-signing-bundle.sh ios \
+  "$HOME/Secure/camellia-ios-signing" \
+  /controlled-inputs/camellia-remote-ios.p12 \
+  /controlled-inputs/camellia-remote.mobileprovision \
+  'Apple Distribution: Camellia Computing (TEAMID)' \
+  TEAMID \
+  release-testing
 ```
+
+This only packages an already-issued Apple identity and profile. The hosted
+macOS workflow independently authorizes the profile's certificate, Team ID,
+bundle ID, distribution type and entitlements; a generated bundle is not proof
+that an Apple account or profile is ready for public distribution.
 
 The workflow imports the P12 into an ephemeral keychain, verifies that the
 profile is current, explicitly targets `com.camellia.remote`, matches the Team
