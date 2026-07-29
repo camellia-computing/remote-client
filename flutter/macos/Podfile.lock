@@ -85,22 +85,22 @@ EXTERNAL SOURCES:
     :path: Flutter/ephemeral/.symlinks/plugins/window_size/macos
 
 SPEC CHECKSUMS:
-  desktop_drop: 1eeeb9484299585770b6461e4f3d60950e99efa2
-  desktop_multi_window: 566489c048b501134f9d7fb6a2354c60a9126486
-  device_info_plus: 1b14eed9bf95428983aed283a8d51cce3d8c4215
-  file_picker: e716a70a9fe5fd9e09ebc922d7541464289443af
-  file_selector_macos: 3e56eaea051180007b900eacb006686fd54da150
-  flutter_custom_cursor: 629957115075c672287bd0fa979d863ccf6024f7
+  desktop_drop: 10a3e6a7fa9dbe350541f2574092fecfa345a07b
+  desktop_multi_window: 93667594ccc4b88d91a97972fd3b1b89667fa80a
+  device_info_plus: 4fb280989f669696856f8b129e4a5e3cd6c48f76
+  file_picker: 7584aae6fa07a041af2b36a2655122d42f578c1a
+  file_selector_macos: 9e9e068e90ebee155097d00e89ae91edb2374db7
+  flutter_custom_cursor: 37e588711a2746f5cf48adb58b582cacff11c0c6
   FlutterMacOS: d0db08ddef1a9af05a5ec4b724367152bb0500b1
-  package_info_plus: 12f1c5c2cfe8727ca46cbd0b26677728972d9a5b
-  screen_retriever: 59634572a57080243dd1bf715e55b6c54f241a38
-  sqflite_darwin: 5a7236e3b501866c1c9befc6771dfd73ffb8702d
-  texture_rgba_renderer: cbed959a3c127122194a364e14b8577bd62dc8f2
-  uni_links_desktop: 45900fb319df48fcdea2df0756e9c2626696b026
-  url_launcher_macos: 175a54c831f4375a6cf895875f716ee5af3888ce
-  wakelock_plus: 9d63063ffb7af1c215209769067c57103bde719d
-  window_manager: 3a1844359a6295ab1e47659b1a777e36773cd6e8
-  window_size: 339dafa0b27a95a62a843042038fa6c3c48de195
+  package_info_plus: f0052d280d17aa382b932f399edf32507174e870
+  screen_retriever: 4f97c103641aab8ce183fa5af3b87029df167936
+  sqflite_darwin: 20b2a3a3b70e43edae938624ce550a3cbf66a3d0
+  texture_rgba_renderer: 6661f577ea5d4990e964c7e3840e544ac798e6da
+  uni_links_desktop: 34322c2646e4c9abc69b62e1865f9782d2850ba2
+  url_launcher_macos: f87a979182d112f911de6820aefddaf56ee9fbfd
+  wakelock_plus: 917609be14d812ddd9e9528876538b2263aaa03b
+  window_manager: 1d01fa7ac65a6e6f83b965471b1a7fdd3f06166c
+  window_size: 4bd15034e6e3d0720fd77928a7c42e5492cfece9
 
 PODFILE CHECKSUM: 0d3963a09fc94f580682bd88480486da345dc3f0
 
