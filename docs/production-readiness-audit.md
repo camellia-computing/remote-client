@@ -138,8 +138,8 @@ Resolved by moving all Apple CI and release jobs to the exact `macos-26` hosted
 runner contract and pinning Xcode 26.2 through `DEVELOPER_DIR`. The repository
 verifies the selected Xcode and SDK discovery before any native build. Required
 CI now compiles the complete unsigned iOS archive after the Rust library, which
-covers CocoaPods and Flutter plugins such as `device_info_plus`; both CI and
-release reject any tracked or untracked build-time source mutation.
+covers the CocoaPods 1.17.0-locked plugin graph; both CI and release reject any
+tracked or untracked build-time source mutation.
 macOS packaging discovers exactly one application bundle in Flutter's release
 products instead of duplicating the mutable Xcode product name. The policy
 validator tests the runner, Xcode, archive, product-discovery, and clean-source
@@ -147,22 +147,28 @@ gates so workflow drift fails before candidate publication.
 
 ### RM-P1-17 — Apple hosts relied on generated project rewrites and a stale iOS link shim
 
-Resolved by committing Flutter 3.44's Swift Package Manager integration,
-prepare actions, GPU-validation setting, and iOS LLDB configuration for both
-Xcode projects. The obsolete iOS startup calls referenced a function that the
-Rust library never exported and a generated C header that is intentionally
-empty in reduced-dependency Flutter Rust Bridge builds. They are replaced by a
-single application-owned C ABI link anchor exported by the Rust static library.
-iOS build and artifact staging are separate steps, allowing the always-run
-source gate to inspect a build before intentional packages are created. Policy
-tests enforce the Xcode markers, link contract, build/stage boundary, and the
-absence of the stale archive copy.
+Resolved by selecting one deterministic Apple plugin manager instead of keeping
+a half-migrated dependency graph. Project-level Swift Package Manager support is
+explicitly disabled while current plugins include CocoaPods-only
+implementations and package manifests with mutable branch dependencies.
+CocoaPods is pinned to 1.17.0, current iOS and macOS locks are committed, iOS
+no longer hard-codes plugin framework names, and macOS preserves inherited Pods
+linker flags. GPU validation and the iOS LLDB configuration remain committed.
+The obsolete iOS startup calls referenced a function that the Rust library
+never exported and a generated C header that is intentionally empty in
+reduced-dependency Flutter Rust Bridge builds. They are replaced by a single
+application-owned C ABI link anchor exported by the Rust static library.
+Generated Dart bridge sources are formatted before artifact reuse. iOS build
+and artifact staging are separate steps, allowing the always-run source gate to
+inspect a build before intentional packages are created. Policy tests enforce
+the dependency-manager contract, locks, inherited linkage, link anchor,
+build/stage boundary, and absence of the stale archive copy.
 
 ## Verification evidence
 
 - Shared protocol: the client and server pin commit `2daff94dc8d4dae97b04ff47563f70842c47e28b`; format, Clippy with warnings denied, 98 current-format unit tests, and the Apple-specific hosted compile gate passed.
 - Identity/relay server: Rust check/format and protocol (98), identity (33), relay (21), utilities (2), and recursion (1) tests passed. The production image built successfully, runs as `10001:10001` with a read-only root, exposes canonical OCI labels, and returns successful help/version output before configuration startup.
-- Client: the Linux workspace/all-target Flutter feature suite passed (88 client, 98 protocol, 4 portable-packer, 30 screen-capture, and 6 input tests, with one documented long-running codec matrix ignored by the ordinary gate). Vendored input implementations are compiled on hosted Windows x64/arm64 and macOS; the hosted Xcode 26.2 gate links the iOS Rust library and compiles the complete unsigned iOS application. Flutter analysis reported no errors or warnings and all 66 widget/unit tests passed. Rust dependency warnings are bounded by an owner/expiry/exit-condition register; every vulnerability, warning increase, or expired exception fails CI. Portable generation is deterministic and rejects unsafe inputs.
+- Client: the Linux workspace/all-target Flutter feature suite passed (88 client, 98 protocol, 4 portable-packer, 30 screen-capture, and 6 input tests, with one documented long-running codec matrix ignored by the ordinary gate). Vendored input implementations are compiled on hosted Windows x64/arm64 and macOS. The required Xcode 26.2 gate links the iOS Rust library, compiles the complete unsigned iOS application, and must revalidate the exact locked Apple dependency graph before merge. Flutter analysis reported no errors or warnings and all 66 widget/unit tests passed. Rust dependency warnings are bounded by an owner/expiry/exit-condition register; every vulnerability, warning increase, or expired exception fails CI. Portable generation is deterministic and rejects unsafe inputs.
 - Web client: protobuf codecs were regenerated from the pinned protocol, the TypeScript bridge lint/build and CSP/provenance synchronization check passed, and npm reported no vulnerabilities at the configured threshold.
 - Management: Ruff format/check, Django migration drift, 48 ordinary tests (2 environment-specific skips), the real PostgreSQL test/deployment path, Compose expansion through Docker Desktop, release metadata, and systemd hardening analysis passed.
 - All 22 repository workflow files passed Actionlint 1.7.12; the vendored setup script also passed ShellCheck and resolved Flutter 3.44.5 manifests for Linux, Windows, Intel macOS, and Apple Silicon macOS. Final management-image/Web provenance, every target-platform package, and platform-native acceptance remain mandatory hosted gates even where an equivalent local runner is unavailable.

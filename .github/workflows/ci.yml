@@ -19,6 +19,7 @@ env:
   RUST_TOOLCHAIN: "1.93.0"
   FLUTTER_CHANNEL: stable
   FLUTTER_VERSION: "3.44.5"
+  COCOAPODS_VERSION: "1.17.0"
   NODE_VERSION: "24.18.0"
   DEPENDENCY_MODE: locked
 
@@ -394,7 +395,7 @@ jobs:
           cache-dependency-path: flutter/web/js/package-lock.json
 
       - name: Install Apple build prerequisites
-        run: brew install nasm
+        run: bash .github/scripts/install-apple-prerequisites.sh
 
       - name: Configure vcpkg
         uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.6

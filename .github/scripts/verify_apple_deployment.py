@@ -13,6 +13,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 SUPPORTED_FLOORS = {"ios": (13, 0), "macos": (10, 15)}
 MACOS_ARM64_DEPLOYMENT_TARGET = "11.0"
+COCOAPODS_VERSION = "1.17.0"
 APPLE_RUNNER = "macos-26"
 XCODE_VERSION = "26.2"
 XCODE_DEVELOPER_DIR = f"/Applications/Xcode_{XCODE_VERSION}.app/Contents/Developer"
@@ -299,58 +300,80 @@ def verify_flutter_apple_project(platform: str) -> None:
         f"flutter/{platform}/Runner.xcodeproj/xcshareddata/xcschemes/Runner.xcscheme"
     )
     project = read(project_path)
-    relative_package_path = (
-        "Flutter/ephemeral/Packages/FlutterGeneratedPluginSwiftPackage"
-        if platform == "ios"
-        else "ephemeral/Packages/FlutterGeneratedPluginSwiftPackage"
-    )
-    project_markers = (
-        "78A318202AECB46A00862997 "
-        "/* FlutterGeneratedPluginSwiftPackage in Frameworks */ = {isa = PBXBuildFile;",
-        "\t\t\t\t78A318202AECB46A00862997 "
-        "/* FlutterGeneratedPluginSwiftPackage in Frameworks */,",
-        "78E0A7A72DC9AD7400C4905E "
-        "/* FlutterGeneratedPluginSwiftPackage */ = {isa = PBXFileReference;",
-        "\t\t\t\t78E0A7A72DC9AD7400C4905E "
-        "/* FlutterGeneratedPluginSwiftPackage */,",
-        "\t\t\t\t78A3181F2AECB46A00862997 "
-        "/* FlutterGeneratedPluginSwiftPackage */,",
-        "\t\t\t\t781AD8BC2B33823900A9FFBB "
-        '/* XCLocalSwiftPackageReference "Flutter/ephemeral/Packages/'
-        'FlutterGeneratedPluginSwiftPackage" */,',
-        "781AD8BC2B33823900A9FFBB "
-        '/* XCLocalSwiftPackageReference "Flutter/ephemeral/Packages/'
-        'FlutterGeneratedPluginSwiftPackage" */ = {',
-        "78A3181F2AECB46A00862997 "
-        "/* FlutterGeneratedPluginSwiftPackage */ = {",
-        f"path = {relative_package_path};",
-        "relativePath = "
-        "Flutter/ephemeral/Packages/FlutterGeneratedPluginSwiftPackage;",
-    )
-    missing = [marker for marker in project_markers if project.count(marker) != 1]
-    if missing:
+    for marker in (
+        "FlutterGeneratedPluginSwiftPackage",
+        "XCLocalSwiftPackageReference",
+        "XCSwiftPackageProductDependency",
+    ):
+        if marker in project:
+            raise PolicyError(
+                f"{project_path} must not contain disabled Swift Package Manager "
+                f"integration marker {marker!r}"
+            )
+
+    linker_blocks = re.findall(r"OTHER_LDFLAGS = \((.*?)\);", project, re.DOTALL)
+    expected_blocks = 3 if platform == "ios" else 2
+    if len(linker_blocks) != expected_blocks:
         raise PolicyError(
-            f"{project_path} must contain each Flutter Swift Package Manager "
-            f"integration marker exactly once: {missing}"
+            f"{project_path} must contain exactly {expected_blocks} explicit "
+            "OTHER_LDFLAGS blocks"
         )
+    for block in linker_blocks:
+        if block.count('"$(inherited)"') != 1:
+            raise PolicyError(
+                f"every explicit OTHER_LDFLAGS block in {project_path} must "
+                "inherit dependency-manager linker flags exactly once"
+            )
+    if platform == "ios":
+        rust_archive = (
+            '"$(PROJECT_DIR)/../../target/aarch64-apple-ios/release/'
+            'libcamellia_remote.a"'
+        )
+        if any(block.count(rust_archive) != 1 for block in linker_blocks):
+            raise PolicyError(
+                f"every iOS OTHER_LDFLAGS block in {project_path} must link the "
+                "application-owned Rust archive exactly once"
+            )
+        stale_frameworks = (
+            "DKImagePickerController",
+            "DKPhotoGallery",
+            "MTBBarcodeScanner",
+            "SDWebImage",
+            "SwiftyGif",
+            "device_info_plus",
+            "file_picker",
+            "flutter_keyboard_visibility",
+            "image_picker_ios",
+            "package_info_plus",
+            "path_provider_foundation",
+            "qr_code_scanner",
+            "sqflite",
+            "uni_links",
+            "url_launcher_ios",
+            "video_player_avfoundation",
+            "wakelock_plus",
+        )
+        stale = [
+            framework
+            for framework in stale_frameworks
+            if f'"\\"{framework}\\""' in project
+        ]
+        if stale:
+            raise PolicyError(
+                f"{project_path} must inherit CocoaPods plugin linkage instead "
+                f"of hard-coding stale frameworks: {stale}"
+            )
 
     scheme = read(scheme_path)
-    prepare_command = (
-        "/bin/sh &quot;$FLUTTER_ROOT/packages/flutter_tools/bin/"
-        "xcode_backend.sh&quot; prepare&#10;"
-        if platform == "ios"
-        else "&quot;$FLUTTER_ROOT&quot;/packages/flutter_tools/bin/"
-        "macos_assemble.sh prepare&#10;"
-    )
-    for marker in (
-        'title = "Run Prepare Flutter Framework Script"',
-        prepare_command,
-        'enableGPUValidationMode = "1"',
-    ):
-        if scheme.count(marker) != 1:
-            raise PolicyError(
-                f"{scheme_path} must contain {marker!r} exactly once"
-            )
+    if "Run Prepare Flutter Framework Script" in scheme:
+        raise PolicyError(
+            f"{scheme_path} must not prepare disabled Swift Package Manager inputs"
+        )
+    gpu_validation = 'enableGPUValidationMode = "1"'
+    if scheme.count(gpu_validation) != 1:
+        raise PolicyError(
+            f"{scheme_path} must contain {gpu_validation!r} exactly once"
+        )
     if platform == "ios":
         lldb_init = (
             'customLLDBInitFile = "$(SRCROOT)/Flutter/ephemeral/flutter_lldbinit"'
@@ -360,6 +383,72 @@ def verify_flutter_apple_project(platform: str) -> None:
                 f"{scheme_path} must configure Flutter LLDB initialization "
                 "for Run and Test"
             )
+
+
+def verify_apple_dependency_contract() -> None:
+    pubspec = read("flutter/pubspec.yaml")
+    if pubspec.count("enable-swift-package-manager: false") != 1:
+        raise PolicyError(
+            "flutter/pubspec.yaml must explicitly disable Swift Package Manager "
+            "until every native plugin has an immutable Swift package graph"
+        )
+
+    installer = read(".github/scripts/install-apple-prerequisites.sh")
+    for marker in (
+        "${COCOAPODS_VERSION:?COCOAPODS_VERSION is required}",
+        "gem install \\",
+        "--user-install \\",
+        'cocoapods \\',
+        '--version "$COCOAPODS_VERSION" \\',
+        'printf \'%s\\n\' "$gem_bin" >> "$GITHUB_PATH"',
+    ):
+        if installer.count(marker) != 1:
+            raise PolicyError(
+                ".github/scripts/install-apple-prerequisites.sh must contain "
+                f"{marker!r} exactly once"
+            )
+
+    lock_requirements = {
+        "flutter/ios/Podfile.lock": (
+            "DKImagePickerController/Core (4.3.9)",
+            "qr_code_scanner_plus (0.2.6)",
+            "sqflite_darwin (0.0.4)",
+        ),
+        "flutter/macos/Podfile.lock": (
+            "file_picker (0.0.1)",
+            "sqflite_darwin (0.0.4)",
+            "window_manager (0.2.0)",
+        ),
+    }
+    for path, dependencies in lock_requirements.items():
+        lock = read(path)
+        if lock.count(f"COCOAPODS: {COCOAPODS_VERSION}") != 1:
+            raise PolicyError(
+                f"{path} must be generated by CocoaPods {COCOAPODS_VERSION}"
+            )
+        for dependency in dependencies:
+            if dependency not in lock:
+                raise PolicyError(f"{path} must lock {dependency}")
+
+    bridge_generator = read(".github/scripts/generate-bridge.sh")
+    for generated_path in (
+        "./flutter/lib/generated_bridge.dart",
+        "./flutter/lib/generated_bridge",
+    ):
+        if sum(
+            line.rstrip().removesuffix("\\").strip() == generated_path
+            for line in bridge_generator.splitlines()
+        ) != 1:
+            raise PolicyError(
+                ".github/scripts/generate-bridge.sh must format "
+                f"{generated_path} exactly once"
+            )
+    normalizer = "python3 .github/scripts/normalize-generated-bridge.py"
+    if bridge_generator.count(normalizer) != 1:
+        raise PolicyError(
+            ".github/scripts/generate-bridge.sh must normalize generated Dart "
+            "whitespace exactly once"
+        )
 
 
 def verify_ios_link_anchor() -> None:
@@ -390,13 +479,8 @@ def verify() -> tuple[str, str]:
     verify_app_framework_info_plist()
     verify_flutter_apple_project("ios")
     verify_flutter_apple_project("macos")
+    verify_apple_dependency_contract()
     verify_ios_link_anchor()
-    flutter_gitignore = read("flutter/.gitignore")
-    for ignored_path in (".build/", ".swiftpm/"):
-        if flutter_gitignore.splitlines().count(ignored_path) != 1:
-            raise PolicyError(
-                f"flutter/.gitignore must declare {ignored_path} exactly once"
-            )
 
     ios_podfile = read("flutter/ios/Podfile")
     require_values(
@@ -461,6 +545,10 @@ def verify() -> tuple[str, str]:
     verify_libvpx_port()
 
     release = read(".github/workflows/release.yml")
+    if release.count(f'COCOAPODS_VERSION: "{COCOAPODS_VERSION}"') != 1:
+        raise PolicyError(
+            ".github/workflows/release.yml must pin CocoaPods exactly once"
+        )
     release_ios_job = workflow_job(
         release, "build_ios", ".github/workflows/release.yml"
     )
@@ -491,6 +579,18 @@ def verify() -> tuple[str, str]:
     verify_apple_job_toolchain(
         release_macos_job, "release build_macos_universal"
     )
+    for job, context in (
+        (release_ios_job, "release build_ios Apple prerequisites"),
+        (
+            release_macos_job,
+            "release build_macos_universal Apple prerequisites",
+        ),
+    ):
+        require_job_command(
+            job,
+            "bash .github/scripts/install-apple-prerequisites.sh",
+            context,
+        )
     require_job_command(
         release_ios_job,
         "bash .github/scripts/verify-clean-source.sh",
@@ -536,6 +636,8 @@ def verify() -> tuple[str, str]:
     )
 
     ci = read(".github/workflows/ci.yml")
+    if ci.count(f'COCOAPODS_VERSION: "{COCOAPODS_VERSION}"') != 1:
+        raise PolicyError(".github/workflows/ci.yml must pin CocoaPods exactly once")
     apple_job = workflow_job(ci, "apple_native", ".github/workflows/ci.yml")
     reject_job_environment(apple_job, "IPHONEOS_DEPLOYMENT_TARGET", "CI apple_native")
     reject_job_environment(apple_job, "MACOSX_DEPLOYMENT_TARGET", "CI apple_native")
@@ -576,6 +678,11 @@ def verify() -> tuple[str, str]:
         ios_app_step, "MACOSX_DEPLOYMENT_TARGET", "CI iOS application build"
     )
     verify_apple_job_toolchain(apple_job, "CI apple_native")
+    require_job_command(
+        apple_job,
+        "bash .github/scripts/install-apple-prerequisites.sh",
+        "CI Apple prerequisites",
+    )
     require_job_command(
         apple_job,
         "flutter build ipa --release --no-codesign",

@@ -21,9 +21,13 @@ of the product deployment floors above: a current compiler may produce an
 artifact for an older supported OS, but an older compiler cannot build locked
 plugins that use current SDK declarations. CI compiles a complete unsigned iOS
 archive and fails if Flutter or Xcode leaves any tracked or untracked source
-mutation. The repository commits Flutter's current Swift Package Manager
-integration for both Apple projects, including the prepare actions and iOS LLDB
-configuration, so ordinary builds are read-only with respect to project sources.
+mutation. Apple plugin resolution uses exactly CocoaPods 1.17.0 and committed
+iOS and macOS locks. Project-level Swift Package Manager integration is
+explicitly disabled while the current plugin graph contains CocoaPods-only
+implementations and mutable package branches. Both Xcode projects inherit
+plugin linkage from CocoaPods, and policy checks reject stale package-manager
+markers, hard-coded plugin frameworks, or lock/tool version drift. GPU
+validation and the iOS LLDB configuration remain committed.
 The iOS executable links the Rust static library through a stable,
 application-owned C ABI anchor; Flutter Rust Bridge's optional generated C
 header is not part of that link contract.
