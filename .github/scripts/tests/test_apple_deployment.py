@@ -38,6 +38,25 @@ class AppleDeploymentPolicyTests(unittest.TestCase):
                 "test job",
             )
 
+    def test_job_runner_requires_one_exact_label(self) -> None:
+        job = "    runs-on: macos-26\n    steps:\n"
+        apple_policy.require_job_runner(job, "macos-26", "test job")
+        with self.assertRaises(apple_policy.PolicyError):
+            apple_policy.require_job_runner(job, "macos-15", "test job")
+
+    def test_job_command_requires_one_exact_occurrence(self) -> None:
+        job = "    steps:\n      - run: git diff --exit-code\n"
+        apple_policy.require_job_command(
+            job, "git diff --exit-code", "test command"
+        )
+        for invalid in ("", job + "      - run: git diff --exit-code\n"):
+            with self.subTest(invalid=invalid), self.assertRaises(
+                apple_policy.PolicyError
+            ):
+                apple_policy.require_job_command(
+                    invalid, "git diff --exit-code", "test command"
+                )
+
     def test_missing_workflow_job_is_rejected(self) -> None:
         with self.assertRaises(apple_policy.PolicyError):
             apple_policy.workflow_job("jobs:\n", "apple_native", "test workflow")

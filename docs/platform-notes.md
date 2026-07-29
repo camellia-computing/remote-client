@@ -14,6 +14,14 @@ macOS 11.0. CocoaPods and the Flutter Xcode project retain the product baseline,
 while Rust and native C/C++ tooling clamp the arm64 slice to 11.0. The universal
 package therefore supports 10.15 on Intel and 11.0 on Apple Silicon.
 
+Apple builds run on the exact `macos-26` hosted image contract with Xcode 26.2.
+CI verifies `DEVELOPER_DIR`, the reported Xcode version, and both iPhoneOS and
+macOS SDK discovery before compiling. This toolchain requirement is independent
+of the product deployment floors above: a current compiler may produce an
+artifact for an older supported OS, but an older compiler cannot build locked
+plugins that use current SDK declarations. CI compiles a complete unsigned iOS
+archive and fails if Flutter or Xcode attempts an uncommitted project migration.
+
 Screen Recording and Accessibility consent is granted by macOS to the exact signed application identity. After replacing or re-signing an application, remove stale consent entries if necessary, reopen Camellia Remote, and grant only the permissions required for the enabled features. Public distribution also requires an appropriate Developer ID signature and notarization; private/internal signing remains valid for controlled environments whose trust policy accepts it.
 
 ## Windows privileges and services

@@ -6,12 +6,25 @@ set -euo pipefail
 : "${RELEASE_VERSION:?RELEASE_VERSION is required}"
 
 [[ $# -eq 2 ]] || {
-  echo "usage: $0 APP_BUNDLE OUTPUT_DIRECTORY" >&2
+  echo "usage: $0 BUILD_PRODUCTS_DIRECTORY OUTPUT_DIRECTORY" >&2
   exit 2
 }
-app_bundle=$1
+build_products_directory=$1
 output_directory=$2
-[[ -d "$app_bundle" && ! -L "$app_bundle" && "$app_bundle" == *.app ]] || {
+[[ -d "$build_products_directory" && ! -L "$build_products_directory" ]] || {
+  echo "macOS build products directory is invalid: $build_products_directory" >&2
+  exit 2
+}
+
+shopt -s nullglob
+app_bundles=("$build_products_directory"/*.app)
+shopt -u nullglob
+if ((${#app_bundles[@]} != 1)); then
+  echo "Expected exactly one macOS application bundle, found ${#app_bundles[@]}" >&2
+  exit 1
+fi
+app_bundle="${app_bundles[0]}"
+[[ -d "$app_bundle" && ! -L "$app_bundle" ]] || {
   echo "macOS application bundle is invalid: $app_bundle" >&2
   exit 2
 }

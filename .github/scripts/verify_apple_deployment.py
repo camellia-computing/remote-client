@@ -13,6 +13,9 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 SUPPORTED_FLOORS = {"ios": (13, 0), "macos": (10, 15)}
 MACOS_ARM64_DEPLOYMENT_TARGET = "11.0"
+APPLE_RUNNER = "macos-26"
+XCODE_VERSION = "26.2"
+XCODE_DEVELOPER_DIR = f"/Applications/Xcode_{XCODE_VERSION}.app/Contents/Developer"
 TARGET_ONLY_VCPKG_DEPENDENCIES = {
     "aom",
     "cpu-features",
@@ -79,6 +82,34 @@ def require_job_environment(
         f"{source} {variable}",
     )
     require_values(values, expected, f"{source} {variable}")
+
+
+def require_job_runner(job: str, expected: str, source: str) -> None:
+    values = unique_values(
+        r"^ {4}runs-on:\s*([^\s#]+)",
+        job,
+        f"{source} runner",
+    )
+    require_values(values, expected, f"{source} runner")
+
+
+def require_job_command(job: str, command: str, source: str) -> None:
+    count = job.count(command)
+    if count != 1:
+        raise PolicyError(
+            f"{source} must contain {command!r} exactly once, found {count}"
+        )
+
+
+def verify_apple_job_toolchain(job: str, source: str) -> None:
+    require_job_runner(job, APPLE_RUNNER, source)
+    require_job_environment(job, "XCODE_VERSION", XCODE_VERSION, source)
+    require_job_environment(job, "DEVELOPER_DIR", XCODE_DEVELOPER_DIR, source)
+    require_job_command(
+        job,
+        'bash .github/scripts/verify-xcode.sh "${{ env.XCODE_VERSION }}"',
+        source,
+    )
 
 
 def plist_ios_target() -> str:
@@ -274,17 +305,42 @@ def verify() -> tuple[str, str]:
     verify_libvpx_port()
 
     release = read(".github/workflows/release.yml")
+    release_ios_job = workflow_job(
+        release, "build_ios", ".github/workflows/release.yml"
+    )
+    release_macos_job = workflow_job(
+        release, "build_macos_universal", ".github/workflows/release.yml"
+    )
     require_job_environment(
-        workflow_job(release, "build_ios", ".github/workflows/release.yml"),
+        release_ios_job,
         "IPHONEOS_DEPLOYMENT_TARGET",
         ios_target,
         "release build_ios",
     )
     require_job_environment(
-        workflow_job(release, "build_macos_universal", ".github/workflows/release.yml"),
+        release_macos_job,
         "MACOSX_DEPLOYMENT_TARGET",
         macos_target,
         "release build_macos_universal",
+    )
+    verify_apple_job_toolchain(release_ios_job, "release build_ios")
+    verify_apple_job_toolchain(
+        release_macos_job, "release build_macos_universal"
+    )
+    require_job_command(
+        release_ios_job,
+        "git diff --exit-code",
+        "release build_ios source-migration gate",
+    )
+    require_job_command(
+        release_macos_job,
+        "git diff --exit-code",
+        "release build_macos_universal source-migration gate",
+    )
+    require_job_command(
+        release_macos_job,
+        "flutter/build/macos/Build/Products/Release",
+        "release build_macos_universal product discovery",
     )
 
     ci = read(".github/workflows/ci.yml")
@@ -300,6 +356,17 @@ def verify() -> tuple[str, str]:
         "MACOSX_DEPLOYMENT_TARGET",
         macos_target,
         "CI apple_native",
+    )
+    verify_apple_job_toolchain(apple_job, "CI apple_native")
+    require_job_command(
+        apple_job,
+        "flutter build ipa --release --no-codesign",
+        "CI complete unsigned iOS application gate",
+    )
+    require_job_command(
+        apple_job,
+        "git diff --exit-code",
+        "CI Apple source-migration gate",
     )
 
     return ios_target, macos_target

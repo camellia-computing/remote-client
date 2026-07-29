@@ -5,6 +5,31 @@ repository="$(cd "$(dirname "$0")/../../.." && pwd)"
 test_root="$(mktemp -d "${RUNNER_TEMP:-/tmp}/camellia-remote-signing-tests.XXXXXX")"
 trap 'rm -rf -- "$test_root"' EXIT
 
+macos_stage_script="$repository/.github/scripts/stage-macos-release.sh"
+empty_products="$test_root/empty-macos-products"
+multiple_products="$test_root/multiple-macos-products"
+symlink_products="$test_root/symlink-macos-products"
+mkdir -p \
+  "$empty_products" \
+  "$multiple_products/First.app" \
+  "$multiple_products/Second.app" \
+  "$symlink_products"
+ln -s "$multiple_products/First.app" "$symlink_products/Camellia.app"
+for invalid_products in \
+  "$empty_products" \
+  "$multiple_products" \
+  "$symlink_products"; do
+  if MACOS_DISTRIBUTION_TRUST=none \
+    MACOS_NATIVE_SIGNING=ad-hoc \
+    RELEASE_VERSION=0.1.0 \
+    bash "$macos_stage_script" \
+      "$invalid_products" \
+      "$test_root/staged-macos" >/dev/null 2>&1; then
+    echo "invalid macOS product discovery unexpectedly succeeded: $invalid_products" >&2
+    exit 1
+  fi
+done
+
 macos_env="$test_root/macos.env"
 SIGNING_ENV_FILE="$macos_env" SIGNING_TEMP_DIRECTORY="$test_root" \
   bash "$repository/.github/scripts/resolve-macos-signing.sh" >/dev/null
