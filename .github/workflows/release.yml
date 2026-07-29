@@ -634,6 +634,7 @@ jobs:
             "${{ needs.prepare.outputs.build_number }}" \
             "${{ needs.prepare.outputs.source_date_epoch }}"
           bash .github/scripts/prepare-dependencies.sh "${{ env.DEPENDENCY_MODE }}"
+          bash .github/scripts/verify-apple-pod-locks.sh macos
           "$VCPKG_ROOT/vcpkg" install --triplet arm64-osx --x-install-root="$VCPKG_ROOT/installed"
           cargo build --locked --release --target aarch64-apple-darwin --lib --features flutter,hwcodec,screencapturekit,unix-file-copy-paste
           "$VCPKG_ROOT/vcpkg" install --triplet x64-osx --x-install-root="$VCPKG_ROOT/installed"
@@ -1138,6 +1139,7 @@ jobs:
             "${{ needs.prepare.outputs.build_number }}" \
             "${{ needs.prepare.outputs.source_date_epoch }}"
           bash .github/scripts/prepare-dependencies.sh "${{ env.DEPENDENCY_MODE }}"
+          bash .github/scripts/verify-apple-pod-locks.sh ios
           "$VCPKG_ROOT/vcpkg" install --triplet arm64-ios --x-install-root="$VCPKG_ROOT/installed"
           cargo build --locked --release --target aarch64-apple-ios --lib --features flutter
           bash .github/scripts/build-ios-release.sh

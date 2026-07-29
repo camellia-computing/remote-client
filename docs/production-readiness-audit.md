@@ -154,6 +154,8 @@ implementations and package manifests with mutable branch dependencies.
 CocoaPods is pinned to 1.17.0, current iOS and macOS locks are committed, iOS
 no longer hard-codes plugin framework names, and macOS preserves inherited Pods
 linker flags. GPU validation and the iOS LLDB configuration remain committed.
+The owning macOS runner resolves both locks before native compilation and emits
+an exact diff on drift, so stale generated pod metadata fails quickly.
 The obsolete iOS startup calls referenced a function that the Rust library
 never exported and a generated C header that is intentionally empty in
 reduced-dependency Flutter Rust Bridge builds. They are replaced by a single

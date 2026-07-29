@@ -408,6 +408,19 @@ def verify_apple_dependency_contract() -> None:
                 f"{marker!r} exactly once"
             )
 
+    lock_verifier = read(".github/scripts/verify-apple-pod-locks.sh")
+    for marker in (
+        "${COCOAPODS_VERSION:?COCOAPODS_VERSION is required}",
+        'actual_version="$(pod --version)"',
+        "pod install --no-repo-update",
+        'git diff --exit-code -- "${lockfiles[@]}"',
+    ):
+        if lock_verifier.count(marker) != 1:
+            raise PolicyError(
+                ".github/scripts/verify-apple-pod-locks.sh must contain "
+                f"{marker!r} exactly once"
+            )
+
     lock_requirements = {
         "flutter/ios/Podfile.lock": (
             "DKImagePickerController/Core (4.3.9)",
@@ -593,6 +606,16 @@ def verify() -> tuple[str, str]:
         )
     require_job_command(
         release_ios_job,
+        "bash .github/scripts/verify-apple-pod-locks.sh ios",
+        "release build_ios locked CocoaPods graph",
+    )
+    require_job_command(
+        release_macos_job,
+        "bash .github/scripts/verify-apple-pod-locks.sh macos",
+        "release build_macos_universal locked CocoaPods graph",
+    )
+    require_job_command(
+        release_ios_job,
         "bash .github/scripts/verify-clean-source.sh",
         "release build_ios source-migration gate",
     )
@@ -682,6 +705,11 @@ def verify() -> tuple[str, str]:
         apple_job,
         "bash .github/scripts/install-apple-prerequisites.sh",
         "CI Apple prerequisites",
+    )
+    require_job_command(
+        apple_job,
+        "bash .github/scripts/verify-apple-pod-locks.sh ios macos",
+        "CI locked CocoaPods graph",
     )
     require_job_command(
         apple_job,

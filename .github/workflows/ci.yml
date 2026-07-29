@@ -415,6 +415,9 @@ jobs:
       - name: Prepare locked dependencies
         run: bash .github/scripts/prepare-dependencies.sh "${{ env.DEPENDENCY_MODE }}"
 
+      - name: Verify Apple Pod locks
+        run: bash .github/scripts/verify-apple-pod-locks.sh ios macos
+
       - name: Check macOS input implementation
         env:
           MACOSX_DEPLOYMENT_TARGET: "10.15"
