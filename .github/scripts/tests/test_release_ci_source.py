@@ -59,6 +59,8 @@ class ReleaseCiSourceTests(unittest.TestCase):
             run(4, sha="b" * 40),
             run(5, conclusion="failure"),
             {"id": "not-an-integer", "event": "push"},
+            {**run(6), "id": 0},
+            run(7, run_number=0),
         ]
 
         with self.assertRaises(SELECTOR.ReleaseCiRunError):

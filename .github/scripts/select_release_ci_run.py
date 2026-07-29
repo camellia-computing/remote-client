@@ -42,7 +42,12 @@ def select_release_ci_run(
             continue
         if _run_number(run) < 1:
             continue
-        if not isinstance(run.get("id"), int) or isinstance(run.get("id"), bool):
+        run_id = run.get("id")
+        if (
+            not isinstance(run_id, int)
+            or isinstance(run_id, bool)
+            or run_id < 1
+        ):
             continue
         eligible.append(run)
 
