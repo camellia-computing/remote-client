@@ -5,7 +5,11 @@ Camellia Remote publication follows the organization
 and
 [artifact-signing policy](https://github.com/camellia-computing/.github/blob/main/docs/ARTIFACT_SIGNING.md).
 The client version, source commit and generated Flutter/Rust bridge are bound to
-one successful default-branch push CI run before any native package starts.
+one successful full default-branch CI run before any native package starts. The
+accepted run is either the exact `push` CI or a maintainer-dispatched exact
+`workflow_dispatch` CI; the latter deliberately enables every runtime and
+automation/dependency gate. In both cases the Release workflow requires the one unexpired,
+commit-named bridge artifact before packaging.
 
 ## Candidate and formal modes
 

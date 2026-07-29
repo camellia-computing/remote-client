@@ -196,19 +196,15 @@ jobs:
           runs_json="$(
             gh api -X GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
               -f head_sha="$commit" \
-              -f event=push \
               -f status=success \
               -f per_page=100
           )"
           ci_run_id="$(
-            jq -r --arg commit "$commit" \
-              '[.workflow_runs[] | select(.head_sha == $commit and .conclusion == "success")] | sort_by(.run_number) | last | .id // empty' \
-              <<< "$runs_json"
+            printf '%s' "$runs_json" |
+              python3 .github/scripts/select_release_ci_run.py \
+                --commit "$commit" \
+                --default-branch "$DEFAULT_BRANCH"
           )"
-          if [[ -z "$ci_run_id" ]]; then
-            echo "no successful push CI run exists for $commit" >&2
-            exit 1
-          fi
 
           bridge_artifact="bridge-generated-$commit"
           artifacts_json="$(

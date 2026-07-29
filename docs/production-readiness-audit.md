@@ -18,7 +18,7 @@ The source baseline is suitable for protected pre-release integration. No review
 | Management | PostgreSQL-only production state; SQLite is debug-only; encryption, device proof, proxy trust, uploads, OIDC, and audit have explicit bounds | Pass |
 | Local data | New application IDs and directories are used; no obsolete development data migration or compatibility scanner is retained | Pass |
 | Deployment | Immutable OCI digests, read-only containers, dropped capabilities, systemd hardening, explicit migration, and backup timer | Pass |
-| Release | Stable SemVer, successful push CI reuse, protected approval, checksums, SBOM/provenance, attestations/signatures, and immutable assets | Pass with environment prerequisites |
+| Release | Stable SemVer, exact full default-branch CI reuse, protected approval, checksums, SBOM/provenance, attestations/signatures, and immutable assets | Pass with environment prerequisites |
 | Legal | AGPL source/provenance obligations and upstream attribution are retained across every copied component | Pass |
 
 ## Findings resolved

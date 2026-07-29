@@ -55,6 +55,7 @@ jobs:
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             runtime=true
             automation=true
+            dependencies=true
           else
             if [[ "$EVENT_NAME" == "pull_request" ]]; then
               base="$PR_BASE_SHA"
