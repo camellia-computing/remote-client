@@ -55,7 +55,7 @@ Report vulnerabilities through GitHub private vulnerability reporting as describ
 
 ## CI and release
 
-Pull requests and `main` run pinned-action checks for metadata, dependencies, Rust, Flutter, Web, scripts, and platform-specific build contracts. The release workflow accepts only an exact commit reachable from the default branch and reuses artifacts from its successful push CI run.
+Pull requests and `main` run pinned-action checks for metadata, dependencies, Rust, Flutter, Web, scripts, and platform-specific build contracts. The release workflow accepts only an exact commit reachable from the default branch and reuses artifacts from its successful full default-branch CI run: either the matching push run or a maintainer-dispatched matching CI run that executes every runtime, automation, and dependency gate.
 Required CI also rejects any mismatch between the protocol submodule and the exact revision recorded in `SOURCE_PROVENANCE.json`.
 
 Formal publication requires the protected `release` environment. Selected platform packages are produced once, checksummed, described by `versions.json`, and attested with GitHub/Sigstore identity. Windows Authenticode, macOS signing/notarization, Linux OpenPGP signatures, Android release keys, and iOS certificate/provisioning exports are optional complete groups; missing groups produce explicitly unsigned/ad-hoc or re-signing outputs and partial groups fail closed. Public packages should use a recognized publisher identity, but private or temporarily unsigned releases remain supported when their limitations are stated. See [release signing modes](docs/release-signing.md).
