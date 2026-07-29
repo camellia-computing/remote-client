@@ -644,7 +644,8 @@ jobs:
             -output target/release/libcamellia_remote.dylib
           (cd flutter && FLUTTER_XCODE_ARCHS="arm64 x86_64" flutter build macos --release)
       - name: Reject Apple build source migrations
-        run: git diff --exit-code
+        if: always()
+        run: bash .github/scripts/verify-clean-source.sh
       - name: Stage and verify macOS artifacts
         shell: bash
         env:
@@ -1138,12 +1139,15 @@ jobs:
           bash .github/scripts/prepare-dependencies.sh "${{ env.DEPENDENCY_MODE }}"
           "$VCPKG_ROOT/vcpkg" install --triplet arm64-ios --x-install-root="$VCPKG_ROOT/installed"
           cargo build --locked --release --target aarch64-apple-ios --lib --features flutter
-          mkdir -p flutter/ios/Runner
-          cp target/aarch64-apple-ios/release/libcamellia_remote.a flutter/ios/Runner/camellia_remote.a
-          bash .github/scripts/stage-ios-release.sh \
-            "${{ needs.prepare.outputs.version }}"
+          bash .github/scripts/build-ios-release.sh
       - name: Reject Apple build source migrations
-        run: git diff --exit-code
+        if: always()
+        run: bash .github/scripts/verify-clean-source.sh
+      - name: Stage and verify iOS artifacts
+        shell: bash
+        run: >-
+          bash .github/scripts/stage-ios-release.sh
+          "${{ needs.prepare.outputs.version }}"
       - name: Record iOS signing metadata
         shell: bash
         run: |

@@ -74,6 +74,17 @@ class AppleDeploymentPolicyTests(unittest.TestCase):
                 step, "IPHONEOS_DEPLOYMENT_TARGET", "test step"
             )
 
+    def test_step_condition_requires_one_exact_value(self) -> None:
+        step = "        if: always()\n        run: verify\n"
+        apple_policy.require_step_condition(step, "always()", "test step")
+        for invalid in ("        run: verify\n", "        if: success()\n"):
+            with self.subTest(invalid=invalid), self.assertRaises(
+                apple_policy.PolicyError
+            ):
+                apple_policy.require_step_condition(
+                    invalid, "always()", "test step"
+                )
+
     def test_job_runner_requires_one_exact_label(self) -> None:
         job = "    runs-on: macos-26\n    steps:\n"
         apple_policy.require_job_runner(job, "macos-26", "test job")

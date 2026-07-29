@@ -139,11 +139,24 @@ runner contract and pinning Xcode 26.2 through `DEVELOPER_DIR`. The repository
 verifies the selected Xcode and SDK discovery before any native build. Required
 CI now compiles the complete unsigned iOS archive after the Rust library, which
 covers CocoaPods and Flutter plugins such as `device_info_plus`; both CI and
-release reject any build-time mutation of tracked Flutter/Xcode project files.
+release reject any tracked or untracked build-time source mutation.
 macOS packaging discovers exactly one application bundle in Flutter's release
 products instead of duplicating the mutable Xcode product name. The policy
 validator tests the runner, Xcode, archive, product-discovery, and clean-source
 gates so workflow drift fails before candidate publication.
+
+### RM-P1-17 — Apple hosts relied on generated project rewrites and a stale iOS link shim
+
+Resolved by committing Flutter 3.44's Swift Package Manager integration,
+prepare actions, GPU-validation setting, and iOS LLDB configuration for both
+Xcode projects. The obsolete iOS startup calls referenced a function that the
+Rust library never exported and a generated C header that is intentionally
+empty in reduced-dependency Flutter Rust Bridge builds. They are replaced by a
+single application-owned C ABI link anchor exported by the Rust static library.
+iOS build and artifact staging are separate steps, allowing the always-run
+source gate to inspect a build before intentional packages are created. Policy
+tests enforce the Xcode markers, link contract, build/stage boundary, and the
+absence of the stale archive copy.
 
 ## Verification evidence
 

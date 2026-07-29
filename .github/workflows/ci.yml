@@ -184,6 +184,7 @@ jobs:
           python3 .github/scripts/verify_apple_deployment.py
           python3 -m unittest discover -s .github/scripts/tests -v
           python3 -m unittest discover -s libs/portable/tests -v
+          bash .github/scripts/tests/test_clean_source.sh
           bash .github/scripts/tests/test_dependency_lock_scope.sh
           bash .github/scripts/tests/test_flutter_archive_verification.sh
           bash .github/scripts/tests/test_release_publication.sh
@@ -438,7 +439,8 @@ jobs:
         run: flutter build ipa --release --no-codesign
 
       - name: Reject Apple build source migrations
-        run: git diff --exit-code
+        if: always()
+        run: bash .github/scripts/verify-clean-source.sh
 
   quality:
     name: Rust, Flutter, and Web quality

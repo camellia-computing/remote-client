@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail closed when Apple deployment targets drift between build systems."""
+"""Fail closed when Apple toolchain, project, and release contracts drift."""
 
 from __future__ import annotations
 
@@ -119,6 +119,15 @@ def reject_step_environment(step: str, variable: str, source: str) -> None:
         raise PolicyError(f"{source} must not declare {variable}")
 
 
+def require_step_condition(step: str, expected: str, source: str) -> None:
+    values = unique_values(
+        r"^ {8}if:\s*([^\s#]+)",
+        step,
+        f"{source} condition",
+    )
+    require_values(values, expected, f"{source} condition")
+
+
 def require_job_runner(job: str, expected: str, source: str) -> None:
     values = unique_values(
         r"^ {4}runs-on:\s*([^\s#]+)",
@@ -147,15 +156,28 @@ def verify_apple_job_toolchain(job: str, source: str) -> None:
     )
 
 
-def plist_ios_target() -> str:
+def verify_app_framework_info_plist() -> None:
     path = ROOT / "flutter/ios/Flutter/AppFrameworkInfo.plist"
     with path.open("rb") as stream:
-        value = plistlib.load(stream).get("MinimumOSVersion")
-    if not isinstance(value, str):
+        metadata = plistlib.load(stream)
+    if "MinimumOSVersion" in metadata:
         raise PolicyError(
-            f"{path.relative_to(ROOT)} is missing a string MinimumOSVersion"
+            f"{path.relative_to(ROOT)} must inherit the application deployment target"
         )
-    return value
+
+
+def xcode_ios_target() -> str:
+    source = "flutter/ios/Runner.xcodeproj/project.pbxproj"
+    values = unique_values(
+        r"\bIPHONEOS_DEPLOYMENT_TARGET\s*=\s*([^;]+);",
+        read(source),
+        source,
+    )
+    if len(values) != 1:
+        raise PolicyError(
+            f"{source} has conflicting deployment targets: {sorted(values)}"
+        )
+    return values.pop()
 
 
 def xcode_macos_target() -> str:
@@ -271,11 +293,110 @@ def verify_libvpx_port() -> None:
         raise PolicyError("the hardened libvpx overlay must use port-version 1")
 
 
+def verify_flutter_apple_project(platform: str) -> None:
+    project_path = f"flutter/{platform}/Runner.xcodeproj/project.pbxproj"
+    scheme_path = (
+        f"flutter/{platform}/Runner.xcodeproj/xcshareddata/xcschemes/Runner.xcscheme"
+    )
+    project = read(project_path)
+    relative_package_path = (
+        "Flutter/ephemeral/Packages/FlutterGeneratedPluginSwiftPackage"
+        if platform == "ios"
+        else "ephemeral/Packages/FlutterGeneratedPluginSwiftPackage"
+    )
+    project_markers = (
+        "78A318202AECB46A00862997 "
+        "/* FlutterGeneratedPluginSwiftPackage in Frameworks */ = {isa = PBXBuildFile;",
+        "\t\t\t\t78A318202AECB46A00862997 "
+        "/* FlutterGeneratedPluginSwiftPackage in Frameworks */,",
+        "78E0A7A72DC9AD7400C4905E "
+        "/* FlutterGeneratedPluginSwiftPackage */ = {isa = PBXFileReference;",
+        "\t\t\t\t78E0A7A72DC9AD7400C4905E "
+        "/* FlutterGeneratedPluginSwiftPackage */,",
+        "\t\t\t\t78A3181F2AECB46A00862997 "
+        "/* FlutterGeneratedPluginSwiftPackage */,",
+        "\t\t\t\t781AD8BC2B33823900A9FFBB "
+        '/* XCLocalSwiftPackageReference "Flutter/ephemeral/Packages/'
+        'FlutterGeneratedPluginSwiftPackage" */,',
+        "781AD8BC2B33823900A9FFBB "
+        '/* XCLocalSwiftPackageReference "Flutter/ephemeral/Packages/'
+        'FlutterGeneratedPluginSwiftPackage" */ = {',
+        "78A3181F2AECB46A00862997 "
+        "/* FlutterGeneratedPluginSwiftPackage */ = {",
+        f"path = {relative_package_path};",
+        "relativePath = "
+        "Flutter/ephemeral/Packages/FlutterGeneratedPluginSwiftPackage;",
+    )
+    missing = [marker for marker in project_markers if project.count(marker) != 1]
+    if missing:
+        raise PolicyError(
+            f"{project_path} must contain each Flutter Swift Package Manager "
+            f"integration marker exactly once: {missing}"
+        )
+
+    scheme = read(scheme_path)
+    prepare_command = (
+        "/bin/sh &quot;$FLUTTER_ROOT/packages/flutter_tools/bin/"
+        "xcode_backend.sh&quot; prepare&#10;"
+        if platform == "ios"
+        else "&quot;$FLUTTER_ROOT&quot;/packages/flutter_tools/bin/"
+        "macos_assemble.sh prepare&#10;"
+    )
+    for marker in (
+        'title = "Run Prepare Flutter Framework Script"',
+        prepare_command,
+        'enableGPUValidationMode = "1"',
+    ):
+        if scheme.count(marker) != 1:
+            raise PolicyError(
+                f"{scheme_path} must contain {marker!r} exactly once"
+            )
+    if platform == "ios":
+        lldb_init = (
+            'customLLDBInitFile = "$(SRCROOT)/Flutter/ephemeral/flutter_lldbinit"'
+        )
+        if scheme.count(lldb_init) != 2:
+            raise PolicyError(
+                f"{scheme_path} must configure Flutter LLDB initialization "
+                "for Run and Test"
+            )
+
+
+def verify_ios_link_anchor() -> None:
+    app_delegate = read("flutter/ios/Runner/AppDelegate.swift")
+    bridging_header = read("flutter/ios/Runner/Runner-Bridging-Header.h")
+    rust_library = read("src/lib.rs")
+    anchor = "camellia_remote_ios_link_anchor"
+    if app_delegate.count(f"{anchor}()") != 1:
+        raise PolicyError("the iOS application must invoke its Rust link anchor once")
+    if bridging_header.count(f"void {anchor}(void);") != 1:
+        raise PolicyError("the iOS bridging header must declare its Rust link anchor")
+    if rust_library.count(f'pub extern "C" fn {anchor}() {{}}') != 1:
+        raise PolicyError("the Rust static library must export the iOS link anchor")
+    stale_markers = ("dummy_method_to_enforce_bundling", "session_get_rgba(nil")
+    if any(marker in app_delegate for marker in stale_markers):
+        raise PolicyError("the iOS application contains a stale native link workaround")
+    if "bridge_generated.h" in bridging_header:
+        raise PolicyError(
+            "the iOS bridging header must not depend on an empty generated C header"
+        )
+
+
 def verify() -> tuple[str, str]:
-    ios_target = plist_ios_target()
+    ios_target = xcode_ios_target()
     macos_target = xcode_macos_target()
     verify_supported_floor("ios", ios_target)
     verify_supported_floor("macos", macos_target)
+    verify_app_framework_info_plist()
+    verify_flutter_apple_project("ios")
+    verify_flutter_apple_project("macos")
+    verify_ios_link_anchor()
+    flutter_gitignore = read("flutter/.gitignore")
+    for ignored_path in (".build/", ".swiftpm/"):
+        if flutter_gitignore.splitlines().count(ignored_path) != 1:
+            raise PolicyError(
+                f"flutter/.gitignore must declare {ignored_path} exactly once"
+            )
 
     ios_podfile = read("flutter/ios/Podfile")
     require_values(
@@ -372,14 +493,42 @@ def verify() -> tuple[str, str]:
     )
     require_job_command(
         release_ios_job,
-        "git diff --exit-code",
+        "bash .github/scripts/verify-clean-source.sh",
         "release build_ios source-migration gate",
     )
     require_job_command(
         release_macos_job,
-        "git diff --exit-code",
+        "bash .github/scripts/verify-clean-source.sh",
         "release build_macos_universal source-migration gate",
     )
+    release_ios_gate = workflow_step(
+        release_ios_job, "Reject Apple build source migrations", "release build_ios"
+    )
+    release_macos_gate = workflow_step(
+        release_macos_job,
+        "Reject Apple build source migrations",
+        "release build_macos_universal",
+    )
+    require_step_condition(
+        release_ios_gate, "always()", "release build_ios source-migration gate"
+    )
+    require_step_condition(
+        release_macos_gate,
+        "always()",
+        "release build_macos_universal source-migration gate",
+    )
+    require_job_command(
+        release_ios_job,
+        "bash .github/scripts/build-ios-release.sh",
+        "release build_ios application build",
+    )
+    require_job_command(
+        release_ios_job,
+        "bash .github/scripts/stage-ios-release.sh",
+        "release build_ios artifact staging",
+    )
+    if "cp target/aarch64-apple-ios/release/libcamellia_remote.a" in release_ios_job:
+        raise PolicyError("release build_ios must not copy an unused Rust archive")
     require_job_command(
         release_macos_job,
         "flutter/build/macos/Build/Products/Release",
@@ -434,8 +583,14 @@ def verify() -> tuple[str, str]:
     )
     require_job_command(
         apple_job,
-        "git diff --exit-code",
+        "bash .github/scripts/verify-clean-source.sh",
         "CI Apple source-migration gate",
+    )
+    ci_apple_gate = workflow_step(
+        apple_job, "Reject Apple build source migrations", "CI apple_native"
+    )
+    require_step_condition(
+        ci_apple_gate, "always()", "CI Apple source-migration gate"
     )
 
     return ios_target, macos_target

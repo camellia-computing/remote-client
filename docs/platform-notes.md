@@ -20,7 +20,13 @@ macOS SDK discovery before compiling. This toolchain requirement is independent
 of the product deployment floors above: a current compiler may produce an
 artifact for an older supported OS, but an older compiler cannot build locked
 plugins that use current SDK declarations. CI compiles a complete unsigned iOS
-archive and fails if Flutter or Xcode attempts an uncommitted project migration.
+archive and fails if Flutter or Xcode leaves any tracked or untracked source
+mutation. The repository commits Flutter's current Swift Package Manager
+integration for both Apple projects, including the prepare actions and iOS LLDB
+configuration, so ordinary builds are read-only with respect to project sources.
+The iOS executable links the Rust static library through a stable,
+application-owned C ABI anchor; Flutter Rust Bridge's optional generated C
+header is not part of that link contract.
 
 Screen Recording and Accessibility consent is granted by macOS to the exact signed application identity. After replacing or re-signing an application, remove stale consent entries if necessary, reopen Camellia Remote, and grant only the permissions required for the enabled features. Public distribution also requires an appropriate Developer ID signature and notarization; private/internal signing remains valid for controlled environments whose trust policy accepts it.
 
