@@ -8,8 +8,17 @@ installer sources documented in the repository provenance files.
 
 ## Steps
 
-1. `python preprocess.py`, see `python preprocess.py -h` for help.
+1. Run `python preprocess.py`, using `python preprocess.py -h` for the supported
+   inputs. The distribution directory must already contain the named application
+   executable. Product names, executable names, versions, and custom ARP metadata
+   are validated before they are written into WiX sources.
 2. Build the .sln solution.
+
+Preprocessing is repeatable: generated marker sections are replaced rather than
+appended, component identifiers are derived from stable product-relative paths,
+and the product upgrade code remains stable across builds. Run preprocessing only
+against a trusted build output because it executes that application to read its
+build date when producing installer metadata.
 
 Run `msiexec /i package.msi /l*v install.log` to record the log.
 
