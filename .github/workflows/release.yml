@@ -63,13 +63,17 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  CAMELLIA_REMOTE_DOCS_HOME_URL: ${{ github.server_url }}/${{ github.repository }}
+  CAMELLIA_REMOTE_LINUX_DISPLAY_DOCS_URL: ${{ github.server_url }}/${{ github.repository }}/blob/main/docs/platform-notes.md#linux-display-requirements
   CARGO_TERM_COLOR: always
-  RUST_TOOLCHAIN: "1.93.0"
+  RUST_TOOLCHAIN: "1.97.1"
   FLUTTER_CHANNEL: stable
   FLUTTER_VERSION: "3.44.5"
   FLUTTER_REVISION: f94f4fc76b4d74543ed9b085bbd75341ef65de22
+  COCOAPODS_VERSION: "1.17.0"
   NODE_VERSION: "24.18.0"
   ANDROID_NDK_VERSION: "28.2.13676358"
+  IOS_BUNDLE_ID: com.camellia.remote
   DEPENDENCY_MODE: locked
   RS_PUB_KEY: ${{ secrets.RS_PUB_KEY }}
   RENDEZVOUS_SERVERS: ${{ vars.RENDEZVOUS_SERVERS || secrets.RENDEZVOUS_SERVERS }}
@@ -110,6 +114,47 @@ jobs:
             echo "select at least one release output" >&2
             exit 1
           fi
+
+      - name: Require the trusted publication workflow
+        if: inputs.publish
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          expected="$GITHUB_REPOSITORY/.github/workflows/release.yml@refs/heads/$DEFAULT_BRANCH"
+          [[ "$WORKFLOW_REF" == "$expected" ]] || {
+            echo "Formal publication must run the default-branch workflow: $expected" >&2
+            exit 1
+          }
+
+      - name: Checkout trusted release policy
+        if: inputs.publish
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Release policy token
+        if: inputs.publish
+        id: policy-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-administration: read
+          permission-contents: write
+          permission-metadata: read
+
+      - name: Validate hosted release policy
+        if: inputs.publish
+        env:
+          GH_TOKEN: ${{ steps.policy-token.outputs.token }}
+          RELEASE_APP_LOGIN: ${{ vars.RELEASE_APP_LOGIN }}
+          RELEASE_APP_SLUG: ${{ steps.policy-token.outputs.app-slug }}
+        run: bash .github/scripts/validate-github-release-policy.sh
 
       - name: Checkout source metadata
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -154,19 +199,15 @@ jobs:
           runs_json="$(
             gh api -X GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
               -f head_sha="$commit" \
-              -f event=push \
               -f status=success \
               -f per_page=100
           )"
           ci_run_id="$(
-            jq -r --arg commit "$commit" \
-              '[.workflow_runs[] | select(.head_sha == $commit and .conclusion == "success")] | sort_by(.run_number) | last | .id // empty' \
-              <<< "$runs_json"
+            printf '%s' "$runs_json" |
+              python3 .github/scripts/select_release_ci_run.py \
+                --commit "$commit" \
+                --default-branch "$DEFAULT_BRANCH"
           )"
-          if [[ -z "$ci_run_id" ]]; then
-            echo "no successful push CI run exists for $commit" >&2
-            exit 1
-          fi
 
           bridge_artifact="bridge-generated-$commit"
           artifacts_json="$(
@@ -255,7 +296,7 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: x86_64-pc-windows-msvc
-      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+      - uses: ./.github/actions/setup-flutter
         with:
           channel: ${{ env.FLUTTER_CHANNEL }}
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -264,6 +305,15 @@ jobs:
         with:
           vcpkgDirectory: C:\vcpkg
       - uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3.0.0
+      - name: Resolve Windows signing mode
+        shell: pwsh
+        env:
+          WINDOWS_CODESIGN_CERTIFICATE_SHA256: ${{ inputs.publish && vars.WINDOWS_CODESIGN_CERTIFICATE_SHA256 || '' }}
+          WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT: ${{ inputs.publish && vars.WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT || '' }}
+          WINDOWS_CODESIGN_PFX_BASE64: ${{ inputs.publish && secrets.WINDOWS_CODESIGN_PFX_BASE64 || '' }}
+          WINDOWS_CODESIGN_PFX_PASSWORD: ${{ inputs.publish && secrets.WINDOWS_CODESIGN_PFX_PASSWORD || '' }}
+          WINDOWS_SIGNING_TRUST_MODE: ${{ inputs.publish && vars.WINDOWS_SIGNING_TRUST_MODE || '' }}
+        run: ./.github/scripts/resolve-windows-signing.ps1
       - name: Build
         shell: bash
         env:
@@ -279,7 +329,22 @@ jobs:
           cargo build --locked --release --lib --features flutter,hwcodec,vram
           (cd flutter && flutter build windows --release)
           mkdir -p artifacts
-          pwsh -NoProfile -Command "Compress-Archive -Path 'flutter/build/windows/x64/runner/Release/*' -DestinationPath 'artifacts/camellia-remote-${{ needs.prepare.outputs.version }}-windows-x64.zip' -Force"
+      - name: Sign and verify Windows application payload
+        shell: pwsh
+        env:
+          WINDOWS_CODESIGN_PFX_PASSWORD: ${{ inputs.publish && secrets.WINDOWS_CODESIGN_PFX_PASSWORD || '' }}
+          WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL || 'http://timestamp.digicert.com' }}
+        run: |
+          $applicationDirectory = 'flutter/build/windows/x64/runner/Release'
+          $ownedFiles = @("$applicationDirectory/camellia-remote.exe")
+          $nativeLibraries = @(
+            Get-ChildItem -LiteralPath $applicationDirectory -Recurse -File -Filter 'camellia_remote.dll'
+          )
+          if ($nativeLibraries.Count -ne 1) {
+            throw "Expected one Camellia native library; found $($nativeLibraries.Count)"
+          }
+          $ownedFiles += $nativeLibraries.FullName
+          ./.github/scripts/sign-windows-artifacts.ps1 -Path $ownedFiles
       - name: Build Windows installers
         shell: pwsh
         run: |
@@ -293,17 +358,56 @@ jobs:
             artifacts/camellia-remote-${{ needs.prepare.outputs.version }}-windows-x64-portable.exe
           Push-Location res/msi
           python preprocess.py --arp `
-            -d ../../flutter/build/windows/x64/runner/Release `
-            --app-name "Camellia Remote" --exe-name camellia-remote `
+            --architecture x64 --app-name "Camellia Remote" `
             -v "${{ needs.prepare.outputs.version }}"
           nuget restore msi.sln
           msbuild msi.sln -p:Configuration=Release -p:Platform=x64 /p:TargetVersion=Windows10
           $msi = Get-ChildItem ./Package/bin/*/Release/en-us/Package.msi | Select-Object -First 1
           Copy-Item $msi.FullName ../../artifacts/camellia-remote-${{ needs.prepare.outputs.version }}-windows-x64.msi
           Pop-Location
+      - name: Sign and verify Windows artifacts
+        shell: pwsh
+        env:
+          WINDOWS_CODESIGN_PFX_PASSWORD: ${{ inputs.publish && secrets.WINDOWS_CODESIGN_PFX_PASSWORD || '' }}
+          WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL || 'http://timestamp.digicert.com' }}
+        run: |
+          $ownedFiles = @(
+            'artifacts/camellia-remote-${{ needs.prepare.outputs.version }}-windows-x64-portable.exe',
+            'artifacts/camellia-remote-${{ needs.prepare.outputs.version }}-windows-x64.msi'
+          )
+          ./.github/scripts/sign-windows-artifacts.ps1 -Path $ownedFiles
+      - name: Package Windows artifacts and signing metadata
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -Path 'flutter/build/windows/x64/runner/Release/*' `
+            -DestinationPath 'artifacts/camellia-remote-${{ needs.prepare.outputs.version }}-windows-x64.zip' `
+            -Force
+          $metadata = @(
+            '.github/scripts/signing_metadata.py',
+            'write',
+            '--output', 'artifacts/native-signing-windows-x64.json',
+            '--artifact-directory', 'artifacts',
+            '--platform', 'windows',
+            '--architecture', 'x64',
+            '--native-signing', $env:WINDOWS_NATIVE_SIGNING,
+            '--distribution-trust', $env:WINDOWS_DISTRIBUTION_TRUST,
+            '--delivery', 'installable'
+          )
+          if ($env:WINDOWS_SIGNING_IDENTITY) {
+            $metadata += @('--identity', $env:WINDOWS_SIGNING_IDENTITY)
+          }
+          python @metadata
+      - name: Remove Windows signing material
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:WINDOWS_SIGNING_PFX_PATH) {
+            Remove-Item -LiteralPath $env:WINDOWS_SIGNING_PFX_PATH -Force -ErrorAction SilentlyContinue
+          }
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: camellia-remote-${{ needs.prepare.outputs.version }}-windows-x64
+          name: camellia-remote-${{ needs.prepare.outputs.version }}-windows-x64-run-${{ github.run_id }}-${{ github.run_attempt }}
           path: artifacts/*
           if-no-files-found: error
           retention-days: 7
@@ -350,6 +454,15 @@ jobs:
         with:
           vcpkgDirectory: C:\vcpkg
       - uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3.0.0
+      - name: Resolve Windows signing mode
+        shell: pwsh
+        env:
+          WINDOWS_CODESIGN_CERTIFICATE_SHA256: ${{ inputs.publish && vars.WINDOWS_CODESIGN_CERTIFICATE_SHA256 || '' }}
+          WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT: ${{ inputs.publish && vars.WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT || '' }}
+          WINDOWS_CODESIGN_PFX_BASE64: ${{ inputs.publish && secrets.WINDOWS_CODESIGN_PFX_BASE64 || '' }}
+          WINDOWS_CODESIGN_PFX_PASSWORD: ${{ inputs.publish && secrets.WINDOWS_CODESIGN_PFX_PASSWORD || '' }}
+          WINDOWS_SIGNING_TRUST_MODE: ${{ inputs.publish && vars.WINDOWS_SIGNING_TRUST_MODE || '' }}
+        run: ./.github/scripts/resolve-windows-signing.ps1
       - name: Build
         shell: bash
         env:
@@ -367,7 +480,22 @@ jobs:
           cp target/aarch64-pc-windows-msvc/release/camellia_remote.dll target/release/camellia_remote.dll
           (cd flutter && flutter.bat build windows --release)
           mkdir -p artifacts
-          pwsh -NoProfile -Command "Compress-Archive -Path 'flutter/build/windows/arm64/runner/Release/*' -DestinationPath 'artifacts/camellia-remote-${{ needs.prepare.outputs.version }}-windows-arm64.zip' -Force"
+      - name: Sign and verify Windows application payload
+        shell: pwsh
+        env:
+          WINDOWS_CODESIGN_PFX_PASSWORD: ${{ inputs.publish && secrets.WINDOWS_CODESIGN_PFX_PASSWORD || '' }}
+          WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL || 'http://timestamp.digicert.com' }}
+        run: |
+          $applicationDirectory = 'flutter/build/windows/arm64/runner/Release'
+          $ownedFiles = @("$applicationDirectory/camellia-remote.exe")
+          $nativeLibraries = @(
+            Get-ChildItem -LiteralPath $applicationDirectory -Recurse -File -Filter 'camellia_remote.dll'
+          )
+          if ($nativeLibraries.Count -ne 1) {
+            throw "Expected one Camellia native library; found $($nativeLibraries.Count)"
+          }
+          $ownedFiles += $nativeLibraries.FullName
+          ./.github/scripts/sign-windows-artifacts.ps1 -Path $ownedFiles
       - name: Build Windows installers
         shell: pwsh
         run: |
@@ -381,17 +509,56 @@ jobs:
             artifacts/camellia-remote-${{ needs.prepare.outputs.version }}-windows-arm64-portable.exe
           Push-Location res/msi
           python preprocess.py --arp `
-            -d ../../flutter/build/windows/arm64/runner/Release `
-            --app-name "Camellia Remote" --exe-name camellia-remote `
+            --architecture arm64 --app-name "Camellia Remote" `
             -v "${{ needs.prepare.outputs.version }}"
           nuget restore msi.sln
           msbuild msi.sln -p:Configuration=Release -p:Platform=ARM64 /p:TargetVersion=Windows10
           $msi = Get-ChildItem ./Package/bin/*/Release/en-us/Package.msi | Select-Object -First 1
           Copy-Item $msi.FullName ../../artifacts/camellia-remote-${{ needs.prepare.outputs.version }}-windows-arm64.msi
           Pop-Location
+      - name: Sign and verify Windows artifacts
+        shell: pwsh
+        env:
+          WINDOWS_CODESIGN_PFX_PASSWORD: ${{ inputs.publish && secrets.WINDOWS_CODESIGN_PFX_PASSWORD || '' }}
+          WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL || 'http://timestamp.digicert.com' }}
+        run: |
+          $ownedFiles = @(
+            'artifacts/camellia-remote-${{ needs.prepare.outputs.version }}-windows-arm64-portable.exe',
+            'artifacts/camellia-remote-${{ needs.prepare.outputs.version }}-windows-arm64.msi'
+          )
+          ./.github/scripts/sign-windows-artifacts.ps1 -Path $ownedFiles
+      - name: Package Windows artifacts and signing metadata
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -Path 'flutter/build/windows/arm64/runner/Release/*' `
+            -DestinationPath 'artifacts/camellia-remote-${{ needs.prepare.outputs.version }}-windows-arm64.zip' `
+            -Force
+          $metadata = @(
+            '.github/scripts/signing_metadata.py',
+            'write',
+            '--output', 'artifacts/native-signing-windows-arm64.json',
+            '--artifact-directory', 'artifacts',
+            '--platform', 'windows',
+            '--architecture', 'arm64',
+            '--native-signing', $env:WINDOWS_NATIVE_SIGNING,
+            '--distribution-trust', $env:WINDOWS_DISTRIBUTION_TRUST,
+            '--delivery', 'installable'
+          )
+          if ($env:WINDOWS_SIGNING_IDENTITY) {
+            $metadata += @('--identity', $env:WINDOWS_SIGNING_IDENTITY)
+          }
+          python @metadata
+      - name: Remove Windows signing material
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:WINDOWS_SIGNING_PFX_PATH) {
+            Remove-Item -LiteralPath $env:WINDOWS_SIGNING_PFX_PATH -Force -ErrorAction SilentlyContinue
+          }
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: camellia-remote-${{ needs.prepare.outputs.version }}-windows-arm64
+          name: camellia-remote-${{ needs.prepare.outputs.version }}-windows-arm64-run-${{ github.run_id }}-${{ github.run_attempt }}
           path: artifacts/*
           if-no-files-found: error
           retention-days: 7
@@ -403,14 +570,20 @@ jobs:
       always() && needs.prepare.result == 'success' &&
       (needs.approval.result == 'success' || needs.approval.result == 'skipped') &&
       inputs.build_macos_universal
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 90
+    env:
+      XCODE_VERSION: "26.2"
+      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
+      MACOSX_DEPLOYMENT_TARGET: "10.15"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.prepare.outputs.commit }}
           persist-credentials: false
           submodules: recursive
+      - name: Verify Xcode toolchain
+        run: bash .github/scripts/verify-xcode.sh "${{ env.XCODE_VERSION }}"
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ needs.prepare.outputs.bridge_artifact }}
@@ -421,13 +594,35 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: aarch64-apple-darwin,x86_64-apple-darwin
-      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+      - uses: ./.github/actions/setup-flutter
         with:
           channel: ${{ env.FLUTTER_CHANNEL }}
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: true
+      - name: Resolve macOS signing mode
+        shell: bash
+        env:
+          APPLE_API_ISSUER: ${{ inputs.publish && vars.APPLE_API_ISSUER || '' }}
+          APPLE_API_KEY: ${{ inputs.publish && vars.APPLE_API_KEY || '' }}
+          APPLE_API_PRIVATE_KEY: ${{ inputs.publish && secrets.APPLE_API_PRIVATE_KEY || '' }}
+          APPLE_CERTIFICATE: ${{ inputs.publish && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ inputs.publish && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_CERTIFICATE_SHA256: ${{ inputs.publish && vars.APPLE_SIGNING_CERTIFICATE_SHA256 || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ inputs.publish && vars.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_SIGNING_TRUST_MODE: ${{ inputs.publish && vars.APPLE_SIGNING_TRUST_MODE || '' }}
+        run: |
+          SIGNING_ENV_FILE="$GITHUB_ENV" SIGNING_TEMP_DIRECTORY="$RUNNER_TEMP" \
+            bash .github/scripts/resolve-macos-signing.sh
+      - name: Import macOS signing identity
+        if: env.MACOS_NATIVE_SIGNING == 'signed' || env.MACOS_NATIVE_SIGNING == 'notarized'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE_PASSWORD: ${{ inputs.publish && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+        run: |
+          SIGNING_ENV_FILE="$GITHUB_ENV" SIGNING_TEMP_DIRECTORY="$RUNNER_TEMP" \
+            bash .github/scripts/prepare-macos-signing.sh
       - name: Install macOS prerequisites
-        run: brew install nasm
+        run: bash .github/scripts/install-apple-prerequisites.sh
       - uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.6
         with:
           vcpkgDirectory: ${{ runner.temp }}/vcpkg
@@ -439,6 +634,7 @@ jobs:
             "${{ needs.prepare.outputs.build_number }}" \
             "${{ needs.prepare.outputs.source_date_epoch }}"
           bash .github/scripts/prepare-dependencies.sh "${{ env.DEPENDENCY_MODE }}"
+          bash .github/scripts/verify-apple-pod-locks.sh macos
           "$VCPKG_ROOT/vcpkg" install --triplet arm64-osx --x-install-root="$VCPKG_ROOT/installed"
           cargo build --locked --release --target aarch64-apple-darwin --lib --features flutter,hwcodec,screencapturekit,unix-file-copy-paste
           "$VCPKG_ROOT/vcpkg" install --triplet x64-osx --x-install-root="$VCPKG_ROOT/installed"
@@ -449,17 +645,41 @@ jobs:
             target/x86_64-apple-darwin/release/libcamellia_remote.dylib \
             -output target/release/libcamellia_remote.dylib
           (cd flutter && FLUTTER_XCODE_ARCHS="arm64 x86_64" flutter build macos --release)
-          mkdir -p artifacts
-          ditto -c -k --keepParent flutter/build/macos/Build/Products/Release/Camellia.app artifacts/camellia-remote-${{ needs.prepare.outputs.version }}-macos-universal.zip
-          dmg_root="$RUNNER_TEMP/camellia-dmg"
-          rm -rf "$dmg_root"
-          mkdir -p "$dmg_root"
-          cp -R flutter/build/macos/Build/Products/Release/Camellia.app "$dmg_root/"
-          ln -s /Applications "$dmg_root/Applications"
-          hdiutil create -volname Camellia -srcfolder "$dmg_root" -ov -format UDZO artifacts/camellia-remote-${{ needs.prepare.outputs.version }}-macos-universal.dmg
+      - name: Reject Apple build source migrations
+        if: always()
+        run: bash .github/scripts/verify-clean-source.sh
+      - name: Stage and verify macOS artifacts
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          bash .github/scripts/stage-macos-release.sh \
+            flutter/build/macos/Build/Products/Release \
+            artifacts
+      - name: Record macOS signing metadata
+        shell: bash
+        run: |
+          metadata=(
+            write
+            --output artifacts/native-signing-macos-universal.json
+            --artifact-directory artifacts
+            --platform macos
+            --architecture universal
+            --native-signing "$MACOS_NATIVE_SIGNING"
+            --distribution-trust "$MACOS_DISTRIBUTION_TRUST"
+            --delivery installable
+          )
+          if [[ -n "${MACOS_SIGNING_IDENTITY:-}" ]]; then
+            metadata+=(--identity "$MACOS_SIGNING_IDENTITY")
+          fi
+          python3 .github/scripts/signing_metadata.py "${metadata[@]}"
+      - name: Remove macOS signing material
+        if: always()
+        shell: bash
+        run: bash .github/scripts/cleanup-macos-signing.sh
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: camellia-remote-${{ needs.prepare.outputs.version }}-macos-universal
+          name: camellia-remote-${{ needs.prepare.outputs.version }}-macos-universal-run-${{ github.run_id }}-${{ github.run_attempt }}
           path: artifacts/*
           if-no-files-found: error
           retention-days: 7
@@ -508,6 +728,14 @@ jobs:
           path: .
           github-token: ${{ github.token }}
           run-id: ${{ needs.prepare.outputs.ci_run_id }}
+      - name: Resolve Linux artifact-signing mode
+        if: ${{ matrix.enabled }}
+        shell: bash
+        env:
+          LINUX_GPG_FINGERPRINT: ${{ inputs.publish && vars.LINUX_GPG_FINGERPRINT || '' }}
+          LINUX_GPG_PRIVATE_KEY: ${{ inputs.publish && secrets.LINUX_GPG_PRIVATE_KEY || '' }}
+          LINUX_GPG_PASSPHRASE: ${{ inputs.publish && secrets.LINUX_GPG_PASSPHRASE || '' }}
+        run: SIGNING_ENV_FILE="$GITHUB_ENV" bash .github/scripts/resolve-linux-signing.sh
       - name: Install prerequisites
         if: ${{ matrix.enabled }}
         run: |
@@ -516,13 +744,13 @@ jobs:
             clang cmake curl gcc g++ git libasound2-dev libclang-dev libdbus-1-dev libglib2.0-dev \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgtk-3-dev libaom-dev libopus-dev \
             libpam0g-dev libpulse-dev libva-dev libx11-dev libxi-dev libxtst-dev libxcb-randr0-dev libxcb-shape0-dev \
-            libxcb-xfixes0-dev libxdo-dev libxfixes-dev libvpx-dev libyuv-dev nasm ninja-build pkg-config unzip wget
+            libxcb-xfixes0-dev libxdo-dev libxfixes-dev libvpx-dev libyuv-dev gnupg nasm ninja-build pkg-config unzip wget
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         if: ${{ matrix.enabled }}
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: ${{ matrix.target }}
-      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+      - uses: ./.github/actions/setup-flutter
         if: ${{ matrix.enabled && matrix.arch != 'arm64' }}
         with:
           channel: ${{ env.FLUTTER_CHANNEL }}
@@ -565,20 +793,60 @@ jobs:
           (cd flutter && flutter build linux --release)
           mkdir -p artifacts/camellia-remote-${{ needs.prepare.outputs.version }}-linux-${{ matrix.arch }}
           cp -R flutter/build/linux/*/release/bundle/* artifacts/camellia-remote-${{ needs.prepare.outputs.version }}-linux-${{ matrix.arch }}/
-          tar -C artifacts -czf artifacts/camellia-remote-${{ needs.prepare.outputs.version }}-linux-${{ matrix.arch }}.tar.gz camellia-${{ needs.prepare.outputs.version }}-linux-${{ matrix.arch }}
+          tar -C artifacts -czf artifacts/camellia-remote-${{ needs.prepare.outputs.version }}-linux-${{ matrix.arch }}.tar.gz camellia-remote-${{ needs.prepare.outputs.version }}-linux-${{ matrix.arch }}
+          rm -rf artifacts/camellia-remote-${{ needs.prepare.outputs.version }}-linux-${{ matrix.arch }}
           bash .github/scripts/package-linux.sh \
             "${{ needs.prepare.outputs.version }}" \
             "${{ matrix.arch }}" \
             "${{ matrix.deb_arch }}" \
             "${{ matrix.appimage_arch }}"
+      - name: Sign and verify Linux artifacts
+        if: ${{ matrix.enabled && env.ARTIFACT_SIGNING == 'openpgp-detached' }}
+        shell: bash
+        env:
+          LINUX_GPG_PRIVATE_KEY: ${{ inputs.publish && secrets.LINUX_GPG_PRIVATE_KEY || '' }}
+          LINUX_GPG_PASSPHRASE: ${{ inputs.publish && secrets.LINUX_GPG_PASSPHRASE || '' }}
+        run: |
+          name="camellia-remote-${{ needs.prepare.outputs.version }}-linux-${{ matrix.arch }}"
+          public_key="artifacts/$name.signing-key.asc"
+          artifacts=(
+            "artifacts/$name.tar.gz"
+            "artifacts/$name.deb"
+            "artifacts/$name.AppImage"
+          )
+          LINUX_GPG_PUBLIC_KEY_OUTPUT="$public_key" \
+            bash .github/scripts/linux-openpgp-sign.sh "${artifacts[@]}"
+          LINUX_GPG_PUBLIC_KEY="$public_key" \
+            bash .github/scripts/linux-openpgp-verify.sh "${artifacts[@]}"
+      - name: Record Linux signing metadata
+        if: ${{ matrix.enabled }}
+        shell: bash
+        run: |
+          metadata=(
+            write
+            --output "artifacts/native-signing-linux-${{ matrix.arch }}.json"
+            --artifact-directory artifacts
+            --platform linux
+            --architecture "${{ matrix.arch }}"
+            --native-signing not-applicable
+            --distribution-trust not-applicable
+            --artifact-signing "$ARTIFACT_SIGNING"
+            --delivery installable
+          )
+          if [[ "$ARTIFACT_SIGNING" == openpgp-detached ]]; then
+            metadata+=(--artifact-signing-identity "$LINUX_GPG_FINGERPRINT")
+          fi
+          python3 .github/scripts/signing_metadata.py "${metadata[@]}"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: ${{ matrix.enabled }}
         with:
-          name: camellia-remote-${{ needs.prepare.outputs.version }}-linux-${{ matrix.arch }}
+          name: camellia-remote-${{ needs.prepare.outputs.version }}-linux-${{ matrix.arch }}-run-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             artifacts/*.tar.gz
             artifacts/*.deb
             artifacts/*.AppImage
+            artifacts/*.asc
+            artifacts/native-signing-*.json
           if-no-files-found: error
           retention-days: 7
 
@@ -618,12 +886,23 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
+      - name: Resolve Android signing mode
+        shell: bash
+        env:
+          ANDROID_SIGNING_KEY: ${{ inputs.publish && secrets.ANDROID_SIGNING_KEY || '' }}
+          ANDROID_KEY_STORE_PASSWORD: ${{ inputs.publish && secrets.ANDROID_KEY_STORE_PASSWORD || '' }}
+          ANDROID_KEY_PASSWORD: ${{ inputs.publish && secrets.ANDROID_KEY_PASSWORD || '' }}
+          ANDROID_ALIAS: ${{ inputs.publish && secrets.ANDROID_ALIAS || '' }}
+          ANDROID_SIGNING_CERTIFICATE_SHA256: ${{ inputs.publish && vars.ANDROID_SIGNING_CERTIFICATE_SHA256 || '' }}
+        run: |
+          SIGNING_ENV_FILE="$GITHUB_ENV" SIGNING_TEMP_DIRECTORY="$RUNNER_TEMP" \
+            bash .github/scripts/resolve-android-signing.sh
       - uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: aarch64-linux-android
-      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+      - uses: ./.github/actions/setup-flutter
         with:
           channel: ${{ env.FLUTTER_CHANNEL }}
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -643,6 +922,10 @@ jobs:
           echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
       - name: Build
         shell: bash
+        env:
+          ANDROID_KEY_STORE_PASSWORD: ${{ inputs.publish && secrets.ANDROID_KEY_STORE_PASSWORD || '' }}
+          ANDROID_KEY_PASSWORD: ${{ inputs.publish && secrets.ANDROID_KEY_PASSWORD || '' }}
+          CAMELLIA_FORMAL_RELEASE: "true"
         run: |
           bash .github/scripts/sync-version.sh \
             "${{ needs.prepare.outputs.version }}" \
@@ -674,11 +957,105 @@ jobs:
           (cd flutter && flutter build apk --release --target-platform android-arm64)
           (cd flutter && flutter build appbundle --release --target-platform android-arm64)
           mkdir -p artifacts
-          cp flutter/build/app/outputs/flutter-apk/app-release.apk artifacts/camellia-remote-${{ needs.prepare.outputs.version }}-android-arm64.apk
-          cp flutter/build/app/outputs/bundle/release/app-release.aab artifacts/camellia-remote-${{ needs.prepare.outputs.version }}-android-arm64.aab
+          mapfile -t apk_candidates < <(
+            find flutter/build/app/outputs/flutter-apk -maxdepth 1 -type f -name '*release*.apk'
+          )
+          mapfile -t aab_candidates < <(
+            find flutter/build/app/outputs/bundle/release -maxdepth 1 -type f -name '*.aab'
+          )
+          [[ "${#apk_candidates[@]}" == 1 && "${#aab_candidates[@]}" == 1 ]] || {
+            echo "Expected exactly one release APK and AAB" >&2
+            exit 1
+          }
+          apk="${apk_candidates[0]}"
+          aab="${aab_candidates[0]}"
+          apk_output="artifacts/camellia-remote-${{ needs.prepare.outputs.version }}-android-arm64${ANDROID_ARTIFACT_SUFFIX}.apk"
+          aab_output="artifacts/camellia-remote-${{ needs.prepare.outputs.version }}-android-arm64${ANDROID_ARTIFACT_SUFFIX}.aab"
+          cp "$apk" "$apk_output"
+          cp "$aab" "$aab_output"
+
+          build_tools="$(
+            find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d -print |
+              sort -V |
+              tail -n 1
+          )"
+          apksigner="$build_tools/apksigner"
+          [[ -x "$apksigner" ]] || {
+            echo "apksigner was not found in the installed Android build tools" >&2
+            exit 1
+          }
+          if [[ "$ANDROID_NATIVE_SIGNING" == signed ]]; then
+            certificate_sha256="$(
+              "$apksigner" verify --verbose --print-certs "$apk_output" |
+                sed -n 's/^Signer #1 certificate SHA-256 digest: //p' |
+                tr '[:lower:]' '[:upper:]'
+            )"
+            [[ "$certificate_sha256" == "$ANDROID_SIGNING_IDENTITY" ]] || {
+              echo "Android APK signer does not match the resolved keystore identity" >&2
+              exit 1
+            }
+            aab_verification="$(
+              jarsigner -J-Duser.language=en -verify -verbose -certs "$aab_output" 2>&1
+            )"
+            grep -F 'jar verified.' <<< "$aab_verification" >/dev/null || {
+              echo "Android AAB signature verification failed" >&2
+              exit 1
+            }
+          else
+            if "$apksigner" verify "$apk_output" >/dev/null 2>&1; then
+              echo "Android unsigned APK unexpectedly contains a valid signature" >&2
+              exit 1
+            fi
+            aab_verification="$(
+              jarsigner -J-Duser.language=en -verify -verbose -certs "$aab_output" 2>&1
+            )"
+            if grep -F 'jar verified.' <<< "$aab_verification" >/dev/null; then
+              echo "Android unsigned AAB unexpectedly contains a verified signature" >&2
+              exit 1
+            fi
+            if ! grep -F 'jar is unsigned.' <<< "$aab_verification" >/dev/null; then
+              echo "Android unsigned AAB did not report the expected unsigned state" >&2
+              exit 1
+            fi
+          fi
+      - name: Record Android signing metadata
+        shell: bash
+        run: |
+          trust=none
+          delivery=re-signing-input
+          metadata=(
+            write
+            --output artifacts/native-signing-android-arm64.json
+            --artifact-directory artifacts
+            --platform android
+            --architecture arm64
+            --native-signing "$ANDROID_NATIVE_SIGNING"
+            --distribution-trust none
+            --delivery "$delivery"
+          )
+          if [[ "$ANDROID_NATIVE_SIGNING" == signed ]]; then
+            trust=platform-key
+            delivery=installable
+            metadata=(
+              write
+              --output artifacts/native-signing-android-arm64.json
+              --artifact-directory artifacts
+              --platform android
+              --architecture arm64
+              --native-signing signed
+              --distribution-trust "$trust"
+              --identity "$ANDROID_SIGNING_IDENTITY"
+              --delivery "$delivery"
+            )
+          fi
+          python3 .github/scripts/signing_metadata.py "${metadata[@]}"
+      - name: Remove Android signing material
+        if: always()
+        shell: bash
+        run: rm -f -- "${CAMELLIA_ANDROID_STORE_FILE:-}"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: camellia-remote-${{ needs.prepare.outputs.version }}-android-arm64
+          name: camellia-remote-${{ needs.prepare.outputs.version }}-android-arm64-run-${{ github.run_id }}-${{ github.run_attempt }}
           path: artifacts/*
           if-no-files-found: error
           retention-days: 7
@@ -690,58 +1067,118 @@ jobs:
       always() && needs.prepare.result == 'success' &&
       (needs.approval.result == 'success' || needs.approval.result == 'skipped') &&
       inputs.build_ios
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 90
+    env:
+      XCODE_VERSION: "26.2"
+      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
+      IPHONEOS_DEPLOYMENT_TARGET: "13.0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.prepare.outputs.commit }}
           persist-credentials: false
           submodules: recursive
+      - name: Verify Xcode toolchain
+        run: bash .github/scripts/verify-xcode.sh "${{ env.XCODE_VERSION }}"
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ needs.prepare.outputs.bridge_artifact }}
           path: .
           github-token: ${{ github.token }}
           run-id: ${{ needs.prepare.outputs.ci_run_id }}
+      - name: Resolve iOS signing mode
+        shell: bash
+        env:
+          IOS_CERTIFICATE_BASE64: ${{ inputs.publish && secrets.IOS_CERTIFICATE_BASE64 || '' }}
+          IOS_CERTIFICATE_PASSWORD: ${{ inputs.publish && secrets.IOS_CERTIFICATE_PASSWORD || '' }}
+          IOS_PROVISIONING_PROFILE_BASE64: ${{ inputs.publish && secrets.IOS_PROVISIONING_PROFILE_BASE64 || '' }}
+          IOS_SIGNING_CERTIFICATE_SHA256: ${{ inputs.publish && vars.IOS_SIGNING_CERTIFICATE_SHA256 || '' }}
+          IOS_SIGNING_IDENTITY: ${{ inputs.publish && vars.IOS_SIGNING_IDENTITY || '' }}
+          IOS_TEAM_ID: ${{ inputs.publish && vars.IOS_TEAM_ID || '' }}
+          IOS_EXPORT_METHOD: ${{ inputs.publish && vars.IOS_EXPORT_METHOD || '' }}
+        run: |
+          SIGNING_ENV_FILE="$GITHUB_ENV" SIGNING_TEMP_DIRECTORY="$RUNNER_TEMP" \
+            bash .github/scripts/resolve-ios-signing.sh
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: aarch64-apple-ios
-      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+      - uses: ./.github/actions/setup-flutter
         with:
           channel: ${{ env.FLUTTER_CHANNEL }}
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: true
+      - name: Install iOS prerequisites
+        run: bash .github/scripts/install-apple-prerequisites.sh
       - uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.6
         with:
           vcpkgDirectory: ${{ runner.temp }}/vcpkg
+      - name: Prepare iOS signing identity and profile
+        if: env.IOS_NATIVE_SIGNING == 'signed'
+        shell: bash
+        env:
+          IOS_CERTIFICATE_PASSWORD: ${{ inputs.publish && secrets.IOS_CERTIFICATE_PASSWORD || '' }}
+          IOS_SIGNING_CERTIFICATE_SHA256: ${{ inputs.publish && vars.IOS_SIGNING_CERTIFICATE_SHA256 || '' }}
+          IOS_SIGNING_IDENTITY: ${{ inputs.publish && vars.IOS_SIGNING_IDENTITY || '' }}
+          IOS_TEAM_ID: ${{ inputs.publish && vars.IOS_TEAM_ID || '' }}
+          IOS_EXPORT_METHOD: ${{ inputs.publish && vars.IOS_EXPORT_METHOD || '' }}
+          IOS_SIGNING_XCCONFIG_PATH: ${{ github.workspace }}/flutter/ios/Flutter/Signing.xcconfig
+        run: |
+          SIGNING_ENV_FILE="$GITHUB_ENV" SIGNING_TEMP_DIRECTORY="$RUNNER_TEMP" \
+            bash .github/scripts/prepare-ios-signing.sh
       - name: Build
         shell: bash
+        env:
+          IOS_SIGNING_IDENTITY: ${{ inputs.publish && vars.IOS_SIGNING_IDENTITY || '' }}
+          IOS_TEAM_ID: ${{ inputs.publish && vars.IOS_TEAM_ID || '' }}
+          IOS_EXPORT_METHOD: ${{ inputs.publish && vars.IOS_EXPORT_METHOD || '' }}
         run: |
           bash .github/scripts/sync-version.sh \
             "${{ needs.prepare.outputs.version }}" \
             "${{ needs.prepare.outputs.build_number }}" \
             "${{ needs.prepare.outputs.source_date_epoch }}"
           bash .github/scripts/prepare-dependencies.sh "${{ env.DEPENDENCY_MODE }}"
+          bash .github/scripts/verify-apple-pod-locks.sh ios
           "$VCPKG_ROOT/vcpkg" install --triplet arm64-ios --x-install-root="$VCPKG_ROOT/installed"
           cargo build --locked --release --target aarch64-apple-ios --lib --features flutter
-          mkdir -p flutter/ios/Runner
-          cp target/aarch64-apple-ios/release/libcamellia_remote.a flutter/ios/Runner/camellia_remote.a
-          (cd flutter && flutter build ipa --release --no-codesign)
-          mkdir -p artifacts
-          archive="$(find flutter/build/ios/archive -maxdepth 1 -name '*.xcarchive' -print -quit)"
-          test -n "$archive"
-          ditto -c -k --keepParent "$archive" artifacts/camellia-remote-${{ needs.prepare.outputs.version }}-ios-xcarchive.zip
-          app="$(find "$archive/Products/Applications" -maxdepth 1 -name '*.app' -print -quit)"
-          test -n "$app"
-          ipa_root="$RUNNER_TEMP/camellia-ipa"
-          mkdir -p "$ipa_root/Payload"
-          cp -R "$app" "$ipa_root/Payload/"
-          (cd "$ipa_root" && zip -qry "$GITHUB_WORKSPACE/artifacts/camellia-remote-${{ needs.prepare.outputs.version }}-ios-unsigned.ipa" Payload)
+          bash .github/scripts/build-ios-release.sh
+      - name: Reject Apple build source migrations
+        if: always()
+        run: bash .github/scripts/verify-clean-source.sh
+      - name: Stage and verify iOS artifacts
+        shell: bash
+        run: >-
+          bash .github/scripts/stage-ios-release.sh
+          "${{ needs.prepare.outputs.version }}"
+      - name: Record iOS signing metadata
+        shell: bash
+        run: |
+          metadata=(
+            write
+            --output artifacts/native-signing-ios-arm64.json
+            --artifact-directory artifacts
+            --platform ios
+            --architecture arm64
+            --native-signing "$IOS_NATIVE_SIGNING"
+            --distribution-trust "$IOS_DISTRIBUTION_TRUST"
+          )
+          if [[ "$IOS_NATIVE_SIGNING" == signed ]]; then
+            metadata+=(
+              --identity "$IOS_SIGNING_IDENTITY_SHA256"
+              --delivery installable
+            )
+          else
+            metadata+=(--delivery re-signing-input)
+          fi
+          python3 .github/scripts/signing_metadata.py "${metadata[@]}"
+      - name: Remove iOS signing material
+        if: always()
+        shell: bash
+        run: bash .github/scripts/cleanup-ios-signing.sh
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: camellia-remote-${{ needs.prepare.outputs.version }}-ios
+          name: camellia-remote-${{ needs.prepare.outputs.version }}-ios-run-${{ github.run_id }}-${{ github.run_attempt }}
           path: artifacts/*
           if-no-files-found: error
           retention-days: 7
@@ -761,7 +1198,7 @@ jobs:
           ref: ${{ needs.prepare.outputs.commit }}
           persist-credentials: false
           submodules: recursive
-      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+      - uses: ./.github/actions/setup-flutter
         with:
           channel: ${{ env.FLUTTER_CHANNEL }}
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -782,15 +1219,26 @@ jobs:
           mkdir -p artifacts
           tar -C flutter/build -czf artifacts/camellia-remote-${{ needs.prepare.outputs.version }}-web.tar.gz web
           (cd flutter/build && zip -qry "$GITHUB_WORKSPACE/artifacts/camellia-remote-${{ needs.prepare.outputs.version }}-web.zip" web)
+      - name: Record Web artifact metadata
+        shell: bash
+        run: |
+          python3 .github/scripts/signing_metadata.py write \
+            --output artifacts/native-signing-web-any.json \
+            --artifact-directory artifacts \
+            --platform web \
+            --architecture any \
+            --native-signing not-applicable \
+            --distribution-trust not-applicable \
+            --delivery deployment-artifact
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: camellia-remote-${{ needs.prepare.outputs.version }}-web
+          name: camellia-remote-${{ needs.prepare.outputs.version }}-web-run-${{ github.run_id }}-${{ github.run_attempt }}
           path: artifacts/*
           if-no-files-found: error
           retention-days: 7
 
-  publish_release:
-    name: Publish Release Assets
+  finalize_candidate:
+    name: Candidate evidence
     needs:
       - prepare
       - approval
@@ -802,8 +1250,8 @@ jobs:
       - build_ios
       - build_web
     if: >-
-      always() && inputs.publish &&
-      needs.prepare.result == 'success' && needs.approval.result == 'success' &&
+      always() && needs.prepare.result == 'success' &&
+      (needs.approval.result == 'success' || needs.approval.result == 'skipped') &&
       (!inputs.build_windows_x64 || needs.build_windows_x64.result == 'success') &&
       (!inputs.build_windows_arm64 || needs.build_windows_arm64.result == 'success') &&
       (!inputs.build_macos_universal || needs.build_macos_universal.result == 'success') &&
@@ -812,11 +1260,194 @@ jobs:
       (!inputs.build_ios || needs.build_ios.result == 'success') &&
       (!inputs.build_web || needs.build_web.result == 'success')
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      attestations: write
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout immutable candidate source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.prepare.outputs.commit }}
+          submodules: recursive
+
+      - name: Download exact-attempt platform artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: camellia-remote-${{ needs.prepare.outputs.version }}-*-run-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-inputs
+
+      - name: Assemble exact candidate inventory
+        shell: bash
+        env:
+          ANDROID: ${{ inputs.build_android_arm64 }}
+          APP_VERSION: ${{ needs.prepare.outputs.app_version }}
+          BUILD_NUMBER: ${{ needs.prepare.outputs.build_number }}
+          CI_RUN_ID: ${{ needs.prepare.outputs.ci_run_id }}
+          HBB_COMMON_COMMIT: ${{ needs.prepare.outputs.camellia_remote_protocol }}
+          IOS: ${{ inputs.build_ios }}
+          LINUX_ARM64: ${{ inputs.build_linux_arm64 }}
+          LINUX_X64: ${{ inputs.build_linux_x64 }}
+          MACOS: ${{ inputs.build_macos_universal }}
+          PUBLISH: ${{ inputs.publish }}
+          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          SOURCE_DATE_EPOCH: ${{ needs.prepare.outputs.source_date_epoch }}
+          WEB: ${{ inputs.build_web }}
+          WINDOWS_ARM64: ${{ inputs.build_windows_arm64 }}
+          WINDOWS_X64: ${{ inputs.build_windows_x64 }}
+        run: |
+          args=(
+            assemble
+            --input-directory "$RUNNER_TEMP/release-inputs"
+            --output-directory "$RUNNER_TEMP/release-assets"
+            --version "$RELEASE_VERSION"
+            --app-version "$APP_VERSION"
+            --build-number "$BUILD_NUMBER"
+            --tag "$RELEASE_TAG"
+            --source-commit "$RELEASE_COMMIT"
+            --protocol-commit "$HBB_COMMON_COMMIT"
+            --verified-ci-run-id "$CI_RUN_ID"
+            --source-date-epoch "$SOURCE_DATE_EPOCH"
+            --candidate-run-id "$GITHUB_RUN_ID"
+            --candidate-run-attempt "$GITHUB_RUN_ATTEMPT"
+            --repository "$GITHUB_REPOSITORY"
+            --workflow-ref "$GITHUB_WORKFLOW_REF"
+            --publication-requested "$PUBLISH"
+            --rust-toolchain "$RUST_TOOLCHAIN"
+            --flutter-version "$FLUTTER_VERSION"
+            --flutter-revision "$FLUTTER_REVISION"
+            --node-version "$NODE_VERSION"
+            --android-ndk-version "$ANDROID_NDK_VERSION"
+          )
+          if [[ "$WINDOWS_X64" == "true" ]]; then args+=(--selected-platform windows-x64); fi
+          if [[ "$WINDOWS_ARM64" == "true" ]]; then args+=(--selected-platform windows-arm64); fi
+          if [[ "$MACOS" == "true" ]]; then args+=(--selected-platform macos-universal); fi
+          if [[ "$LINUX_X64" == "true" ]]; then args+=(--selected-platform linux-x64); fi
+          if [[ "$LINUX_ARM64" == "true" ]]; then args+=(--selected-platform linux-arm64); fi
+          if [[ "$ANDROID" == "true" ]]; then args+=(--selected-platform android-arm64); fi
+          if [[ "$IOS" == "true" ]]; then args+=(--selected-platform ios); fi
+          if [[ "$WEB" == "true" ]]; then args+=(--selected-platform web); fi
+          python3 .github/scripts/candidate_evidence.py "${args[@]}"
+
+      - name: Aggregate native signing evidence
+        shell: bash
+        run: |
+          python3 .github/scripts/signing_metadata.py aggregate \
+            --asset-directory "$RUNNER_TEMP/release-assets" \
+            --manifest "$RUNNER_TEMP/release-assets/versions.json" \
+            --report "$RUNNER_TEMP/release-assets/NATIVE-SIGNING.md"
+
+      - name: Generate pinned SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          artifact-name: camellia-remote-${{ needs.prepare.outputs.version }}.spdx.json
+          format: spdx-json
+          output-file: ${{ runner.temp }}/release-assets/camellia-remote-${{ needs.prepare.outputs.version }}.spdx.json
+          path: .
+          syft-version: v1.50.0
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Generate attestation subject inventory
+        run: >-
+          python3 .github/scripts/candidate_evidence.py checksums
+          --asset-directory "$RUNNER_TEMP/release-assets"
+
+      - name: Attest exact candidate inventory
+        id: attest
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          create-storage-record: false
+          subject-checksums: ${{ runner.temp }}/release-assets/SHA256SUMS
+
+      - name: Cryptographically verify provenance bundle
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROVENANCE_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+          SIGNER_WORKFLOW: ${{ github.repository }}/.github/workflows/release.yml
+        run: |
+          [[ -f "$PROVENANCE_BUNDLE" ]] || {
+            echo "attestation action did not produce a provenance bundle" >&2
+            exit 1
+          }
+          while IFS= read -r checksum; do
+            name="${checksum#*  }"
+            gh attestation verify "$RUNNER_TEMP/release-assets/$name" \
+              --bundle "$PROVENANCE_BUNDLE" \
+              --deny-self-hosted-runners \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$SIGNER_WORKFLOW" >/dev/null
+          done < "$RUNNER_TEMP/release-assets/SHA256SUMS"
+
+      - name: Preserve provenance bundle and finalize checksums
+        shell: bash
+        env:
+          PROVENANCE_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          [[ -f "$PROVENANCE_BUNDLE" ]] || {
+            echo "attestation action did not produce a provenance bundle" >&2
+            exit 1
+          }
+          cp -- "$PROVENANCE_BUNDLE" \
+            "$RUNNER_TEMP/release-assets/camellia-remote-${RELEASE_VERSION}.provenance.intoto.jsonl"
+          python3 .github/scripts/candidate_evidence.py checksums \
+            --asset-directory "$RUNNER_TEMP/release-assets"
+
+      - name: Verify final candidate evidence
+        run: >-
+          python3 .github/scripts/candidate_evidence.py verify
+          --asset-directory "$RUNNER_TEMP/release-assets"
+          --version '${{ needs.prepare.outputs.version }}'
+          --source-commit '${{ needs.prepare.outputs.commit }}'
+
+      - name: Upload consolidated candidate evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: candidate-assets-${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.commit }}-run-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-assets/*
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Summarize candidate evidence
+        shell: bash
+        env:
+          CANDIDATE_ARTIFACT: candidate-assets-${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.commit }}-run-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          {
+            echo "### Consolidated candidate evidence"
+            echo
+            echo "- Artifact: \`$CANDIDATE_ARTIFACT\`"
+            echo "- Retention: 7 days"
+            echo "- SPDX generator: \`syft v1.50.0\`"
+            echo
+            echo '```text'
+            cat "$RUNNER_TEMP/release-assets/SHA256SUMS"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  publish_release:
+    name: Publish Release Assets
+    needs:
+      - prepare
+      - approval
+      - finalize_candidate
+    if: >-
+      always() && inputs.publish &&
+      needs.prepare.result == 'success' &&
+      needs.approval.result == 'success' &&
+      needs.finalize_candidate.result == 'success'
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
-      attestations: write
-      contents: write
-      id-token: write
+      actions: read
+      contents: read
     steps:
       - name: Checkout immutable release metadata
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -824,6 +1455,18 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
           ref: ${{ needs.prepare.outputs.commit }}
+
+      - name: Release publication token
+        id: release-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-administration: read
+          permission-contents: write
+          permission-metadata: read
 
       - name: Recheck release tag immutability
         shell: bash
@@ -838,87 +1481,27 @@ jobs:
             fi
           done
 
-      - name: Download release artifacts
+      - name: Download consolidated candidate evidence
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: camellia-remote-*
-          path: release-inputs
-      - name: Generate checksums and version manifest
+          name: candidate-assets-${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.commit }}-run-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-assets
+
+      - name: Reverify candidate before publication
+        run: >-
+          python3 .github/scripts/candidate_evidence.py verify
+          --asset-directory release-assets
+          --version '${{ needs.prepare.outputs.version }}'
+          --source-commit '${{ needs.prepare.outputs.commit }}'
+
+      - name: Create, read back, and publish immutable Release
         env:
-          APP_VERSION: ${{ needs.prepare.outputs.app_version }}
-          BUILD_NUMBER: ${{ needs.prepare.outputs.build_number }}
-          CI_RUN_ID: ${{ needs.prepare.outputs.ci_run_id }}
-          HBB_COMMON_COMMIT: ${{ needs.prepare.outputs.camellia_remote_protocol }}
+          GH_TOKEN: ${{ steps.release-token.outputs.token }}
+          RELEASE_APP_LOGIN: ${{ vars.RELEASE_APP_LOGIN }}
+          RELEASE_ASSET_DIRECTORY: ${{ github.workspace }}/release-assets
+          RELEASE_CHECKSUM_FILE: ${{ github.workspace }}/release-assets/SHA256SUMS
           RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+          RELEASE_NOTES_FILE: ${{ github.workspace }}/release-assets/NATIVE-SIGNING.md
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
-          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
-          SOURCE_DATE_EPOCH: ${{ needs.prepare.outputs.source_date_epoch }}
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import hashlib
-          import json
-          import os
-          import shutil
-
-          source = Path("release-inputs")
-          output = Path("release-assets")
-          output.mkdir()
-
-          for path in sorted(source.glob("*/*")):
-              if not path.is_file():
-                  continue
-              destination = output / path.name
-              if destination.exists():
-                  raise RuntimeError(f"duplicate release filename: {path.name}")
-              shutil.copy2(path, destination)
-
-          artifacts = sorted(output.iterdir())
-          if not artifacts:
-              raise RuntimeError("no release artifacts were downloaded")
-
-          manifest = {
-              "version": os.environ["RELEASE_VERSION"],
-              "app_version": os.environ["APP_VERSION"],
-              "build_number": int(os.environ["BUILD_NUMBER"]),
-              "tag": os.environ["RELEASE_TAG"],
-              "source_commit": os.environ["RELEASE_COMMIT"],
-              "camellia_remote_protocol_commit": os.environ["HBB_COMMON_COMMIT"],
-              "verified_ci_run_id": int(os.environ["CI_RUN_ID"]),
-              "source_date_epoch": int(os.environ["SOURCE_DATE_EPOCH"]),
-              "dependency_mode": "locked",
-              "rust_toolchain": os.environ["RUST_TOOLCHAIN"],
-              "flutter_version": os.environ["FLUTTER_VERSION"],
-              "flutter_revision": os.environ["FLUTTER_REVISION"],
-              "node_version": os.environ["NODE_VERSION"],
-              "android_ndk_version": os.environ["ANDROID_NDK_VERSION"],
-          }
-          (output / "versions.json").write_text(
-              json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-              encoding="utf-8",
-          )
-
-          checksums = []
-          for path in sorted(output.iterdir()):
-              digest = hashlib.sha256(path.read_bytes()).hexdigest()
-              checksums.append(f"{digest}  {path.name}")
-          (output / "SHA256SUMS").write_text(
-              "\n".join(checksums) + "\n",
-              encoding="utf-8",
-          )
-          PY
-      - name: Attest release artifacts
-        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
-        with:
-          create-storage-record: false
-          subject-path: release-assets/*
-      - name: Publish release
-        uses: softprops/action-gh-release@fe965f7af51af5f2602596916f38a38df2e33de0 # v3.0.2
-        with:
-          draft: false
-          fail_on_unmatched_files: true
-          generate_release_notes: true
-          prerelease: false
-          tag_name: ${{ needs.prepare.outputs.release_tag }}
-          target_commitish: ${{ needs.prepare.outputs.commit }}
-          files: release-assets/*
+          RELEASE_TITLE: Camellia Remote Client ${{ needs.prepare.outputs.app_version }}
+        run: bash .github/scripts/publish-verified-release.sh

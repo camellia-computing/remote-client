@@ -50,6 +50,10 @@ use std::{
 #[cfg(not(any(target_os = "ios")))]
 const DEFAULT_MAX_VALIDATED_FILES: usize = 10_000;
 
+/// Hard ceiling for an operator-supplied per-request file count.
+#[cfg(not(any(target_os = "ios")))]
+const MAX_CONFIGURED_VALIDATED_FILES: usize = 100_000;
+
 /// Maximum number of files allowed in a single file transfer request.
 ///
 /// This limit prevents excessive I/O and memory usage when dealing with
@@ -68,31 +72,26 @@ static MAX_VALIDATED_FILES: std::sync::OnceLock<usize> = std::sync::OnceLock::ne
 ///
 /// Initializes the value from configuration (`OPTION_FILE_TRANSFER_MAX_FILES`)
 /// on first call. Semantics:
-/// - If the option is set to `0`, `DEFAULT_MAX_VALIDATED_FILES` (10,000) is used as a safe upper bound.
-/// - If the option is unset, negative, or non-integer,
-///   `usize::MAX` is used to represent "no limit" for backward compatibility with older versions
-///   that did not enforce any file‑count restriction.
-///   (Note: negative values are not valid for `usize` and will cause parsing to fail.)
+/// - Missing, zero, negative, non-integer, and overflowing values use the safe
+///   10,000-file default.
+/// - Positive values are capped at 100,000 files so configuration cannot remove
+///   the resource bound.
 ///
 /// Unit: number of files.
 #[cfg(not(any(target_os = "ios")))]
 #[inline]
 pub fn get_max_validated_files() -> usize {
-    // If `OPTION_FILE_TRANSFER_MAX_FILES` unset, negative, or non-integer, use
-    // `usize::MAX` to represent "no limit", maintaining backward compatibility
-    // with versions that had no file transfer restrictions.
-    const NO_LIMIT_FILE_COUNT: usize = usize::MAX;
     *MAX_VALIDATED_FILES.get_or_init(|| {
-        let c = crate::get_builtin_option(OPTION_FILE_TRANSFER_MAX_FILES)
-            .trim()
-            .parse::<usize>()
-            .unwrap_or(NO_LIMIT_FILE_COUNT);
-        if c == 0 {
-            DEFAULT_MAX_VALIDATED_FILES
-        } else {
-            c
-        }
+        configured_max_validated_files(&crate::get_builtin_option(OPTION_FILE_TRANSFER_MAX_FILES))
     })
+}
+
+#[cfg(not(any(target_os = "ios")))]
+fn configured_max_validated_files(raw: &str) -> usize {
+    match raw.trim().parse::<usize>() {
+        Ok(value) if value > 0 => value.min(MAX_CONFIGURED_VALIDATED_FILES),
+        _ => DEFAULT_MAX_VALIDATED_FILES,
+    }
 }
 
 /// Check if file count exceeds the maximum allowed limit.
@@ -1698,6 +1697,36 @@ mod tests {
         tokio::{runtime::Runtime, sync::mpsc::unbounded_channel},
     };
     use std::fs;
+
+    #[test]
+    #[cfg(not(any(target_os = "ios")))]
+    fn configured_file_count_limit_is_always_bounded() {
+        assert_eq!(
+            configured_max_validated_files(""),
+            DEFAULT_MAX_VALIDATED_FILES
+        );
+        assert_eq!(
+            configured_max_validated_files("not-a-number"),
+            DEFAULT_MAX_VALIDATED_FILES
+        );
+        assert_eq!(
+            configured_max_validated_files("-1"),
+            DEFAULT_MAX_VALIDATED_FILES
+        );
+        assert_eq!(
+            configured_max_validated_files("0"),
+            DEFAULT_MAX_VALIDATED_FILES
+        );
+        assert_eq!(configured_max_validated_files("25000"), 25_000);
+        assert_eq!(
+            configured_max_validated_files("100001"),
+            MAX_CONFIGURED_VALIDATED_FILES
+        );
+        assert_eq!(
+            configured_max_validated_files(&usize::MAX.to_string()),
+            MAX_CONFIGURED_VALIDATED_FILES
+        );
+    }
 
     #[test]
     #[cfg(not(any(target_os = "ios")))]

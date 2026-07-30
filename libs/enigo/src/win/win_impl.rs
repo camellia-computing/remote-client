@@ -1,7 +1,7 @@
-use self::winapi::ctypes::c_int;
-use self::winapi::shared::{basetsd::ULONG_PTR, minwindef::*, windef::*};
-use self::winapi::um::winbase::*;
-use self::winapi::um::winuser::*;
+use winapi::ctypes::c_int;
+use winapi::shared::{basetsd::ULONG_PTR, minwindef::*, windef::*};
+use winapi::um::winbase::*;
+use winapi::um::winuser::*;
 
 use crate::win::keycodes::*;
 use crate::{Key, KeyboardControllable, MouseButton, MouseControllable};
@@ -20,7 +20,7 @@ static mut LAYOUT: HKL = std::ptr::null_mut();
 pub const ENIGO_INPUT_EXTRA_VALUE: ULONG_PTR = 100;
 
 fn mouse_event(flags: u32, data: u32, dx: i32, dy: i32) -> DWORD {
-    let mut u = INPUT_u::default();
+    let mut u: INPUT_u = unsafe { std::mem::zeroed() };
     unsafe {
         *u.mi_mut() = MOUSEINPUT {
             dx,

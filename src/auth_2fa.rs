@@ -1,9 +1,8 @@
 use camellia_remote_protocol::{
     anyhow::anyhow,
-    bail,
     config::Config,
     get_time,
-    password_security::{decrypt_vec_or_original, encrypt_vec_or_original},
+    password_security::{decrypt_vec, encrypt_vec},
     ResultType,
 };
 use serde_derive::{Deserialize, Serialize};
@@ -52,7 +51,7 @@ impl TOTPInfo {
     }
 
     pub fn into_string(&self) -> ResultType<String> {
-        let secret = encrypt_vec_or_original(self.secret.as_slice(), "00", 1024);
+        let secret = encrypt_vec(self.secret.as_slice(), 1024)?;
         let totp_info = TOTPInfo {
             secret,
             ..self.clone()
@@ -63,13 +62,8 @@ impl TOTPInfo {
 
     pub fn from_str(data: &str) -> ResultType<TOTP> {
         let mut totp_info = serde_json::from_str::<TOTPInfo>(data)?;
-        let (secret, success, _) = decrypt_vec_or_original(&totp_info.secret, "00");
-        if success {
-            totp_info.secret = secret;
-            return Ok(totp_info.new_totp()?);
-        } else {
-            bail!("decrypt_vec_or_original 2fa secret failed")
-        }
+        totp_info.secret = decrypt_vec(&totp_info.secret)?;
+        totp_info.new_totp()
     }
 }
 
@@ -121,7 +115,7 @@ pub struct TelegramBot {
 
 impl TelegramBot {
     fn into_string(&self) -> ResultType<String> {
-        let token = encrypt_vec_or_original(self.token_str.as_bytes(), "00", 1024);
+        let token = encrypt_vec(self.token_str.as_bytes(), 1024)?;
         let bot = TelegramBot {
             token,
             ..self.clone()
@@ -145,12 +139,8 @@ impl TelegramBot {
             return Ok(None);
         }
         let mut bot = serde_json::from_str::<TelegramBot>(&data)?;
-        let (token, success, _) = decrypt_vec_or_original(&bot.token, "00");
-        if success {
-            bot.token_str = String::from_utf8(token)?;
-            return Ok(Some(bot));
-        }
-        bail!("decrypt_vec_or_original telegram bot token failed")
+        bot.token_str = String::from_utf8(decrypt_vec(&bot.token)?)?;
+        Ok(Some(bot))
     }
 }
 
@@ -201,4 +191,32 @@ pub fn get_chatid_telegram(bot_token: &str) -> ResultType<Option<String>> {
     }
 
     Ok(chat_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn totp_secret_roundtrip_uses_authenticated_storage() {
+        let info = TOTPInfo::gen_totp_info("test-device".to_owned(), 6).unwrap();
+        let storage = info.into_string().unwrap();
+        let stored_info = serde_json::from_str::<TOTPInfo>(&storage).unwrap();
+
+        assert_ne!(stored_info.secret, info.secret);
+        assert!(TOTPInfo::from_str(&storage).is_ok());
+    }
+
+    #[test]
+    fn plaintext_totp_secret_is_rejected() {
+        let storage = serde_json::to_string(&TOTPInfo {
+            name: "test-device".to_owned(),
+            secret: b"plaintext-secret".to_vec(),
+            digits: 6,
+            created_at: get_time(),
+        })
+        .unwrap();
+
+        assert!(TOTPInfo::from_str(&storage).is_err());
+    }
 }

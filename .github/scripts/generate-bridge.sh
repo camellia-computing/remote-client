@@ -33,4 +33,7 @@ fi
 
 flutter_rust_bridge_codegen generate "${args[@]}"
 python3 .github/scripts/generate-bridge-facade.py
-dart format ./flutter/lib/generated_bridge.dart
+dart format \
+  ./flutter/lib/generated_bridge.dart \
+  ./flutter/lib/generated_bridge
+python3 .github/scripts/normalize-generated-bridge.py

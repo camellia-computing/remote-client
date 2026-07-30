@@ -23,7 +23,6 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::common::SOFTWARE_UPDATE_URL;
 #[cfg(feature = "flutter")]
 use crate::hbbs_http::account;
 #[cfg(not(any(target_os = "ios")))]
@@ -731,17 +730,6 @@ pub fn current_is_wayland() -> bool {
 }
 
 #[inline]
-pub fn get_new_version() -> String {
-    (*SOFTWARE_UPDATE_URL
-        .lock()
-        .unwrap()
-        .rsplit('/')
-        .next()
-        .unwrap_or(""))
-    .to_string()
-}
-
-#[inline]
 pub fn get_version() -> String {
     crate::VERSION.to_owned()
 }
@@ -768,7 +756,9 @@ pub fn discover() {
 
 #[cfg(feature = "flutter")]
 pub fn peer_to_map(id: String, p: PeerConfig) -> HashMap<&'static str, String> {
-    use camellia_remote_protocol::sodiumoxide::base64;
+    use camellia_remote_protocol::base64::{
+        engine::general_purpose::STANDARD as BASE64, Engine as _,
+    };
     HashMap::<&str, String>::from_iter([
         ("id", id),
         ("username", p.info.username.clone()),
@@ -778,10 +768,7 @@ pub fn peer_to_map(id: String, p: PeerConfig) -> HashMap<&'static str, String> {
             "alias",
             p.options.get("alias").unwrap_or(&"".to_owned()).to_owned(),
         ),
-        (
-            "hash",
-            base64::encode(p.password, base64::Variant::Original),
-        ),
+        ("hash", BASE64.encode(p.password)),
     ])
 }
 

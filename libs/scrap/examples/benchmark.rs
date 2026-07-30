@@ -62,7 +62,7 @@ fn main() {
         "benchmark {}x{} quality:{:?}, i444:{:?}",
         width, height, quality, args.flag_i444
     );
-    [VP8, VP9].map(|codec| {
+    let _ = [VP8, VP9].map(|codec| {
         test_vpx(
             &mut c,
             codec,

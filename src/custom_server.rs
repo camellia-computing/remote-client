@@ -1,7 +1,7 @@
 use camellia_remote_protocol::{
     bail,
     base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _},
-    sodiumoxide::crypto::sign,
+    crypto::sign,
     ResultType,
 };
 use serde_derive::{Deserialize, Serialize};
@@ -24,7 +24,9 @@ fn get_custom_server_from_config_string(s: &str) -> ResultType<CustomServer> {
         170, 40, 203, 97, 24, 15, 43, 127, 167, 203, 125, 205, 221, 85, 85, 122, 73, 205, 87, 49,
         186, 250, 180, 164, 69, 85, 231, 122, 23, 211, 246, 131,
     ];
-    let pk = sign::PublicKey(*PK);
+    let pk = sign::PublicKey::from_slice(PK).ok_or_else(|| {
+        camellia_remote_protocol::anyhow::anyhow!("Embedded signing key is invalid")
+    })?;
     let data = URL_SAFE_NO_PAD.decode(tmp)?;
     if let Ok(lic) = rmp_serde::from_slice::<CustomServer>(&data) {
         return Ok(lic);

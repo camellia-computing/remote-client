@@ -33,6 +33,11 @@ mod bridge_generated;
 pub mod flutter;
 #[cfg(any(target_os = "android", target_os = "ios", feature = "flutter"))]
 pub mod flutter_ffi;
+
+#[cfg(target_os = "ios")]
+#[no_mangle]
+pub extern "C" fn camellia_remote_ios_link_anchor() {}
+
 use common::*;
 mod auth_2fa;
 #[cfg(not(target_os = "ios"))]
@@ -49,9 +54,6 @@ mod tray;
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod whiteboard;
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-mod updater;
 
 mod ui_cm_interface;
 mod ui_interface;

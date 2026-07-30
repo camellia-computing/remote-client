@@ -15,10 +15,13 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
+  CAMELLIA_REMOTE_DOCS_HOME_URL: ${{ github.server_url }}/${{ github.repository }}
+  CAMELLIA_REMOTE_LINUX_DISPLAY_DOCS_URL: ${{ github.server_url }}/${{ github.repository }}/blob/main/docs/platform-notes.md#linux-display-requirements
   CARGO_TERM_COLOR: always
-  RUST_TOOLCHAIN: "1.93.0"
+  RUST_TOOLCHAIN: "1.97.1"
   FLUTTER_CHANNEL: stable
   FLUTTER_VERSION: "3.44.5"
+  COCOAPODS_VERSION: "1.17.0"
   NODE_VERSION: "24.18.0"
   DEPENDENCY_MODE: locked
 
@@ -55,6 +58,7 @@ jobs:
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             runtime=true
             automation=true
+            dependencies=true
           else
             if [[ "$EVENT_NAME" == "pull_request" ]]; then
               base="$PR_BASE_SHA"
@@ -71,6 +75,9 @@ jobs:
             git diff --name-only -z "$base" "$head" > "$changed_paths"
             while IFS= read -r -d '' path; do
               case "$path" in
+                .github/workflows/ci.yml|.github/workflows/release.yml)
+                  runtime=true
+                  ;;
                 README.md|README_*.md|docs/*|LICENSE|LICENSE.*|CONTRIBUTING.md|CODE_OF_CONDUCT.md|.github/ISSUE_TEMPLATE/*|.github/workflows/*|.github/dependabot.yml|.github/scripts/release_metadata.py|.github/scripts/tests/test_release_metadata.py)
                   ;;
                 *)
@@ -83,7 +90,7 @@ jobs:
                   ;;
               esac
               case "$path" in
-                Cargo.toml|Cargo.lock|*/Cargo.toml|*/Cargo.lock|flutter/pubspec.yaml|flutter/pubspec.lock|flutter/web/js/package.json|flutter/web/js/package-lock.json|vcpkg.json|vcpkg-configuration.json|.gitmodules|libs/camellia_remote_protocol|.github/dependabot.yml|.github/workflows/*)
+                Cargo.toml|Cargo.lock|*/Cargo.toml|*/Cargo.lock|flutter/pubspec.yaml|flutter/pubspec.lock|flutter/web/js/package.json|flutter/web/js/package-lock.json|flutter/ios/Podfile|flutter/macos/Podfile|vcpkg.json|vcpkg-configuration.json|res/vcpkg/*|res/vcpkg-triplets/*|.gitmodules|libs/camellia_remote_protocol|.github/dependabot.yml|.github/workflows/*)
                   dependencies=true
                   ;;
               esac
@@ -162,13 +169,46 @@ jobs:
       - name: Lint workflows and shell scripts
         run: |
           go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
-          shellcheck .github/scripts/*.sh flutter/web/tools/build_web.sh
+          shellcheck \
+            .github/actions/setup-flutter/*.sh \
+            .github/scripts/*.sh \
+            .github/scripts/tests/*.sh \
+            flutter/web/tools/build_web.sh
+
+      - name: Install Java for Android signing tests
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
+        with:
+          distribution: temurin
+          java-version: "21"
 
       - name: Test build automation
         run: |
           python3 -m compileall -q .github/scripts libs/portable
+          python3 .github/scripts/verify_apple_deployment.py
           python3 -m unittest discover -s .github/scripts/tests -v
           python3 -m unittest discover -s libs/portable/tests -v
+          bash .github/scripts/tests/test_clean_source.sh
+          bash .github/scripts/tests/test_dependency_lock_scope.sh
+          bash .github/scripts/tests/test_flutter_archive_verification.sh
+          bash .github/scripts/tests/test_release_publication.sh
+          bash .github/scripts/tests/test_release_signing.sh
+          pwsh -NoProfile -File .github/scripts/tests/test_windows_signing_resolver.ps1
+
+  windows_automation:
+    name: Windows build automation
+    if: needs.classify.outputs.automation == 'true'
+    needs: classify
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Test Flutter archive verification under Git for Windows
+        shell: bash
+        run: bash .github/scripts/tests/test_flutter_archive_verification.sh
 
   generate_bridge:
     name: Generate Flutter Rust bridge
@@ -190,7 +230,7 @@ jobs:
           components: rustfmt
 
       - name: Install Flutter
-        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        uses: ./.github/actions/setup-flutter
         with:
           channel: ${{ env.FLUTTER_CHANNEL }}
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -234,6 +274,180 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  windows_rust:
+    name: Windows Rust smoke check (${{ matrix.target }})
+    if: needs.classify.outputs.runtime == 'true'
+    needs: classify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-pc-windows-msvc
+          - aarch64-pc-windows-msvc
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.target }}
+
+      - name: Check Windows input implementation
+        run: >-
+          cargo check --locked -p enigo
+          --target ${{ matrix.target }}
+          --features with_serde
+
+  windows_portable:
+    name: Windows portable smoke check (${{ matrix.target }})
+    if: needs.classify.outputs.runtime == 'true'
+    needs: classify
+    runs-on: windows-2022
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-pc-windows-msvc
+          - aarch64-pc-windows-msvc
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.target }}
+
+      - name: Build deterministic portable launcher fixture
+        shell: pwsh
+        run: |
+          $payload = Join-Path $env:RUNNER_TEMP 'camellia-portable-smoke-payload'
+          New-Item -ItemType Directory -Force -Path $payload | Out-Null
+          [System.IO.File]::WriteAllBytes(
+            (Join-Path $payload 'camellia-remote.exe'),
+            [byte[]](0x4d, 0x5a)
+          )
+          python -m pip install --disable-pip-version-check -r libs/portable/requirements.txt
+          python libs/portable/generate.py `
+            --folder $payload `
+            --output libs/portable `
+            --executable camellia-remote.exe `
+            --target '${{ matrix.target }}'
+
+  apple_native:
+    name: Apple native smoke checks
+    if: needs.classify.outputs.runtime == 'true'
+    needs: [classify, metadata, generate_bridge]
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      XCODE_VERSION: "26.2"
+      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Verify Xcode toolchain
+        run: bash .github/scripts/verify-xcode.sh "${{ env.XCODE_VERSION }}"
+
+      - name: Download generated bridge
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bridge-generated-${{ github.sha }}
+          path: .
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: aarch64-apple-ios
+
+      - name: Restore Cargo cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: apple-native
+
+      - name: Install Flutter
+        uses: ./.github/actions/setup-flutter
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: flutter/web/js/package-lock.json
+
+      - name: Install Apple build prerequisites
+        run: bash .github/scripts/install-apple-prerequisites.sh
+
+      - name: Configure vcpkg
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.6
+        with:
+          vcpkgDirectory: ${{ runner.temp }}/vcpkg
+
+      - name: Verify Apple deployment policy
+        run: python3 .github/scripts/verify_apple_deployment.py
+
+      - name: Synchronize declared version
+        run: |
+          bash .github/scripts/sync-version.sh \
+            "${{ needs.metadata.outputs.version }}" \
+            "${{ needs.metadata.outputs.build_number }}" \
+            "${{ needs.metadata.outputs.source_date_epoch }}"
+
+      - name: Prepare locked dependencies
+        run: bash .github/scripts/prepare-dependencies.sh "${{ env.DEPENDENCY_MODE }}"
+
+      - name: Verify Apple Pod locks
+        run: bash .github/scripts/verify-apple-pod-locks.sh ios macos
+
+      - name: Check macOS input implementation
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "10.15"
+          RUSTFLAGS: -D warnings
+        run: cargo check --locked -p enigo --features with_serde
+
+      - name: Compile iOS Rust library
+        env:
+          IPHONEOS_DEPLOYMENT_TARGET: "13.0"
+        run: |
+          "$VCPKG_ROOT/vcpkg" install \
+            --triplet arm64-ios \
+            --x-install-root="$VCPKG_ROOT/installed"
+          cargo build --locked --release \
+            --target aarch64-apple-ios \
+            --lib \
+            --features flutter
+
+      - name: Compile unsigned iOS application
+        working-directory: flutter
+        env:
+          IPHONEOS_DEPLOYMENT_TARGET: "13.0"
+        run: flutter build ipa --release --no-codesign
+
+      - name: Reject Apple build source migrations
+        if: always()
+        run: bash .github/scripts/verify-clean-source.sh
+
   quality:
     name: Rust, Flutter, and Web quality
     if: needs.classify.outputs.runtime == 'true'
@@ -269,10 +483,10 @@ jobs:
           components: rustfmt,clippy
 
       - name: Restore Cargo cache
-        uses: Swatinem/rust-cache@23869a5bd66c73db3c0ac40331f3206eb23791dc # v2.9.1
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Install Flutter
-        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        uses: ./.github/actions/setup-flutter
         with:
           channel: ${{ env.FLUTTER_CHANNEL }}
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -284,6 +498,9 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: flutter/web/js/package-lock.json
+
+      - name: Verify generated brand assets
+        run: bash .github/scripts/verify-brand-assets.sh
 
       - name: Synchronize declared version
         run: |
@@ -305,7 +522,7 @@ jobs:
         run: cargo install cargo-audit --version 0.22.2 --locked --no-default-features
 
       - name: Rust dependency audit
-        run: cargo audit
+        run: python3 .github/scripts/audit_cargo_dependencies.py
 
       - name: Rust clippy
         run: cargo clippy --locked --workspace --all-targets --features flutter
@@ -341,7 +558,11 @@ jobs:
       - metadata
       - dependency_review
       - automation
+      - windows_automation
       - generate_bridge
+      - windows_rust
+      - windows_portable
+      - apple_native
       - quality
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -357,7 +578,11 @@ jobs:
           METADATA_RESULT: ${{ needs.metadata.result }}
           DEPENDENCY_REVIEW_RESULT: ${{ needs.dependency_review.result }}
           AUTOMATION_RESULT: ${{ needs.automation.result }}
+          WINDOWS_AUTOMATION_RESULT: ${{ needs.windows_automation.result }}
           BRIDGE_RESULT: ${{ needs.generate_bridge.result }}
+          WINDOWS_RUST_RESULT: ${{ needs.windows_rust.result }}
+          WINDOWS_PORTABLE_RESULT: ${{ needs.windows_portable.result }}
+          APPLE_NATIVE_RESULT: ${{ needs.apple_native.result }}
           QUALITY_RESULT: ${{ needs.quality.result }}
         run: |
           failure=false
@@ -374,9 +599,13 @@ jobs:
           require_success "component version validation" "$METADATA_RESULT"
           if [[ "$AUTOMATION_REQUIRED" == "true" ]]; then
             require_success "workflow and build automation" "$AUTOMATION_RESULT"
+            require_success "Windows build automation" "$WINDOWS_AUTOMATION_RESULT"
           fi
           if [[ "$RUNTIME_REQUIRED" == "true" ]]; then
             require_success "bridge generation" "$BRIDGE_RESULT"
+            require_success "Windows Rust smoke check" "$WINDOWS_RUST_RESULT"
+            require_success "Windows portable smoke checks" "$WINDOWS_PORTABLE_RESULT"
+            require_success "Apple native smoke checks" "$APPLE_NATIVE_RESULT"
             require_success "Rust, Flutter, and Web quality" "$QUALITY_RESULT"
           fi
           if [[ "$EVENT_NAME" == "pull_request" && "$DEPENDENCIES_CHANGED" == "true" ]]; then
