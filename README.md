@@ -41,6 +41,8 @@ Useful component paths:
 - `src/platform/`: OS integration and privilege boundaries.
 - `libs/scrap`, `libs/enigo`, `libs/clipboard`: capture, input, and clipboard.
 - `flutter/`: desktop, mobile, and Web interface.
+- `docs/ui-design-system.md`: responsive, accessibility, session-control, and
+  brand-asset UI contract.
 - `.github/scripts/release_metadata.py`: the canonical release metadata validator.
 
 ## Security and data handling
