@@ -25,8 +25,6 @@ class StateGlobal {
 
   final isPortrait = false.obs;
 
-  final updateUrl = ''.obs;
-
   String _inputSource = '';
 
   // Track relative mouse mode state for each peer connection.
@@ -117,8 +115,8 @@ class StateGlobal {
   refreshResizeEdgeSize() => _resizeEdgeSize.value = fullscreen.isTrue
       ? kFullScreenEdgeSize
       : isMaximized.isTrue
-          ? kMaximizeEdgeSize
-          : windowResizeEdgeSize;
+      ? kMaximizeEdgeSize
+      : windowResizeEdgeSize;
 
   String getInputSource({bool force = false}) {
     if (force || _inputSource.isEmpty) {

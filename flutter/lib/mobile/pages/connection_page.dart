@@ -5,11 +5,9 @@ import 'package:flutter/material.dart';
 import 'package:camellia_remote_app/common/formatter/id_formatter.dart';
 import 'package:camellia_remote_app/common/widgets/connection_page_title.dart';
 import 'package:camellia_remote_app/common/widgets/brand_shell.dart';
-import 'package:camellia_remote_app/models/state_model.dart';
 import 'package:camellia_remote_app/ui/camellia_design.dart';
 import 'package:get/get.dart';
 import 'package:provider/provider.dart';
-import 'package:url_launcher/url_launcher.dart';
 import 'package:camellia_remote_app/models/peer_model.dart';
 
 import '../../common.dart';
@@ -88,11 +86,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
         SliverPadding(
           padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
           sliver: SliverList(
-            delegate: SliverChildListDelegate([
-              if (!bind.isCustomClient() && !isIOS)
-                Obx(() => _buildUpdateUI(stateGlobal.updateUrl.value)),
-              _buildRemoteIDTextField(),
-            ]),
+            delegate: SliverChildListDelegate([_buildRemoteIDTextField()]),
           ),
         ),
         SliverFillRemaining(
@@ -144,61 +138,6 @@ class _ConnectionPageState extends State<ConnectionPage> {
         extentOffset: textLength,
       );
     }
-  }
-
-  /// UI for software update.
-  /// If _updateUrl] is not empty, shows a button to update the software.
-  Widget _buildUpdateUI(String updateUrl) {
-    return updateUrl.isEmpty
-        ? const SizedBox.shrink()
-        : InkWell(
-            borderRadius: BorderRadius.circular(AppVisual.radius),
-            onTap: () async {
-              final url = 'https://github.com/camellia-computing/remote-client/releases';
-              await launchUrl(Uri.parse(url));
-            },
-            child: Center(
-              child: ConstrainedBox(
-                constraints: kMobilePageConstraints,
-                child: AppSurface(
-                  margin: const EdgeInsets.only(bottom: 10),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 14,
-                    vertical: 12,
-                  ),
-                  elevated: true,
-                  color: Theme.of(context).colorScheme.primary,
-                  child: Row(
-                    children: [
-                      const AppIconBadge(
-                        icon: Icons.system_update_alt_rounded,
-                        colors: [Colors.white24, Colors.white30],
-                        size: 32,
-                        iconSize: 18,
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Text(
-                          translate('Download new version'),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                      ),
-                      const Icon(
-                        Icons.arrow_forward_rounded,
-                        color: Colors.white,
-                        size: 18,
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          );
   }
 
   /// UI for the remote ID TextField.

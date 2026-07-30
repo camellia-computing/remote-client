@@ -762,7 +762,6 @@ class RustdeskImpl {
   Future<String> getVoiceCallInputDevice({required bool isCm}) =>
       ffi.getVoiceCallInputDevice(isCm: isCm);
   Future<String> mainGetLastRemoteId() => ffi.mainGetLastRemoteId();
-  Future<void> mainGetSoftwareUpdateUrl() => ffi.mainGetSoftwareUpdateUrl();
   Future<String> mainGetHomeDir() => ffi.mainGetHomeDir();
   Future<String> mainGetLangs() => ffi.mainGetLangs();
   Future<String> mainGetTemporaryPassword() => ffi.mainGetTemporaryPassword();
@@ -937,7 +936,6 @@ class RustdeskImpl {
   Future<void> mainSetShareRdp({required bool enable}) =>
       ffi.mainSetShareRdp(enable: enable);
   bool mainGotoInstall() => ffi.mainGotoInstall();
-  String mainGetNewVersion() => ffi.mainGetNewVersion();
   bool mainUpdateMe() => ffi.mainUpdateMe();
   Future<void> setCurSessionId({required UuidValue sessionId}) =>
       ffi.setCurSessionId(sessionId: sessionId);

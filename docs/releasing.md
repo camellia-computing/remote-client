@@ -57,6 +57,27 @@ waits for immutable state, downloads the public asset set again and repeats
 verification. An incompatible draft, tag, asset, author, commit, signer, or
 non-convergent API state fails closed.
 
+## Update distribution
+
+The application contains no version-service endpoint, background update
+scheduler, release downloader, or service-triggered elevation path. Operators
+and end users obtain a published immutable Release through a trusted repository
+entry point, verify the selected asset against the published `SHA256SUMS` and
+available platform/Sigstore evidence, then invoke the platform installer
+locally. That installer may request the normal operating-system privileges
+needed to replace an installed application. The executable's `--update`
+handling is an installer-internal local replacement mode; it does not select or
+download a release and must never be used with an unverified file.
+
+An automated updater is a future security design, not a dormant switch. It may
+return only with a bounded signed manifest that binds stable product and
+artifact IDs, SemVer and anti-rollback state, exact size and digest, immutable
+release identity, platform signing requirements and key rotation. Downloads
+must use an exclusive private staging location, stream under a hard size limit,
+verify before and immediately at the elevation boundary, preserve active
+session checks, and expose explicit privacy/administrative policy. A URL
+allow-list or transport TLS alone is insufficient.
+
 ## GitHub App contract
 
 Formal publication requires:

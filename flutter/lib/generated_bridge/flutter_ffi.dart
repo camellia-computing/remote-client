@@ -1192,9 +1192,6 @@ Future<String> getVoiceCallInputDevice({required bool isCm}) =>
 Future<String> mainGetLastRemoteId() =>
     RustLib.instance.api.crateFlutterFfiMainGetLastRemoteId();
 
-Future<void> mainGetSoftwareUpdateUrl() =>
-    RustLib.instance.api.crateFlutterFfiMainGetSoftwareUpdateUrl();
-
 Future<String> mainGetHomeDir() =>
     RustLib.instance.api.crateFlutterFfiMainGetHomeDir();
 
@@ -1545,9 +1542,6 @@ Future<void> mainSetShareRdp({required bool enable}) =>
     RustLib.instance.api.crateFlutterFfiMainSetShareRdp(enable: enable);
 
 bool mainGotoInstall() => RustLib.instance.api.crateFlutterFfiMainGotoInstall();
-
-String mainGetNewVersion() =>
-    RustLib.instance.api.crateFlutterFfiMainGetNewVersion();
 
 bool mainUpdateMe() => RustLib.instance.api.crateFlutterFfiMainUpdateMe();
 

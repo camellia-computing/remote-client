@@ -18,7 +18,6 @@ import 'package:camellia_remote_app/web/settings_page.dart';
 import 'package:camellia_remote_app/web/web_client_settings_page.dart';
 import 'package:get/get.dart';
 import 'package:provider/provider.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import '../common.dart';
 import '../models/model.dart';
@@ -218,7 +217,6 @@ class _WebClientHomePageState extends State<WebClientHomePage> {
           child: Column(
             children: [
               _buildWorkspaceHeader(context, compact),
-              Obx(() => _buildUpdateBanner(stateGlobal.updateUrl.value)),
               const SizedBox(height: 18),
               if (compact) ...[
                 _buildConnectionSection(true),
@@ -748,45 +746,6 @@ class _WebClientHomePageState extends State<WebClientHomePage> {
             fontSize: 22,
             fontWeight: FontWeight.w700,
             color: Colors.white,
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildUpdateBanner(String updateUrl) {
-    if (updateUrl.isEmpty || bind.isCustomClient() || isIOS) {
-      return const SizedBox.shrink();
-    }
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: InkWell(
-        onTap: () async {
-          const url = 'https://github.com/camellia-computing/remote-client/releases';
-          await launchUrl(Uri.parse(url));
-        },
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          decoration: BoxDecoration(
-            color: Theme.of(context).colorScheme.primary,
-            borderRadius: BorderRadius.circular(AppVisual.radius),
-          ),
-          child: Row(
-            children: [
-              const Icon(Icons.system_update_alt, color: Colors.white),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  translate('Download new version'),
-                  style: _camelliaOutfit(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.white,
-                  ),
-                ),
-              ),
-              const Icon(Icons.arrow_forward, color: Colors.white),
-            ],
           ),
         ),
       ),

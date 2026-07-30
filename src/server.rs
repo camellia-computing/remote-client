@@ -15,13 +15,12 @@ use camellia_remote_protocol::{
     anyhow::Context,
     bail,
     config::{Config, CONNECT_TIMEOUT, RELAY_PORT},
+    crypto::{box_, sign},
     log,
     message_proto::*,
     protobuf::{Enum, Message as _},
     rendezvous_proto::*,
-    socket_client,
-    sodiumoxide::crypto::{box_, sign},
-    timeout, tokio, ResultType, Stream,
+    socket_client, timeout, tokio, ResultType, Stream,
 };
 pub use connection::*;
 use scrap::camera;
@@ -202,56 +201,50 @@ pub async fn create_tcp_connection(
 ) -> ResultType<()> {
     let mut stream = stream;
     let id = server.write().unwrap().get_new_id();
+    if !secure {
+        bail!("Handshake failed: unauthenticated peer connections are disabled");
+    }
     let (sk, pk) = Config::get_key_pair();
-    if secure && pk.len() == sign::PUBLICKEYBYTES && sk.len() == sign::SECRETKEYBYTES {
-        let mut sk_ = [0u8; sign::SECRETKEYBYTES];
-        sk_[..].copy_from_slice(&sk);
-        let sk = sign::SecretKey(sk_);
-        let mut msg_out = Message::new();
-        let (our_pk_b, our_sk_b) = box_::gen_keypair();
-        msg_out.set_signed_id(SignedId {
-            id: sign::sign(
-                &IdPk {
-                    id: Config::get_id(),
-                    pk: Bytes::from(our_pk_b.0.to_vec()),
-                    ..Default::default()
-                }
-                .write_to_bytes()
-                .unwrap_or_default(),
-                &sk,
-            )
-            .into(),
-            ..Default::default()
-        });
-        timeout(CONNECT_TIMEOUT, stream.send(&msg_out)).await??;
-        match timeout(CONNECT_TIMEOUT, stream.next()).await? {
-            Some(res) => {
-                let bytes = res?;
-                if let Ok(msg_in) = Message::parse_from_bytes(&bytes) {
-                    if let Some(message::Union::PublicKey(pk)) = msg_in.union {
-                        if pk.asymmetric_value.len() == box_::PUBLICKEYBYTES {
-                            stream.set_key(tcp::Encrypt::decode(
-                                &pk.symmetric_value,
-                                &pk.asymmetric_value,
-                                &our_sk_b,
-                            )?);
-                        } else if pk.asymmetric_value.is_empty() {
-                            Config::set_key_confirmed(false);
-                            log::info!("Force to update pk");
-                        } else {
-                            bail!("Handshake failed: invalid public sign key length from peer");
-                        }
-                    } else {
-                        log::error!("Handshake failed: invalid message type");
-                    }
-                } else {
-                    bail!("Handshake failed: invalid message format");
-                }
-            }
-            None => {
-                bail!("Failed to receive public key");
-            }
-        }
+    if pk.len() != sign::PUBLICKEYBYTES || sk.len() != sign::SECRETKEYBYTES {
+        bail!("Handshake failed: local signing identity is unavailable");
+    }
+    let sk =
+        sign::SecretKey::from_slice(&sk).context("Handshake failed: invalid local signing key")?;
+    let (our_pk_b, our_sk_b) = box_::gen_keypair();
+    let signed_identity = IdPk {
+        id: Config::get_id(),
+        pk: Bytes::from(our_pk_b.0.to_vec()),
+        ..Default::default()
+    }
+    .write_to_bytes()
+    .context("Handshake failed: unable to encode the local identity")?;
+    let mut msg_out = Message::new();
+    msg_out.set_signed_id(SignedId {
+        id: sign::sign(&signed_identity, &sk).into(),
+        ..Default::default()
+    });
+    timeout(CONNECT_TIMEOUT, stream.send(&msg_out)).await??;
+
+    let bytes = timeout(CONNECT_TIMEOUT, stream.next())
+        .await?
+        .ok_or_else(|| {
+            camellia_remote_protocol::anyhow::anyhow!("Handshake failed: peer disconnected")
+        })??;
+    let msg_in =
+        Message::parse_from_bytes(&bytes).context("Handshake failed: malformed peer response")?;
+    let Some(message::Union::PublicKey(peer_key)) = msg_in.union else {
+        bail!("Handshake failed: peer session key was required");
+    };
+    if peer_key.asymmetric_value.len() != box_::PUBLICKEYBYTES {
+        bail!("Handshake failed: invalid peer session-key length");
+    }
+    stream.set_key(tcp::Encrypt::decode(
+        &peer_key.symmetric_value,
+        &peer_key.asymmetric_value,
+        &our_sk_b,
+    )?);
+    if !stream.is_secured() {
+        bail!("Handshake failed: encrypted transport was not activated");
     }
 
     #[cfg(target_os = "macos")]

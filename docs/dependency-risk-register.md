@@ -1,7 +1,7 @@
 # Rust dependency risk register
 
-Review date: 2026-07-28
-Owner: `camellia-computing/remote`
+Review date: 2026-07-29
+Owner: Remote security maintainers
 
 ## Enforcement
 
@@ -34,7 +34,6 @@ also removed. The example now uses standard input directly.
 | --- | --- | --- | --- |
 | `gtk3-stack-migration` | GTK3 unmaintained notices and `glib 0.18` unsound iterator advisory | 2026-10-31 | No direct `VariantStrIter` use exists in product code; native Linux tests remain required. Exit by migrating the complete desktop integration to a maintained GTK/GLib stack. |
 | `inherited-transitive-modernization` | Exact reviewed warnings inherited through upstream media, windowing, code-generation, and text stacks | 2026-10-31 | Exact package, version, category, and advisory identities are frozen; any growth fails. Remove entries as their owning upstream chains are upgraded or replaced. |
-| `yanked-spin-transitive` | `spin 0.9.8` through `flume` in image/camera paths | 2026-08-31 | There is no RustSec vulnerability advisory, but the lock remains visible and time-bounded. Exit by upgrading the `flume`/image/nokhwa chains until the yanked release is absent. |
 
 The GitHub alerts for the still-resolved `atty` and `glib` versions remain open
 for visibility; they are not silently dismissed. A formal release after an

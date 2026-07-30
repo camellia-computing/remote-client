@@ -42,10 +42,12 @@ use camellia_remote_protocol::{
     allow_err,
     anyhow::{anyhow, Context},
     bail,
+    base64::{engine::general_purpose::STANDARD as BASE64, Engine as _},
     config::{
         self, keys, use_ws, Config, LocalConfig, PeerConfig, PeerInfoSerde, Resolution,
         CONNECT_TIMEOUT, READ_TIMEOUT, RELAY_PORT, RENDEZVOUS_PORT, RENDEZVOUS_SERVERS,
     },
+    crypto::sign,
     fs::JobType,
     futures::future::{select_ok, FutureExt},
     get_version_number, log,
@@ -55,7 +57,6 @@ use camellia_remote_protocol::{
     rendezvous_proto::*,
     sha2::{Digest, Sha256},
     socket_client::{connect_tcp, connect_tcp_local, ipv4_to_ipv6, new_direct_udp_for},
-    sodiumoxide::{base64, crypto::sign},
     timeout,
     tokio::{
         self,
@@ -724,6 +725,24 @@ impl Client {
         Ok((conn, direct, pk, kcp, typ))
     }
 
+    fn validate_signed_peer_identity(
+        peer_id: &str,
+        signed_identity: &[u8],
+        rendezvous_key: &sign::PublicKey,
+    ) -> ResultType<([u8; 32], sign::PublicKey)> {
+        if signed_identity.is_empty() {
+            bail!("Handshake failed: rendezvous server omitted the signed peer identity");
+        }
+        let (signed_peer_id, peer_signing_key) = decode_id_pk(signed_identity, rendezvous_key)
+            .context("Handshake failed: invalid signed peer identity")?;
+        if signed_peer_id != peer_id {
+            bail!("Handshake failed: signed peer identity does not match the requested peer");
+        }
+        let verification_key = sign::PublicKey::from_slice(&peer_signing_key)
+            .context("Handshake failed: peer signing key is invalid")?;
+        Ok((peer_signing_key, verification_key))
+    }
+
     /// Establish secure connection with the server.
     async fn secure_connection(
         peer_id: &str,
@@ -736,72 +755,38 @@ impl Client {
         } else {
             key.to_owned()
         };
-        let rs_pk = get_rs_pk(&pk_str);
-        let mut sign_pk = None;
-        let mut option_pk = None;
-        if !signed_id_pk.is_empty() {
-            if let Some(rs_pk) = rs_pk {
-                if let Ok((id, pk)) = decode_id_pk(&signed_id_pk, &rs_pk) {
-                    if id == peer_id {
-                        sign_pk = Some(sign::PublicKey(pk));
-                        option_pk = Some(pk.to_vec());
-                    }
-                }
-            }
-            if sign_pk.is_none() {
-                log::error!("Handshake failed: invalid public key from rendezvous server");
-            }
-        }
-        let sign_pk = match sign_pk {
-            Some(v) => v,
-            None => {
-                // send an empty message out in case server is setting up secure and waiting for first message
-                conn.send(&Message::new()).await?;
-                return Ok(option_pk);
-            }
+        let rs_pk = get_rs_pk(&pk_str)
+            .context("Handshake failed: rendezvous signing key is missing or invalid")?;
+        let (peer_signing_key, sign_pk) =
+            Self::validate_signed_peer_identity(peer_id, &signed_id_pk, &rs_pk)?;
+
+        let bytes = timeout(READ_TIMEOUT, conn.next())
+            .await?
+            .ok_or_else(|| anyhow!("Handshake failed: peer disconnected"))??;
+        let msg_in = Message::parse_from_bytes(&bytes)
+            .context("Handshake failed: malformed peer response")?;
+        let Some(message::Union::SignedId(si)) = msg_in.union else {
+            bail!("Handshake failed: signed peer key was required");
         };
-        match timeout(READ_TIMEOUT, conn.next()).await? {
-            Some(res) => {
-                let bytes = res?;
-                if let Ok(msg_in) = Message::parse_from_bytes(&bytes) {
-                    if let Some(message::Union::SignedId(si)) = msg_in.union {
-                        if let Ok((id, their_pk_b)) = decode_id_pk(&si.id, &sign_pk) {
-                            if id == peer_id {
-                                let (asymmetric_value, symmetric_value, key) =
-                                    create_symmetric_key_msg(their_pk_b);
-                                let mut msg_out = Message::new();
-                                msg_out.set_public_key(PublicKey {
-                                    asymmetric_value,
-                                    symmetric_value,
-                                    ..Default::default()
-                                });
-                                timeout(CONNECT_TIMEOUT, conn.send(&msg_out)).await??;
-                                conn.set_key(key);
-                            } else {
-                                log::error!("Handshake failed: sign failure");
-                                conn.send(&Message::new()).await?;
-                            }
-                        } else {
-                            // fall back to non-secure connection in case pk mismatch
-                            log::info!("pk mismatch, fall back to non-secure");
-                            let mut msg_out = Message::new();
-                            msg_out.set_public_key(PublicKey::new());
-                            conn.send(&msg_out).await?;
-                        }
-                    } else {
-                        log::error!("Handshake failed: invalid message type");
-                        conn.send(&Message::new()).await?;
-                    }
-                } else {
-                    log::error!("Handshake failed: invalid message format");
-                    conn.send(&Message::new()).await?;
-                }
-            }
-            None => {
-                bail!("Reset by the peer");
-            }
+        let (signed_peer_id, their_pk_b) = decode_id_pk(&si.id, &sign_pk)
+            .context("Handshake failed: invalid peer key signature")?;
+        if signed_peer_id != peer_id {
+            bail!("Handshake failed: peer key identity does not match the requested peer");
         }
-        Ok(option_pk)
+
+        let (asymmetric_value, symmetric_value, key) = create_symmetric_key_msg(their_pk_b)?;
+        let mut msg_out = Message::new();
+        msg_out.set_public_key(PublicKey {
+            asymmetric_value,
+            symmetric_value,
+            ..Default::default()
+        });
+        timeout(CONNECT_TIMEOUT, conn.send(&msg_out)).await??;
+        conn.set_key(key);
+        if !conn.is_secured() {
+            bail!("Handshake failed: encrypted transport was not activated");
+        }
+        Ok(Some(peer_signing_key.to_vec()))
     }
 
     /// Request a relay connection to the server.
@@ -1459,6 +1444,61 @@ impl AudioHandler {
         stream.play()?;
         self.audio_stream = Some(Box::new(stream));
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod secure_handshake_tests {
+    use super::{Client, IdPk};
+    use camellia_remote_protocol::{bytes::Bytes, crypto::sign, protobuf::Message as _};
+
+    fn sign_peer_identity(
+        peer_id: &str,
+        peer_key: &sign::PublicKey,
+        rendezvous_key: &sign::SecretKey,
+    ) -> Vec<u8> {
+        let identity = IdPk {
+            id: peer_id.to_owned(),
+            pk: Bytes::copy_from_slice(peer_key.as_ref()),
+            ..Default::default()
+        }
+        .write_to_bytes()
+        .unwrap();
+        sign::sign(&identity, rendezvous_key)
+    }
+
+    #[test]
+    fn signed_peer_identity_binds_the_requested_id_and_key() {
+        let (rendezvous_public, rendezvous_secret) = sign::gen_keypair();
+        let (peer_public, _) = sign::gen_keypair();
+        let signed = sign_peer_identity("peer-123", &peer_public, &rendezvous_secret);
+
+        let (raw_key, verification_key) =
+            Client::validate_signed_peer_identity("peer-123", &signed, &rendezvous_public).unwrap();
+
+        assert_eq!(raw_key.as_slice(), peer_public.as_ref());
+        assert_eq!(verification_key, peer_public);
+    }
+
+    #[test]
+    fn signed_peer_identity_rejects_missing_tampered_and_mismatched_inputs() {
+        let (rendezvous_public, rendezvous_secret) = sign::gen_keypair();
+        let (peer_public, _) = sign::gen_keypair();
+        let signed = sign_peer_identity("peer-123", &peer_public, &rendezvous_secret);
+
+        assert!(
+            Client::validate_signed_peer_identity("peer-123", &[], &rendezvous_public).is_err()
+        );
+        assert!(
+            Client::validate_signed_peer_identity("peer-456", &signed, &rendezvous_public).is_err()
+        );
+
+        let mut tampered = signed;
+        tampered[0] ^= 1;
+        assert!(
+            Client::validate_signed_peer_identity("peer-123", &tampered, &rendezvous_public)
+                .is_err()
+        );
     }
 }
 
@@ -2525,7 +2565,7 @@ impl LoginConfigHandler {
                 && !self.password_source.is_shared_ab(&password, &hash)
                 && !self.password_source.is_personal_ab(&password)
             {
-                let hash = base64::encode(config.password.clone(), base64::Variant::Original);
+                let hash = BASE64.encode(config.password.clone());
                 let evt: HashMap<&str, String> = HashMap::from([
                     ("name", "sync_peer_hash_password_to_personal_ab".to_string()),
                     ("id", self.id.clone()),
@@ -3234,7 +3274,7 @@ lazy_static::lazy_static! {
             msgtype: "error",
             title: "Login Error",
             text: "Login screen using Wayland is not supported",
-            link: "https://github.com/camellia-computing/remote-client/blob/main/docs/platform-notes.md#linux-display-requirements",
+            link: LINK_HEADLESS_LINUX_SUPPORT,
             try_again: true,
         }), (LOGIN_MSG_DESKTOP_SESSION_NOT_READY, LoginErrorMsgBox{
             msgtype: "session-login",
@@ -3501,8 +3541,7 @@ fn try_get_password_from_personal_ab(lc: Arc<RwLock<LoginConfigHandler>>, passwo
                 .iter()
                 .find_map(|p| if p.id == id { Some(p) } else { None })
             {
-                if let Ok(hash_password) = base64::decode(p.hash.clone(), base64::Variant::Original)
-                {
+                if let Ok(hash_password) = BASE64.decode(p.hash.clone()) {
                     if !hash_password.is_empty() {
                         *password = hash_password.clone();
                         lc.write().unwrap().password_source =
