@@ -13,6 +13,7 @@ import 'package:camellia_remote_app/utils/multi_window_manager.dart';
 import 'package:camellia_remote_app/plugin/widgets/desc_ui.dart';
 import 'package:camellia_remote_app/plugin/common.dart';
 import 'package:camellia_remote_app/ui/camellia_design.dart';
+import 'package:camellia_remote_app/ui/remote_ui_models.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:get/get.dart';
 import 'package:provider/provider.dart';
@@ -29,38 +30,9 @@ import './kb_layout_type_chooser.dart';
 import 'package:camellia_remote_app/utils/scale.dart';
 import 'package:camellia_remote_app/common/widgets/custom_scale_base.dart';
 
-enum _ToolbarEdge { top, right, bottom, left }
+typedef _ToolbarEdge = RemoteCommandBarEdge;
 
-_ToolbarEdge _parseToolbarEdge(String? s) {
-  switch (s) {
-    case 'right':
-      return _ToolbarEdge.right;
-    case 'bottom':
-      return _ToolbarEdge.bottom;
-    case 'left':
-      return _ToolbarEdge.left;
-    default:
-      return _ToolbarEdge.top;
-  }
-}
-
-String _toolbarEdgeToString(_ToolbarEdge e) {
-  switch (e) {
-    case _ToolbarEdge.top:
-      return 'top';
-    case _ToolbarEdge.right:
-      return 'right';
-    case _ToolbarEdge.bottom:
-      return 'bottom';
-    case _ToolbarEdge.left:
-      return 'left';
-  }
-}
-
-bool _isHorizontalEdge(_ToolbarEdge e) =>
-    e == _ToolbarEdge.top || e == _ToolbarEdge.bottom;
-
-const _legacyRemoteMenubarDragX = 'remote-menubar-drag-x';
+bool _isHorizontalEdge(_ToolbarEdge edge) => edge.isHorizontal;
 
 double _clampToolbarFraction(double fraction, double left, double right) {
   if (fraction < left) fraction = left;
@@ -126,28 +98,6 @@ double _fractionForAlignedDrag({
       : (left: 0, right: 1);
 }
 
-String _toolbarRawFraction({
-  required bool multiEdgeEnabled,
-  required _ToolbarEdge edge,
-  required String? savedFraction,
-  required String? legacyFraction,
-}) {
-  if (!multiEdgeEnabled) {
-    return (legacyFraction != null && legacyFraction.isNotEmpty)
-        ? legacyFraction
-        : '0.5';
-  }
-  if (savedFraction != null && savedFraction.isNotEmpty) {
-    return savedFraction;
-  }
-  if (edge == _ToolbarEdge.top &&
-      legacyFraction != null &&
-      legacyFraction.isNotEmpty) {
-    return legacyFraction;
-  }
-  return '0.5';
-}
-
 // Returns the alignment for the wrapper Align that positions the entire
 // toolbar against the given edge at the given fraction along that edge.
 // Alignment uses [-1, 1] coordinates (0 = center).
@@ -181,18 +131,6 @@ BorderRadius _collapseHandleBorderRadius(_ToolbarEdge edge) {
   }
 }
 
-int _monitorMenuQuarterTurns(_ToolbarEdge edge) {
-  switch (edge) {
-    case _ToolbarEdge.left:
-      return 1;
-    case _ToolbarEdge.right:
-      return 3;
-    case _ToolbarEdge.top:
-    case _ToolbarEdge.bottom:
-      return 0;
-  }
-}
-
 IconData _toolbarCollapseIcon(_ToolbarEdge edge, bool isCollapsed) {
   switch (edge) {
     case _ToolbarEdge.top:
@@ -207,15 +145,10 @@ IconData _toolbarCollapseIcon(_ToolbarEdge edge, bool isCollapsed) {
 }
 
 class _ToolbarDockingOptions {
-  _ToolbarDockingOptions({
-    required this.edge,
-    required this.fraction,
-    required this.multiEdgeEnabled,
-  });
+  _ToolbarDockingOptions({required this.edge, required this.fraction});
 
   _ToolbarEdge edge;
   double fraction;
-  bool multiEdgeEnabled;
 }
 
 final _toolbarDockingOptionsBySession = <String, _ToolbarDockingOptions>{};
@@ -229,7 +162,6 @@ void _cacheToolbarDockingOptions({
   required SessionID sessionId,
   required _ToolbarEdge edge,
   required double fraction,
-  required bool multiEdgeEnabled,
 }) {
   final key = _toolbarDockingCacheKey(sessionId);
   final cached = _toolbarDockingOptionsBySession[key];
@@ -237,13 +169,11 @@ void _cacheToolbarDockingOptions({
     _toolbarDockingOptionsBySession[key] = _ToolbarDockingOptions(
       edge: edge,
       fraction: fraction,
-      multiEdgeEnabled: multiEdgeEnabled,
     );
     return;
   }
   cached.edge = edge;
   cached.fraction = fraction;
-  cached.multiEdgeEnabled = multiEdgeEnabled;
 }
 
 class ToolbarState {
@@ -258,7 +188,7 @@ class ToolbarState {
 
   ToolbarState() {
     _pin = RxBool(false);
-    final s = bind.getLocalFlutterOption(k: kOptionRemoteMenubarState);
+    final s = bind.getLocalFlutterOption(k: remoteCommandBarStateOption);
     if (s.isEmpty) {
       return;
     }
@@ -332,7 +262,7 @@ class ToolbarState {
 
   _savePin() async {
     bind.setLocalFlutterOption(
-      k: kOptionRemoteMenubarState,
+      k: remoteCommandBarStateOption,
       v: jsonEncode({'pin': _pin.value}),
     );
   }
@@ -340,29 +270,26 @@ class ToolbarState {
 
 class _ToolbarTheme {
   static const Color blueColor = CamelliaColors.azure;
-  static const Color hoverBlueColor = CamelliaColors.orchid;
-  static const Color inactiveColor = CamelliaColors.darkRaised;
-  static const Color hoverInactiveColor = CamelliaColors.aquaStrong;
+  static const Color hoverBlueColor = CamelliaColors.indigo;
+  static const Color inactiveColor = Color(0xFF6B7284);
+  static const Color hoverInactiveColor = CamelliaColors.indigo;
 
   static const Color redColor = CamelliaColors.coral;
   static const Color hoverRedColor = CamelliaColors.coralStrong;
-  // kMinInteractiveDimension
-  static const double height = 20.0;
-  static const double dividerHeight = 12.0;
+  static const double height = 44;
+  static const double dividerHeight = 20;
 
-  static const double buttonSize = 32;
+  static const double buttonSize = 44;
   static const double buttonHMargin = 2;
-  static const double buttonVMargin = 6;
-  static const double iconRadius = 8;
-  static const double elevation = 10;
+  static const double buttonVMargin = 3;
+  static const double iconRadius = 10;
+  static const double elevation = 8;
 
   static double dividerSpaceToAction = isWindows ? 8 : 14;
 
-  static double menuBorderRadius = isWindows ? 5.0 : 7.0;
-  static EdgeInsets menuPadding = isWindows
-      ? EdgeInsets.fromLTRB(4, 12, 4, 12)
-      : EdgeInsets.fromLTRB(6, 14, 6, 14);
-  static const double menuButtonBorderRadius = 3.0;
+  static const double menuBorderRadius = CamelliaRadius.surface;
+  static const EdgeInsets menuPadding = EdgeInsets.symmetric(vertical: 8);
+  static const double menuButtonBorderRadius = CamelliaRadius.control;
 
   static Color borderColor(BuildContext context) =>
       Theme.of(context).colorScheme.outlineVariant;
@@ -371,20 +298,25 @@ class _ToolbarTheme {
       MyTheme.color(context).divider;
 
   static MenuStyle defaultMenuStyle(BuildContext context) => MenuStyle(
-    side: MaterialStateProperty.all(
+    side: WidgetStatePropertyAll(
       BorderSide(width: 1, color: borderColor(context)),
     ),
-    shape: MaterialStatePropertyAll(
+    shape: WidgetStatePropertyAll(
       RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(_ToolbarTheme.menuBorderRadius),
       ),
     ),
-    padding: MaterialStateProperty.all(_ToolbarTheme.menuPadding),
+    padding: const WidgetStatePropertyAll(_ToolbarTheme.menuPadding),
+    elevation: const WidgetStatePropertyAll(10),
   );
   static final defaultMenuButtonStyle = ButtonStyle(
-    backgroundColor: MaterialStatePropertyAll(Colors.transparent),
-    padding: MaterialStatePropertyAll(EdgeInsets.zero),
-    overlayColor: MaterialStatePropertyAll(Colors.transparent),
+    backgroundColor: const WidgetStatePropertyAll(Colors.transparent),
+    padding: const WidgetStatePropertyAll(EdgeInsets.zero),
+    overlayColor: WidgetStateProperty.resolveWith(
+      (states) => states.contains(WidgetState.hovered)
+          ? CamelliaColors.indigo.withValues(alpha: 0.10)
+          : Colors.transparent,
+    ),
   );
 
   static Widget borderWrapper(
@@ -400,6 +332,19 @@ class _ToolbarTheme {
       child: child,
     );
   }
+}
+
+class _ToolbarAxis extends InheritedWidget {
+  const _ToolbarAxis({required this.axis, required super.child});
+
+  final Axis axis;
+
+  static Axis of(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<_ToolbarAxis>()?.axis ??
+      Axis.horizontal;
+
+  @override
+  bool updateShouldNotify(_ToolbarAxis oldWidget) => axis != oldWidget.axis;
 }
 
 typedef DismissFunc = void Function();
@@ -483,16 +428,7 @@ class _RemoteToolbarState extends State<RemoteToolbar> {
   // (collapsed handle vs expanded toolbar). Updated after every layout pass.
   final _toolbarSize = Rxn<Size>();
   final _toolbarKey = GlobalKey(debugLabel: 'remote_toolbar_root');
-  // When false (default), the toolbar stays on the top edge and the drag
-  // handle just slides it horizontally — preserving long-standing UX while
-  // still fixing the bug where dragging only moved the handle. When true,
-  // the user has opted into multi-edge docking with nearest-edge snap.
-  // Kept in sync after settings-triggered rebuilds.
-  final _multiEdgeEnabled = false.obs;
   final _dockingOptionsInitialized = false.obs;
-  bool _pendingDockingOptionSync = false;
-  int _dockingOptionSyncSerial = 0;
-  int _dragEpoch = 0;
 
   int get windowId => stateGlobal.windowId;
 
@@ -514,161 +450,51 @@ class _RemoteToolbarState extends State<RemoteToolbar> {
   void _minimize() async =>
       await WindowController.fromWindowId(windowId).minimize();
 
-  Future<void> _syncDockingOptions({required bool force}) async {
-    final syncSerial = ++_dockingOptionSyncSerial;
-    if (_dragging.isTrue) {
-      _deferDockingOptionsSync();
-      return;
-    }
-    final dragEpoch = _dragEpoch;
-
-    // Use the canonical helper so the option's documented default semantics
-    // apply (allow-* prefix => default false). Keeping it raw-string would
-    // diverge from how _OptionCheckBox displays the same key.
-    final multiEdgeEnabled = mainGetLocalBoolOptionSync(
-      kOptionAllowMultiEdgeToolbarDock,
-    );
+  void _loadDockingPreferences() {
     final cached = _cachedToolbarDockingOptions(widget.ffi.sessionId);
-    if (cached == null && pi.isSet.isFalse) {
-      return;
-    }
-    final hadDockingOptions = cached != null;
-    final wasMultiEdgeEnabled =
-        cached?.multiEdgeEnabled ?? _multiEdgeEnabled.value;
-    if (!force &&
-        hadDockingOptions &&
-        wasMultiEdgeEnabled == multiEdgeEnabled) {
-      _pendingDockingOptionSync = false;
-      return;
-    }
-
-    final savedFraction = await bind.sessionGetOption(
-      sessionId: widget.ffi.sessionId,
-      arg: kOptionRemoteMenubarFraction,
-    );
-    // Backward compat: legacy horizontal-only position.
-    final legacyFraction = await bind.sessionGetOption(
-      sessionId: widget.ffi.sessionId,
-      arg: _legacyRemoteMenubarDragX,
-    );
-    if (!mounted || syncSerial != _dockingOptionSyncSerial) return;
-
-    var nextEdge = _edge.value;
-    var savedFractionForNextEdge = savedFraction;
-    var keepCurrentPosition = false;
-    if (!multiEdgeEnabled) {
-      nextEdge = _ToolbarEdge.top;
-    } else if (force || wasMultiEdgeEnabled || cached == null) {
-      final edgeStr = await bind.sessionGetOption(
-        sessionId: widget.ffi.sessionId,
-        arg: kOptionRemoteMenubarEdge,
-      );
-      if (!mounted || syncSerial != _dockingOptionSyncSerial) return;
-      nextEdge = _parseToolbarEdge(edgeStr);
-    } else {
-      // The setting changed from top-only to multi-edge while this toolbar is
-      // already visible. Keep its current position instead of jumping to the
-      // last saved multi-edge dock.
-      nextEdge = cached.edge;
-      savedFractionForNextEdge = cached.fraction.toString();
-      keepCurrentPosition = true;
-    }
-
-    final rawFraction = _toolbarRawFraction(
-      multiEdgeEnabled: multiEdgeEnabled,
-      edge: nextEdge,
-      savedFraction: savedFractionForNextEdge,
-      legacyFraction: legacyFraction,
-    );
-    // Clamp to the saved drag-bound contract so a corrupted or out-of-range
-    // saved value can't bypass it until the user drags again.
-    final dragLeft =
-        double.tryParse(
-          bind.mainGetLocalOption(key: kOptionRemoteMenubarDragLeft),
-        ) ??
-        0.0;
-    final dragRight =
-        double.tryParse(
-          bind.mainGetLocalOption(key: kOptionRemoteMenubarDragRight),
-        ) ??
-        1.0;
-    final fractionBounds = _fractionBoundsForEdge(
-      nextEdge,
-      dragLeft,
-      dragRight,
-    );
-    final nextFraction = (double.tryParse(rawFraction) ?? 0.5)
-        .clamp(fractionBounds.left, fractionBounds.right)
-        .toDouble();
-    if (!mounted || syncSerial != _dockingOptionSyncSerial) return;
-    if (_dragging.isTrue || dragEpoch != _dragEpoch) {
-      _deferDockingOptionsSync();
-      return;
-    }
-    _edge.value = nextEdge;
-    _fraction.value = nextFraction;
-    _multiEdgeEnabled.value = multiEdgeEnabled;
+    final preferences = cached == null
+        ? RemoteCommandBarPreferences.decode(
+            bind.getLocalFlutterOption(k: remoteCommandBarLayoutOption),
+          )
+        : RemoteCommandBarPreferences(
+            edge: cached.edge,
+            fraction: cached.fraction,
+          );
+    _edge.value = preferences.edge;
+    _fraction.value = preferences.fraction;
     _dockingOptionsInitialized.value = true;
     _cacheToolbarDockingOptions(
       sessionId: widget.ffi.sessionId,
-      edge: nextEdge,
-      fraction: nextFraction,
-      multiEdgeEnabled: multiEdgeEnabled,
+      edge: preferences.edge,
+      fraction: preferences.fraction,
     );
-    _pendingDockingOptionSync = false;
-    if (!multiEdgeEnabled || keepCurrentPosition) {
-      bind.sessionPeerOption(
-        sessionId: widget.ffi.sessionId,
-        name: kOptionRemoteMenubarEdge,
-        value: _toolbarEdgeToString(nextEdge),
-      );
-      bind.sessionPeerOption(
-        sessionId: widget.ffi.sessionId,
-        name: kOptionRemoteMenubarFraction,
-        value: nextFraction.toString(),
-      );
-    }
   }
 
-  void _deferDockingOptionsSync() {
-    _pendingDockingOptionSync = true;
-    if (_dragging.isFalse) {
-      _syncDockingOptionsAfterDragIfNeeded();
-    }
-  }
-
-  void _markToolbarDragEpoch() {
-    ++_dragEpoch;
-  }
-
-  void _syncDockingOptionsAfterDragIfNeeded() {
-    if (!_pendingDockingOptionSync) return;
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      await _syncDockingOptions(force: false);
-    });
+  void _saveDockingPreferences(_ToolbarEdge edge, double fraction) {
+    final preferences = RemoteCommandBarPreferences(
+      edge: edge,
+      fraction: fraction,
+    ).normalized();
+    bind.setLocalFlutterOption(
+      k: remoteCommandBarLayoutOption,
+      v: preferences.encode(),
+    );
+    _cacheToolbarDockingOptions(
+      sessionId: widget.ffi.sessionId,
+      edge: preferences.edge,
+      fraction: preferences.fraction,
+    );
   }
 
   @override
   initState() {
     super.initState();
 
-    final cached = _cachedToolbarDockingOptions(widget.ffi.sessionId);
-    final multiEdgeEnabled = mainGetLocalBoolOptionSync(
-      kOptionAllowMultiEdgeToolbarDock,
-    );
-    final shouldResetToTop =
-        cached != null && cached.multiEdgeEnabled && !multiEdgeEnabled;
-    if (cached != null && !shouldResetToTop) {
-      _edge.value = cached.edge;
-      _fraction.value = cached.fraction;
-      _multiEdgeEnabled.value = multiEdgeEnabled;
-      _dockingOptionsInitialized.value = true;
-    }
+    _loadDockingPreferences();
 
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      await _syncDockingOptions(force: cached == null || shouldResetToTop);
       // Initialize toolbar states (collapse, hide) from session options
-      widget.state.init(widget.ffi.sessionId);
+      await widget.state.init(widget.ffi.sessionId);
     });
 
     _debouncerHide = Debouncer<int>(
@@ -687,14 +513,6 @@ class _RemoteToolbarState extends State<RemoteToolbar> {
     });
   }
 
-  @override
-  void didUpdateWidget(covariant RemoteToolbar oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      await _syncDockingOptions(force: false);
-    });
-  }
-
   _debouncerHideProc(int v) {
     if (!pin && collapse.isFalse && _isCursorOverImage && _dragging.isFalse) {
       collapse.value = true;
@@ -703,7 +521,6 @@ class _RemoteToolbarState extends State<RemoteToolbar> {
 
   @override
   dispose() {
-    ++_dockingOptionSyncSerial;
     widget.onEnterOrLeaveImageCleaner(identityHashCode(this));
     super.dispose();
   }
@@ -818,11 +635,8 @@ class _RemoteToolbarState extends State<RemoteToolbar> {
             previewEdge: _previewEdge,
             previewFraction: _previewFraction,
             toolbarSize: _toolbarSize,
-            markDragEpoch: _markToolbarDragEpoch,
-            syncDockingOptionsAfterDragIfNeeded:
-                _syncDockingOptionsAfterDragIfNeeded,
             isHorizontal: isHorizontal,
-            multiEdgeEnabled: _multiEdgeEnabled.value,
+            onPlacementChanged: _saveDockingPreferences,
             toolbarState: widget.state,
             setFullscreen: _setFullscreen,
             setMinimize: _minimize,
@@ -851,6 +665,12 @@ class _RemoteToolbarState extends State<RemoteToolbar> {
 
     // Keep high-frequency session and input actions together, followed by
     // display and collaboration groups without changing any callbacks.
+    toolbarItems.add(
+      _SessionStatusMenu(
+        id: widget.id,
+        quality: widget.ffi.qualityMonitorModel,
+      ),
+    );
     toolbarItems.add(_PinMenu(state: widget.state));
     if (!isWebDesktop) {
       toolbarItems.add(_MobileActionMenu(ffi: widget.ffi));
@@ -885,7 +705,6 @@ class _RemoteToolbarState extends State<RemoteToolbar> {
           return _MonitorMenu(
             id: widget.id,
             ffi: widget.ffi,
-            edge: edge,
             setRemoteState: widget.setRemoteState,
           );
         } else {
@@ -909,8 +728,8 @@ class _RemoteToolbarState extends State<RemoteToolbar> {
     if (!isWeb) toolbarItems.add(_RecordMenu());
     toolbarItems.add(divider());
     toolbarItems.add(_CloseMenu(id: widget.id, ffi: widget.ffi));
-    final toolbarBorderRadius = BorderRadius.all(
-      Radius.circular(AppVisual.radius),
+    const toolbarBorderRadius = BorderRadius.all(
+      Radius.circular(CamelliaRadius.surface),
     );
     // innerAxis: how the toolbar icons themselves flow.
     // outerAxis: how the toolbar block and the handle stack against each other
@@ -924,21 +743,22 @@ class _RemoteToolbarState extends State<RemoteToolbar> {
       elevation: _ToolbarTheme.elevation,
       shadowColor: MyTheme.color(context).shadow,
       borderRadius: toolbarBorderRadius,
-      color: Theme.of(context).menuBarTheme.style?.backgroundColor?.resolve(
-        MaterialState.values.toSet(),
-      ),
+      color: Theme.of(context).colorScheme.surface.withValues(alpha: 0.96),
       child: SingleChildScrollView(
         scrollDirection: innerAxis,
         child: Theme(
           data: themeData(),
-          child: _ToolbarTheme.borderWrapper(
-            context,
-            Flex(
-              direction: innerAxis,
-              mainAxisSize: MainAxisSize.min,
-              children: [spacer, ...toolbarItems, spacer],
+          child: _ToolbarAxis(
+            axis: innerAxis,
+            child: _ToolbarTheme.borderWrapper(
+              context,
+              Flex(
+                direction: innerAxis,
+                mainAxisSize: MainAxisSize.min,
+                children: [spacer, ...toolbarItems, spacer],
+              ),
+              toolbarBorderRadius,
             ),
-            toolbarBorderRadius,
           ),
         ),
       ),
@@ -961,11 +781,11 @@ class _RemoteToolbarState extends State<RemoteToolbar> {
     return Theme.of(context).copyWith(
       menuButtonTheme: MenuButtonThemeData(
         style: ButtonStyle(
-          minimumSize: MaterialStatePropertyAll(Size(64, 32)),
-          textStyle: MaterialStatePropertyAll(
+          minimumSize: const WidgetStatePropertyAll(Size(72, 44)),
+          textStyle: const WidgetStatePropertyAll(
             TextStyle(fontWeight: FontWeight.normal),
           ),
-          shape: MaterialStatePropertyAll(
+          shape: WidgetStatePropertyAll(
             RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(
                 _ToolbarTheme.menuButtonBorderRadius,
@@ -981,9 +801,9 @@ class _RemoteToolbarState extends State<RemoteToolbar> {
       menuBarTheme: MenuBarThemeData(
         style:
             MenuStyle(
-              padding: MaterialStatePropertyAll(EdgeInsets.zero),
-              elevation: MaterialStatePropertyAll(0),
-              shape: MaterialStatePropertyAll(BeveledRectangleBorder()),
+              padding: const WidgetStatePropertyAll(EdgeInsets.zero),
+              elevation: const WidgetStatePropertyAll(0),
+              shape: const WidgetStatePropertyAll(BeveledRectangleBorder()),
             ).copyWith(
               backgroundColor: Theme.of(
                 context,
@@ -1011,6 +831,237 @@ class _PinMenu extends StatelessWidget {
         hoverColor: state.pin
             ? _ToolbarTheme.hoverBlueColor
             : _ToolbarTheme.hoverInactiveColor,
+      ),
+    );
+  }
+}
+
+class _SessionStatusMenu extends StatelessWidget {
+  const _SessionStatusMenu({required this.id, required this.quality});
+
+  final String id;
+  final QualityMonitorModel quality;
+
+  SessionStatusSnapshot _snapshot(ConnectionType? connection) {
+    final valid = connection?.isValid() ?? false;
+    final data = quality.data;
+    return SessionStatusSnapshot(
+      secure: valid
+          ? connection!.secure.value == ConnectionType.strSecure
+          : null,
+      direct: valid
+          ? connection!.direct.value == ConnectionType.strDirect
+          : null,
+      streamType: valid ? connection!.stream_type.value : null,
+      speed: data.speed,
+      fps: data.fps,
+      delay: data.delay,
+      targetBitrate: data.targetBitrate,
+      codec: data.codecFormat,
+      chroma: data.chroma,
+    );
+  }
+
+  Widget _buildMenu(ConnectionType? connection) {
+    final snapshot = _snapshot(connection);
+    final status = snapshot.secure == null
+        ? translate('Connecting')
+        : snapshot.secure!
+        ? translate('Secure')
+        : translate('Insecure');
+    final route = snapshot.direct == null
+        ? null
+        : snapshot.direct!
+        ? translate('Direct')
+        : translate('Relay');
+    final label = route == null ? status : '$status · $route';
+    final color = snapshot.secure == null
+        ? _ToolbarTheme.inactiveColor
+        : snapshot.secure!
+        ? CamelliaColors.aqua
+        : _ToolbarTheme.redColor;
+    return _IconSubmenuButton(
+      tooltip: label,
+      icon: Icon(
+        snapshot.secure == null
+            ? Icons.sync_rounded
+            : snapshot.secure!
+            ? Icons.shield_rounded
+            : Icons.gpp_maybe_rounded,
+      ),
+      color: color,
+      hoverColor: color,
+      menuChildrenGetter: (_) => [_SessionStatusPanel(snapshot: snapshot)],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: quality,
+      builder: (context, _) {
+        final tag = ConnectionTypeState.tag(id);
+        if (!Get.isRegistered<ConnectionType>(tag: tag)) {
+          return _buildMenu(null);
+        }
+        final connection = ConnectionTypeState.find(id);
+        return Obx(() {
+          connection.secure.value;
+          connection.direct.value;
+          connection.stream_type.value;
+          return _buildMenu(connection);
+        });
+      },
+    );
+  }
+}
+
+class _SessionStatusPanel extends StatelessWidget {
+  const _SessionStatusPanel({required this.snapshot});
+
+  final SessionStatusSnapshot snapshot;
+
+  String _security() => snapshot.secure == null
+      ? translate('Connecting')
+      : snapshot.secure!
+      ? translate('Secure')
+      : translate('Insecure');
+
+  String _route() => snapshot.direct == null
+      ? '—'
+      : snapshot.direct!
+      ? translate('Direct')
+      : translate('Relay');
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      container: true,
+      label: translate('Session status'),
+      child: SizedBox(
+        width: 320,
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                translate('Session status'),
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _StatusMetric(
+                    icon: Icons.shield_outlined,
+                    label: translate('Security'),
+                    value: _security(),
+                  ),
+                  _StatusMetric(
+                    icon: Icons.route_outlined,
+                    label: translate('Route'),
+                    value: _route(),
+                  ),
+                  _StatusMetric(
+                    icon: Icons.swap_horiz_rounded,
+                    label: translate('Protocol'),
+                    value: snapshot.display(snapshot.streamType),
+                  ),
+                  _StatusMetric(
+                    icon: Icons.speed_rounded,
+                    label: translate('Latency'),
+                    value: snapshot.delayValue,
+                  ),
+                  _StatusMetric(
+                    icon: Icons.network_check_rounded,
+                    label: translate('Speed'),
+                    value: snapshot.display(snapshot.speed),
+                  ),
+                  _StatusMetric(
+                    icon: Icons.movie_filter_outlined,
+                    label: translate('FPS'),
+                    value: snapshot.display(snapshot.fps),
+                  ),
+                  _StatusMetric(
+                    icon: Icons.tune_rounded,
+                    label: translate('Target Bitrate'),
+                    value: snapshot.bitrateValue,
+                  ),
+                  _StatusMetric(
+                    icon: Icons.memory_rounded,
+                    label: translate('Codec'),
+                    value: snapshot.display(snapshot.codec),
+                  ),
+                  _StatusMetric(
+                    icon: Icons.palette_outlined,
+                    label: translate('Chroma'),
+                    value: snapshot.display(snapshot.chroma),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _StatusMetric extends StatelessWidget {
+  const _StatusMetric({
+    required this.icon,
+    required this.label,
+    required this.value,
+  });
+
+  final IconData icon;
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      width: 142,
+      constraints: const BoxConstraints(minHeight: 66),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainer,
+        borderRadius: BorderRadius.circular(CamelliaRadius.control),
+        border: Border.all(color: scheme.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, size: 14, color: scheme.primary),
+              const SizedBox(width: 5),
+              Expanded(
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            value,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(
+              context,
+            ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w700),
+          ),
+        ],
       ),
     );
   }
@@ -1129,13 +1180,11 @@ class _MainMonitorSwitchButton extends StatelessWidget {
 class _MonitorMenu extends StatelessWidget {
   final String id;
   final FFI ffi;
-  final _ToolbarEdge edge;
   final Function(VoidCallback) setRemoteState;
   const _MonitorMenu({
     Key? key,
     required this.id,
     required this.ffi,
-    required this.edge,
     required this.setRemoteState,
   }) : super(key: key);
 
@@ -1147,12 +1196,9 @@ class _MonitorMenu extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final child = showMonitorsToolbar
+    return showMonitorsToolbar
         ? buildMultiMonitorMenu(context)
         : Obx(() => buildMonitorMenu(context));
-    final quarterTurns = _monitorMenuQuarterTurns(edge);
-    if (quarterTurns == 0) return child;
-    return RotatedBox(quarterTurns: quarterTurns, child: child);
   }
 
   Widget buildMonitorMenu(BuildContext context) {
@@ -1170,7 +1216,7 @@ class _MonitorMenu extends StatelessWidget {
       color: _ToolbarTheme.blueColor,
       hoverColor: _ToolbarTheme.hoverBlueColor,
       menuStyle: MenuStyle(
-        padding: MaterialStatePropertyAll(EdgeInsets.symmetric(horizontal: 6)),
+        padding: WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 6)),
       ),
       menuChildrenGetter: (_) => [buildMonitorSubmenuWidget(context)],
     );
@@ -2606,8 +2652,10 @@ class _KeyboardMenu extends StatelessWidget {
         // If use flutter to grab keys, we can only use one mode.
         // Map mode and Legacy mode, at least one of them is supported.
         String? modeOnly;
-        // Keep both map and legacy mode on web at the moment.
-        // TODO: Remove legacy mode after web supports translate mode on web.
+        // Flutter-sourced desktop input can expose only one reliable keyboard
+        // mode. Keep the capability-selected map/legacy mode until the native
+        // bridge reports translate-mode support; the checks below remain the
+        // source of truth and avoid presenting a non-functional choice.
         if (isInputSourceFlutter && isDesktop) {
           if (bind.sessionIsKeyboardModeSupported(
             sessionId: ffi.sessionId,
@@ -2977,7 +3025,8 @@ class _RecordMenu extends StatelessWidget {
     var recordingModel = Provider.of<RecordingModel>(context);
     final hideRecordingButton =
         bind.mainGetLocalOption(key: kOptionHideRecordingButton) == 'Y';
-    final visible = !hideRecordingButton &&
+    final visible =
+        !hideRecordingButton &&
         (recordingModel.start || ffi.permissions['recording'] != false);
     if (!visible) return Offstage();
     return _IconMenuButton(
@@ -3058,50 +3107,105 @@ class _IconMenuButtonState extends State<_IconMenuButton> {
         widget.icon ??
         SvgPicture.asset(
           widget.assetName!,
-          colorFilter: ColorFilter.mode(Colors.white, BlendMode.srcIn),
-          width: _ToolbarTheme.buttonSize,
-          height: _ToolbarTheme.buttonSize,
+          colorFilter: ColorFilter.mode(widget.color, BlendMode.srcIn),
+          width: 20,
+          height: 20,
         );
-    var button =
-        SizedBox(
-          width: widget.width ?? _ToolbarTheme.buttonSize,
-          height: _ToolbarTheme.buttonSize,
-          child: MenuItemButton(
-            style: ButtonStyle(
-              backgroundColor: MaterialStatePropertyAll(Colors.transparent),
-              padding: MaterialStatePropertyAll(EdgeInsets.zero),
-              overlayColor: MaterialStatePropertyAll(Colors.transparent),
+    final label = translate(widget.tooltip);
+    final button = Padding(
+      padding: EdgeInsets.symmetric(
+        horizontal: widget.hMargin ?? _ToolbarTheme.buttonHMargin,
+        vertical: widget.vMargin ?? _ToolbarTheme.buttonVMargin,
+      ),
+      child: SizedBox(
+        width: widget.topLevel ? null : widget.width,
+        height: _ToolbarTheme.buttonSize,
+        child: MenuItemButton(
+          style: _ToolbarTheme.defaultMenuButtonStyle,
+          onHover: (value) => setState(() => hover = value),
+          onPressed: widget.onPressed,
+          child: _CommandBarActionSurface(
+            icon: icon,
+            label: label,
+            tint: hover ? widget.hoverColor : widget.color,
+            hovered: hover,
+            iconOnly: !widget.topLevel,
+          ),
+        ),
+      ),
+    );
+    if (widget.topLevel) {
+      return Tooltip(
+        message: label,
+        child: MenuBar(children: [button]),
+      );
+    }
+    return Tooltip(message: label, child: button);
+  }
+}
+
+class _CommandBarActionSurface extends StatelessWidget {
+  const _CommandBarActionSurface({
+    required this.icon,
+    required this.label,
+    required this.tint,
+    required this.hovered,
+    this.iconOnly = false,
+  });
+
+  final Widget icon;
+  final String label;
+  final Color tint;
+  final bool hovered;
+  final bool iconOnly;
+
+  @override
+  Widget build(BuildContext context) {
+    final axis = _ToolbarAxis.of(context);
+    final scheme = Theme.of(context).colorScheme;
+    return AnimatedContainer(
+      duration: CamelliaMotion.hover,
+      curve: CamelliaMotion.enter,
+      constraints: BoxConstraints(
+        minWidth: iconOnly ? 44 : (axis == Axis.horizontal ? 76 : 132),
+        maxWidth: iconOnly ? 44 : (axis == Axis.horizontal ? 156 : 168),
+        minHeight: 44,
+      ),
+      padding: EdgeInsets.symmetric(horizontal: iconOnly ? 10 : 12),
+      decoration: BoxDecoration(
+        color: hovered
+            ? scheme.primaryContainer.withValues(alpha: 0.72)
+            : Colors.transparent,
+        borderRadius: BorderRadius.circular(_ToolbarTheme.iconRadius),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          SizedBox.square(
+            dimension: 20,
+            child: IconTheme.merge(
+              data: IconThemeData(color: tint, size: 20),
+              child: FittedBox(fit: BoxFit.contain, child: icon),
             ),
-            onHover: (value) => setState(() {
-              hover = value;
-            }),
-            onPressed: widget.onPressed,
-            child: Tooltip(
-              message: translate(widget.tooltip),
-              child: Material(
-                type: MaterialType.transparency,
-                child: Ink(
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(
-                      _ToolbarTheme.iconRadius,
-                    ),
-                    color: hover ? widget.hoverColor : widget.color,
-                  ),
-                  child: icon,
+          ),
+          if (!iconOnly) ...[
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                  color: scheme.onSurface,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
             ),
-          ),
-        ).marginSymmetric(
-          horizontal: widget.hMargin ?? _ToolbarTheme.buttonHMargin,
-          vertical: widget.vMargin ?? _ToolbarTheme.buttonVMargin,
-        );
-    button = Tooltip(message: translate(widget.tooltip), child: button);
-    if (widget.topLevel) {
-      return MenuBar(children: [button]);
-    } else {
-      return button;
-    }
+          ],
+        ],
+      ),
+    );
   }
 }
 
@@ -3148,45 +3252,39 @@ class _IconSubmenuButtonState extends State<_IconSubmenuButton> {
         widget.icon ??
         SvgPicture.asset(
           widget.svg!,
-          colorFilter: ColorFilter.mode(Colors.white, BlendMode.srcIn),
-          width: _ToolbarTheme.buttonSize,
-          height: _ToolbarTheme.buttonSize,
+          colorFilter: ColorFilter.mode(widget.color, BlendMode.srcIn),
+          width: 20,
+          height: 20,
         );
-    final button = SizedBox(
-      width: widget.width ?? _ToolbarTheme.buttonSize,
-      height: _ToolbarTheme.buttonSize,
-      child: SubmenuButton(
-        menuStyle: widget.menuStyle ?? _ToolbarTheme.defaultMenuStyle(context),
-        style: _ToolbarTheme.defaultMenuButtonStyle,
-        onHover: (value) => setState(() {
-          hover = value;
-        }),
-        child: Tooltip(
-          message: translate(widget.tooltip),
-          child: Material(
-            type: MaterialType.transparency,
-            child: Ink(
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(_ToolbarTheme.iconRadius),
-                color: hover ? widget.hoverColor : widget.color,
-              ),
-              child: icon,
-            ),
+    final label = translate(widget.tooltip);
+    final button = Padding(
+      padding: const EdgeInsets.symmetric(
+        horizontal: _ToolbarTheme.buttonHMargin,
+        vertical: _ToolbarTheme.buttonVMargin,
+      ),
+      child: SizedBox(
+        height: _ToolbarTheme.buttonSize,
+        child: SubmenuButton(
+          menuStyle:
+              widget.menuStyle ?? _ToolbarTheme.defaultMenuStyle(context),
+          style: _ToolbarTheme.defaultMenuButtonStyle,
+          onHover: (value) => setState(() => hover = value),
+          menuChildren: widget
+              .menuChildrenGetter(this)
+              .map((e) => _buildPointerTrackWidget(e, widget.ffi))
+              .toList(),
+          child: _CommandBarActionSurface(
+            icon: icon,
+            label: label,
+            tint: hover ? widget.hoverColor : widget.color,
+            hovered: hover,
           ),
         ),
-        menuChildren: widget
-            .menuChildrenGetter(this)
-            .map((e) => _buildPointerTrackWidget(e, widget.ffi))
-            .toList(),
       ),
     );
-    return MenuBar(
-      children: [
-        button.marginSymmetric(
-          horizontal: _ToolbarTheme.buttonHMargin,
-          vertical: _ToolbarTheme.buttonVMargin,
-        ),
-      ],
+    return Tooltip(
+      message: label,
+      child: MenuBar(children: [button]),
     );
   }
 }
@@ -3323,13 +3421,8 @@ class _DraggableShowHide extends StatefulWidget {
   final Rxn<_ToolbarEdge> previewEdge;
   final Rxn<double> previewFraction;
   final Rxn<Size> toolbarSize;
-  final VoidCallback markDragEpoch;
-  final VoidCallback syncDockingOptionsAfterDragIfNeeded;
   final bool isHorizontal;
-  // Whether multi-edge docking is enabled for this session (toggled in
-  // Settings -> Other). When false, the drag handle slides the toolbar
-  // horizontally on the top edge and never switches edges.
-  final bool multiEdgeEnabled;
+  final void Function(_ToolbarEdge edge, double fraction) onPlacementChanged;
   final RxBool dragging;
   final ToolbarState toolbarState;
   final BorderRadius borderRadius;
@@ -3347,10 +3440,8 @@ class _DraggableShowHide extends StatefulWidget {
     required this.previewEdge,
     required this.previewFraction,
     required this.toolbarSize,
-    required this.markDragEpoch,
-    required this.syncDockingOptionsAfterDragIfNeeded,
     required this.isHorizontal,
-    required this.multiEdgeEnabled,
+    required this.onPlacementChanged,
     required this.dragging,
     required this.toolbarState,
     required this.setFullscreen,
@@ -3363,8 +3454,8 @@ class _DraggableShowHide extends StatefulWidget {
 }
 
 class _DraggableShowHideState extends State<_DraggableShowHide> {
-  double left = 0.0;
-  double right = 1.0;
+  static const double _left = 0;
+  static const double _right = 1;
   Offset? _lastPointerDown;
   Offset? _dragGrabOffset;
   double? _dragLongAxisGrabOffset;
@@ -3372,41 +3463,10 @@ class _DraggableShowHideState extends State<_DraggableShowHide> {
 
   RxBool get collapse => widget.toolbarState.collapse;
 
-  @override
-  initState() {
-    super.initState();
-
-    final confLeft = double.tryParse(
-      bind.mainGetLocalOption(key: kOptionRemoteMenubarDragLeft),
-    );
-    if (confLeft == null) {
-      bind.mainSetLocalOption(
-        key: kOptionRemoteMenubarDragLeft,
-        value: left.toString(),
-      );
-    } else {
-      left = confLeft;
-    }
-    final confRight = double.tryParse(
-      bind.mainGetLocalOption(key: kOptionRemoteMenubarDragRight),
-    );
-    if (confRight == null) {
-      bind.mainSetLocalOption(
-        key: kOptionRemoteMenubarDragRight,
-        value: right.toString(),
-      );
-    } else {
-      right = confRight;
-    }
-  }
-
-  // Bias applied to the currently-previewed edge so a drag hovering between
-  // two edges doesn't flicker. Only relevant when multi-edge is enabled.
+  // Bias the current preview so diagonal drags do not flicker between edges.
   static const double _switchHysteresisPx = 50.0;
 
   _ToolbarEdge _nearestToolbarEdge(Offset cursor, Size mediaSize) {
-    if (!widget.multiEdgeEnabled) return widget.edge.value;
-
     double rawDist(_ToolbarEdge e) {
       switch (e) {
         case _ToolbarEdge.top:
@@ -3478,11 +3538,11 @@ class _DraggableShowHideState extends State<_DraggableShowHide> {
         grabOffset: grabOffset,
         parentExtent: mediaSize.width,
         toolbarExtent: toolbarSize.width,
-        left: left,
-        right: right,
+        left: _left,
+        right: _right,
       );
     } else {
-      final fractionBounds = _fractionBoundsForEdge(winner, left, right);
+      final fractionBounds = _fractionBoundsForEdge(winner, _left, _right);
       frac = _fractionForAlignedDrag(
         cursor: cursor.dy,
         grabOffset: grabOffset,
@@ -3508,98 +3568,101 @@ class _DraggableShowHideState extends State<_DraggableShowHide> {
     widget.previewEdge.value = null;
     widget.previewFraction.value = null;
     widget.dragging.value = false;
-    widget.markDragEpoch();
     _resetDragTracking();
-    widget.syncDockingOptionsAfterDragIfNeeded();
     if (newEdge == null || frac == null) return;
     widget.edge.value = newEdge;
     widget.fraction.value = frac;
-    _cacheToolbarDockingOptions(
-      sessionId: widget.sessionId,
-      edge: newEdge,
-      fraction: frac,
-      multiEdgeEnabled: widget.multiEdgeEnabled,
-    );
-    bind.sessionPeerOption(
-      sessionId: widget.sessionId,
-      name: kOptionRemoteMenubarEdge,
-      value: _toolbarEdgeToString(newEdge),
-    );
-    bind.sessionPeerOption(
-      sessionId: widget.sessionId,
-      name: kOptionRemoteMenubarFraction,
-      value: frac.toString(),
-    );
-    if (widget.multiEdgeEnabled) {
-      return;
-    }
-    bind.sessionPeerOption(
-      sessionId: widget.sessionId,
-      name: _legacyRemoteMenubarDragX,
-      value: frac.toString(),
-    );
+    widget.onPlacementChanged(newEdge, frac);
   }
 
   Widget _buildDraggable(BuildContext context) {
+    final icon = Icon(
+      widget.isHorizontal ? Icons.drag_indicator : Icons.drag_handle,
+      size: 20,
+      color: Theme.of(context).colorScheme.onSurfaceVariant,
+    );
     return Listener(
       onPointerDown: (event) => _lastPointerDown = event.position,
-      child: Draggable(
-        // When multi-edge docking is off the toolbar stays on the top edge,
-        // so lock the feedback to horizontal motion — otherwise the handle
-        // floats away from the top while dragging and the toolbar looks
-        // unmoored. When multi-edge is on we need 2D drag for snap-to-edge.
-        axis: widget.multiEdgeEnabled ? null : Axis.horizontal,
-        child: Icon(
-          widget.isHorizontal ? Icons.drag_indicator : Icons.drag_handle,
-          size: 20,
-          color: MyTheme.color(context).drag_indicator,
+      child: Tooltip(
+        message: translate('Move toolbar'),
+        child: MouseRegion(
+          cursor: SystemMouseCursors.move,
+          child: Draggable(
+            axis: null,
+            feedback: Material(
+              color: Theme.of(context).colorScheme.surface,
+              elevation: 8,
+              borderRadius: BorderRadius.circular(CamelliaRadius.control),
+              child: SizedBox.square(dimension: 44, child: Center(child: icon)),
+            ),
+            onDragStarted: () {
+              final pointerDown = _lastPointerDown;
+              if (pointerDown != null) {
+                _ensureDragGrabOffset(pointerDown);
+              }
+              widget.dragging.value = true;
+              widget.previewEdge.value = widget.edge.value;
+              widget.previewFraction.value = widget.fraction.value;
+            },
+            onDragUpdate: (details) {
+              _updatePreview(details.globalPosition);
+            },
+            onDragEnd: (_) => _commitPreview(),
+            child: SizedBox.square(dimension: 44, child: Center(child: icon)),
+          ),
         ),
-        feedback: widget,
-        onDragStarted: () {
-          widget.markDragEpoch();
-          final pointerDown = _lastPointerDown;
-          if (pointerDown != null) {
-            _ensureDragGrabOffset(pointerDown);
-          }
-          widget.dragging.value = true;
-          // Seed the preview at the current docked edge/fraction so something
-          // shows the instant the drag begins, before the first onDragUpdate.
-          widget.previewEdge.value = widget.edge.value;
-          widget.previewFraction.value = widget.fraction.value;
-        },
-        onDragUpdate: (details) {
-          _updatePreview(details.globalPosition);
-        },
-        onDragEnd: (_) => _commitPreview(),
       ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    final ButtonStyle buttonStyle = ButtonStyle(
-      minimumSize: MaterialStateProperty.all(const Size(0, 0)),
-      padding: MaterialStateProperty.all(EdgeInsets.zero),
-    );
     final isFullscreen = stateGlobal.fullscreen;
     const double iconSize = 20;
 
-    buttonWrapper(
+    Widget buttonWrapper(
       VoidCallback? onPressed,
-      Widget child, {
+      IconData icon, {
+      String? label,
+      required String tooltip,
       Color hoverColor = _ToolbarTheme.blueColor,
     }) {
-      final bgColor = buttonStyle.backgroundColor?.resolve({});
-      return TextButton(
-        onPressed: onPressed,
-        child: child,
-        style: buttonStyle.copyWith(
-          backgroundColor: MaterialStateProperty.resolveWith((states) {
-            if (states.contains(MaterialState.hovered)) {
-              return (bgColor ?? hoverColor).withValues(alpha: 0.15);
-            }
-            return bgColor;
-          }),
+      return Tooltip(
+        message: tooltip,
+        child: TextButton(
+          onPressed: onPressed,
+          style: ButtonStyle(
+            minimumSize: const WidgetStatePropertyAll(Size(44, 44)),
+            padding: WidgetStatePropertyAll(
+              EdgeInsets.symmetric(horizontal: label == null ? 10 : 12),
+            ),
+            shape: WidgetStatePropertyAll(
+              RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(CamelliaRadius.control),
+              ),
+            ),
+            foregroundColor: WidgetStatePropertyAll(
+              Theme.of(context).colorScheme.onSurface,
+            ),
+            backgroundColor: WidgetStateProperty.resolveWith((states) {
+              return states.contains(WidgetState.hovered)
+                  ? hoverColor.withValues(alpha: 0.14)
+                  : Colors.transparent;
+            }),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: iconSize),
+              if (label != null) ...[
+                const SizedBox(width: 8),
+                Text(
+                  label,
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+              ],
+            ],
+          ),
         ),
       );
     }
@@ -3620,14 +3683,9 @@ class _DraggableShowHideState extends State<_DraggableShowHide> {
             () {
               widget.setFullscreen(!isFullscreen.value);
             },
-            Tooltip(
-              message: translate(
-                isFullscreen.isTrue ? 'Exit Fullscreen' : 'Fullscreen',
-              ),
-              child: Icon(
-                isFullscreen.isTrue ? Icons.fullscreen_exit : Icons.fullscreen,
-                size: iconSize,
-              ),
+            isFullscreen.isTrue ? Icons.fullscreen_exit : Icons.fullscreen,
+            tooltip: translate(
+              isFullscreen.isTrue ? 'Exit Fullscreen' : 'Fullscreen',
             ),
           ),
         ),
@@ -3637,27 +3695,19 @@ class _DraggableShowHideState extends State<_DraggableShowHide> {
               offstage: isFullscreen.isFalse,
               child: buttonWrapper(
                 widget.setMinimize,
-                Tooltip(
-                  message: translate('Minimize'),
-                  child: Icon(Icons.remove, size: iconSize),
-                ),
+                Icons.remove,
+                tooltip: translate('Minimize'),
               ),
             ),
           ),
-        buttonWrapper(
-          () => setState(() {
-            widget.toolbarState.switchCollapse(widget.sessionId);
-          }),
-          Obx(
-            (() => Tooltip(
-              message: translate(
-                collapse.isFalse ? 'Hide Toolbar' : 'Show Toolbar',
-              ),
-              child: Icon(
-                _toolbarCollapseIcon(widget.edge.value, collapse.isTrue),
-                size: iconSize,
-              ),
-            )),
+        Obx(
+          () => buttonWrapper(
+            () => widget.toolbarState.switchCollapse(widget.sessionId),
+            _toolbarCollapseIcon(widget.edge.value, collapse.isTrue),
+            label: collapse.isTrue ? translate('Show Toolbar') : null,
+            tooltip: translate(
+              collapse.isFalse ? 'Hide Toolbar' : 'Show Toolbar',
+            ),
           ),
         ),
         if (isWebDesktop)
@@ -3667,39 +3717,22 @@ class _DraggableShowHideState extends State<_DraggableShowHide> {
             } else {
               return buttonWrapper(
                 () => closeConnection(id: widget.id),
-                Tooltip(
-                  message: translate('Close'),
-                  child: Icon(
-                    Icons.close,
-                    size: iconSize,
-                    color: _ToolbarTheme.redColor,
-                  ),
-                ),
+                Icons.close,
+                tooltip: translate('Close'),
                 hoverColor: _ToolbarTheme.redColor,
-              ).paddingOnly(left: iconSize / 2);
+              );
             }
           }),
       ],
     );
-    return TextButtonTheme(
-      data: TextButtonThemeData(style: buttonStyle),
-      child: Container(
-        decoration: BoxDecoration(
-          color: Theme.of(context).menuBarTheme.style?.backgroundColor?.resolve(
-            MaterialState.values.toSet(),
-          ),
-          border: Border.all(
-            color: _ToolbarTheme.borderColor(context),
-            width: 1,
-          ),
-          borderRadius: widget.borderRadius,
-        ),
-        child: SizedBox(
-          height: widget.isHorizontal ? 20 : null,
-          width: widget.isHorizontal ? null : 20,
-          child: child,
-        ),
+    return Container(
+      padding: const EdgeInsets.all(2),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surface.withValues(alpha: 0.96),
+        border: Border.all(color: _ToolbarTheme.borderColor(context), width: 1),
+        borderRadius: widget.borderRadius,
       ),
+      child: child,
     );
   }
 }
@@ -3811,10 +3844,10 @@ class _MinimizedMonitorSwitchButton extends StatelessWidget {
         child: TextButton(
           onPressed: cycle.next,
           style: ButtonStyle(
-            minimumSize: MaterialStateProperty.all(const Size(0, 0)),
-            padding: MaterialStateProperty.all(EdgeInsets.zero),
-            backgroundColor: MaterialStateProperty.resolveWith((states) {
-              if (states.contains(MaterialState.hovered)) {
+            minimumSize: WidgetStateProperty.all(const Size(0, 0)),
+            padding: WidgetStateProperty.all(EdgeInsets.zero),
+            backgroundColor: WidgetStateProperty.resolveWith((states) {
+              if (states.contains(WidgetState.hovered)) {
                 return _ToolbarTheme.blueColor.withValues(alpha: 0.15);
               }
               return null;

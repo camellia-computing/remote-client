@@ -73,38 +73,55 @@ class PasswordStrengthIndicator extends StatelessWidget {
   final RxString password;
   final double weakMedium = 0.33;
   final double mediumStrong = 0.67;
-  const PasswordStrengthIndicator({Key? key, required this.password})
-      : super(key: key);
+  const PasswordStrengthIndicator({super.key, required this.password});
 
   @override
   Widget build(BuildContext context) {
     return Obx(() {
-      var strength = estimatePasswordStrength(password.value);
-      return Row(
-        children: [
-          Expanded(
-              child: _indicator(
-                  password.isEmpty ? Colors.grey : _getColor(strength))),
-          Expanded(
-              child: _indicator(password.isEmpty || strength < weakMedium
-                  ? Colors.grey
-                  : _getColor(strength))),
-          Expanded(
-              child: _indicator(password.isEmpty || strength < mediumStrong
-                  ? Colors.grey
-                  : _getColor(strength))),
-          Text(password.isEmpty ? '' : translate(_getLabel(strength)))
-              .marginOnly(left: password.isEmpty ? 0 : 8),
-        ],
+      final strength = estimatePasswordStrength(password.value);
+      final activeColor = _getColor(context, strength);
+      final inactiveColor = Theme.of(context).colorScheme.surfaceContainerHigh;
+      final activeSegments = password.isEmpty
+          ? 0
+          : strength < weakMedium
+          ? 1
+          : strength < mediumStrong
+          ? 2
+          : 3;
+      final label = password.isEmpty ? '' : translate(_getLabel(strength));
+      return Semantics(
+        liveRegion: true,
+        label: label,
+        child: Row(
+          children: [
+            for (var index = 0; index < 3; index++) ...[
+              Expanded(
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 180),
+                  curve: Curves.easeOutCubic,
+                  height: 7,
+                  decoration: BoxDecoration(
+                    color: index < activeSegments ? activeColor : inactiveColor,
+                    borderRadius: BorderRadius.circular(99),
+                  ),
+                ),
+              ),
+              if (index < 2) const SizedBox(width: 5),
+            ],
+            if (label.isNotEmpty) ...[
+              const SizedBox(width: 10),
+              Text(
+                label,
+                style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                  color: activeColor,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ],
+        ),
       );
     });
-  }
-
-  Widget _indicator(Color color) {
-    return Container(
-      height: 8,
-      color: color,
-    );
   }
 
   String _getLabel(double strength) {
@@ -117,13 +134,13 @@ class PasswordStrengthIndicator extends StatelessWidget {
     }
   }
 
-  Color _getColor(double strength) {
+  Color _getColor(BuildContext context, double strength) {
     if (strength < weakMedium) {
-      return Colors.yellow;
+      return AppVisual.tone(context, AppTone.danger);
     } else if (strength < mediumStrong) {
-      return Colors.blue;
+      return AppVisual.tone(context, AppTone.warning);
     } else {
-      return Colors.green;
+      return AppVisual.tone(context, AppTone.success);
     }
   }
 }

@@ -2,55 +2,48 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 abstract final class CamelliaColors {
-  static const indigo = Color(0xFF5B5BD6);
-  static const indigoStrong = Color(0xFF3F3FA8);
-  static const indigoSoft = Color(0xFFE9E9FA);
-
-  // A restrained cool spectrum separates modes without turning every surface
-  // into a competing accent.
-  static const coral = indigo;
-  static const coralStrong = indigoStrong;
-  static const azure = Color(0xFF287FC1);
-  static const azureStrong = Color(0xFF185A8D);
-  static const aqua = Color(0xFF178E88);
-  static const aquaStrong = Color(0xFF0E6864);
-  static const orchid = Color(0xFF725BB8);
+  static const indigo = Color(0xFF6558F5);
+  static const indigoStrong = Color(0xFF4338CA);
+  static const indigoSoft = Color(0xFFECEAFF);
+  static const coral = Color(0xFFFF5C7A);
+  static const coralStrong = Color(0xFFD83A5B);
+  static const azure = Color(0xFF1B8FFF);
+  static const azureStrong = Color(0xFF0068C9);
+  static const aqua = Color(0xFF19BFA9);
+  static const aquaStrong = Color(0xFF087F73);
+  static const orchid = Color(0xFF8C63F7);
   static const sun = Color(0xFFF0A202);
   static const sunStrong = Color(0xFF9A6200);
   static const leaf = Color(0xFF16A36A);
 
-  // Warm ramp reserved for the brand mark: the pinwheel stays colorful while
-  // the product UI keeps its cool functional accents.
-  static const brandAmber = Color(0xFFF3A33A);
-  static const brandEmber = Color(0xFFF0803C);
-  static const brandFlame = Color(0xFFED6A52);
-  static const brandRose = Color(0xFFD84E7E);
-  static const brandCoral = Color(0xFFE36448);
-  static const brandPlateLight = Color(0xFFF1F6F9);
-  static const brandPlateDark = Color(0xFF18212D);
-  static const brandPlateBorderLight = Color(0xFFC4D2DB);
-  static const brandPlateBorderDark = Color(0xFF354556);
-  static const brandHubLight = Color(0xFF132536);
-  static const brandHubDark = Color(0xFFF0FAFC);
+  static const portalBlue = Color(0xFF1BA7FF);
+  static const portalIndigo = Color(0xFF6558F5);
+  static const portalGlow = Color(0xFFFF5C7A);
+  static const portalPlateLight = Color(0xFFF3F5FF);
+  static const portalPlateDark = Color(0xFF121522);
+  static const portalPlateBorderLight = Color(0xFFD9DDF2);
+  static const portalPlateBorderDark = Color(0xFF343951);
+  static const portalCutoutLight = Color(0xFFF9FAFF);
+  static const portalCutoutDark = Color(0xFF0B0D15);
 
-  static const lightCanvas = Color(0xFFF6F7F9);
+  static const lightCanvas = Color(0xFFF6F7FC);
   static const lightSurface = Color(0xFFFFFFFF);
-  static const lightInset = Color(0xFFF0F2F5);
+  static const lightInset = Color(0xFFF0F2FA);
   static const lightRaised = Color(0xFFFFFFFF);
-  static const lightBorder = Color(0xFFDDE1E7);
-  static const lightText = Color(0xFF171A21);
-  static const lightMuted = Color(0xFF646B78);
+  static const lightBorder = Color(0xFFDCE0EE);
+  static const lightText = Color(0xFF171925);
+  static const lightMuted = Color(0xFF62697A);
 
-  static const darkCanvas = Color(0xFF111318);
-  static const darkSurface = Color(0xFF191C22);
-  static const darkInset = Color(0xFF22262E);
-  static const darkRaised = Color(0xFF272B34);
-  static const darkBorder = Color(0xFF343A46);
-  static const darkText = Color(0xFFF4F5F7);
-  static const darkMuted = Color(0xFFA7AFBD);
+  static const darkCanvas = Color(0xFF0B0D15);
+  static const darkSurface = Color(0xFF151824);
+  static const darkInset = Color(0xFF1C2030);
+  static const darkRaised = Color(0xFF23283A);
+  static const darkBorder = Color(0xFF343A51);
+  static const darkText = Color(0xFFF6F7FC);
+  static const darkMuted = Color(0xFFAAB1C3);
 
-  static const lightPetalWash = indigoSoft;
-  static const darkPetalWash = Color(0xFF29264F);
+  static const lightAccentWash = indigoSoft;
+  static const darkAccentWash = Color(0xFF29264F);
 }
 
 abstract final class CamelliaSpace {
@@ -64,18 +57,18 @@ abstract final class CamelliaSpace {
 }
 
 abstract final class CamelliaRadius {
-  static const control = 8.0;
-  static const surface = 12.0;
-  static const sheet = 16.0;
+  static const control = 12.0;
+  static const surface = 16.0;
+  static const sheet = 20.0;
   static const status = 999.0;
 }
 
 abstract final class CamelliaMotion {
-  static const hover = Duration(milliseconds: 140);
-  static const feedback = Duration(milliseconds: 170);
+  static const hover = Duration(milliseconds: 120);
+  static const feedback = Duration(milliseconds: 180);
   static const state = Duration(milliseconds: 220);
-  static const content = Duration(milliseconds: 280);
-  static const route = Duration(milliseconds: 320);
+  static const content = Duration(milliseconds: 240);
+  static const route = Duration(milliseconds: 280);
   static const enter = Curves.easeOutCubic;
   static const exit = Curves.easeInCubic;
   static const standard = Curves.easeInOutCubic;
@@ -105,8 +98,8 @@ abstract final class CamelliaTheme {
     final muted = dark ? CamelliaColors.darkMuted : CamelliaColors.lightMuted;
     final primary = dark ? const Color(0xFFA9A5FF) : CamelliaColors.indigo;
     final primaryContainer = dark
-        ? CamelliaColors.darkPetalWash
-        : CamelliaColors.lightPetalWash;
+        ? CamelliaColors.darkAccentWash
+        : CamelliaColors.lightAccentWash;
     final onPrimaryContainer = dark
         ? const Color(0xFFE4E2FF)
         : const Color(0xFF292274);
@@ -189,7 +182,7 @@ abstract final class CamelliaTheme {
       labelMedium: style(12, FontWeight.w600, height: 1.2),
       labelSmall: style(11, FontWeight.w600, height: 1.2, color: muted),
     );
-    final controlHeight = desktopDensity ? 40.0 : 48.0;
+    final controlHeight = desktopDensity ? 44.0 : 48.0;
     final controlShape = RoundedRectangleBorder(
       borderRadius: BorderRadius.circular(CamelliaRadius.control),
     );
@@ -199,7 +192,7 @@ abstract final class CamelliaTheme {
     );
     final buttonPadding = EdgeInsets.symmetric(
       horizontal: desktopDensity ? 16 : 18,
-      vertical: desktopDensity ? 9 : 12,
+      vertical: desktopDensity ? 10 : 12,
     );
 
     return ThemeData(
@@ -215,15 +208,9 @@ abstract final class CamelliaTheme {
       hoverColor: primaryContainer.withValues(alpha: dark ? 0.72 : 0.64),
       highlightColor: primary.withValues(alpha: 0.10),
       splashColor: primary.withValues(alpha: 0.12),
-      splashFactory: desktopDensity
-          ? NoSplash.splashFactory
-          : InkRipple.splashFactory,
-      visualDensity: desktopDensity
-          ? VisualDensity.compact
-          : VisualDensity.standard,
-      materialTapTargetSize: desktopDensity
-          ? MaterialTapTargetSize.shrinkWrap
-          : MaterialTapTargetSize.padded,
+      splashFactory: InkRipple.splashFactory,
+      visualDensity: VisualDensity.standard,
+      materialTapTargetSize: MaterialTapTargetSize.padded,
       textTheme: textTheme,
       primaryTextTheme: textTheme,
       iconTheme: IconThemeData(color: muted, size: 21),
@@ -235,16 +222,16 @@ abstract final class CamelliaTheme {
         backgroundColor: Colors.transparent,
         foregroundColor: text,
         surfaceTintColor: Colors.transparent,
-        toolbarHeight: desktopDensity ? 54 : 58,
+        toolbarHeight: desktopDensity ? 64 : 64,
         titleTextStyle: textTheme.titleMedium,
       ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: inset,
-        isDense: desktopDensity,
+        isDense: false,
         contentPadding: EdgeInsets.symmetric(
           horizontal: 14,
-          vertical: desktopDensity ? 11 : 14,
+          vertical: desktopDensity ? 12 : 14,
         ),
         hintStyle: textTheme.bodyMedium?.copyWith(color: muted),
         labelStyle: textTheme.bodyMedium?.copyWith(color: muted),
@@ -472,8 +459,8 @@ abstract final class CamelliaTheme {
         ),
       ),
       listTileTheme: ListTileThemeData(
-        dense: desktopDensity,
-        minTileHeight: desktopDensity ? 44 : 52,
+        dense: false,
+        minTileHeight: desktopDensity ? 48 : 56,
         contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 2),
         iconColor: muted,
         textColor: text,
@@ -529,8 +516,26 @@ class CamelliaBackdrop extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ColoredBox(
-      color: Theme.of(context).scaffoldBackgroundColor,
+    final theme = Theme.of(context);
+    final dark = theme.brightness == Brightness.dark;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            theme.scaffoldBackgroundColor,
+            Color.alphaBlend(
+              CamelliaColors.indigo.withValues(alpha: dark ? 0.08 : 0.035),
+              theme.scaffoldBackgroundColor,
+            ),
+            Color.alphaBlend(
+              CamelliaColors.azure.withValues(alpha: dark ? 0.055 : 0.025),
+              theme.scaffoldBackgroundColor,
+            ),
+          ],
+        ),
+      ),
       child: Padding(padding: padding ?? EdgeInsets.zero, child: child),
     );
   }

@@ -4,11 +4,11 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:camellia_remote_app/common/widgets/setting_widgets.dart';
+import 'package:camellia_remote_app/common/widgets/settings_components.dart';
 import 'package:camellia_remote_app/desktop/pages/desktop_setting_page.dart';
 import 'package:camellia_remote_app/ui/camellia_design.dart';
 import 'package:get/get.dart';
 import 'package:provider/provider.dart';
-import 'package:settings_ui/settings_ui.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:url_launcher/url_launcher_string.dart';
 
@@ -1168,8 +1168,9 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
               ),
             SettingsTile(
               title: Text(translate("Privacy Statement")),
-              onPressed: (context) =>
-                  launchUrlString('https://github.com/camellia-computing/remote-client/blob/main/docs/privacy.md'),
+              onPressed: (context) => launchUrlString(
+                'https://github.com/camellia-computing/remote-client/blob/main/docs/privacy.md',
+              ),
               leading: Icon(Icons.privacy_tip),
             ),
           ],
@@ -1323,7 +1324,8 @@ void showAbout(OverlayDialogManager dialogManager) {
             Text('Version: $version'),
             InkWell(
               onTap: () async {
-                const url = 'https://github.com/camellia-computing/remote-client';
+                const url =
+                    'https://github.com/camellia-computing/remote-client';
                 await launchUrl(Uri.parse(url));
               },
               child: Padding(
