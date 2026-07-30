@@ -15,6 +15,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
+  CAMELLIA_REMOTE_DOCS_HOME_URL: ${{ github.server_url }}/${{ github.repository }}
+  CAMELLIA_REMOTE_LINUX_DISPLAY_DOCS_URL: ${{ github.server_url }}/${{ github.repository }}/blob/main/docs/platform-notes.md#linux-display-requirements
   CARGO_TERM_COLOR: always
   RUST_TOOLCHAIN: "1.97.1"
   FLUTTER_CHANNEL: stable

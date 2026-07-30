@@ -15,7 +15,6 @@ import 'package:camellia_remote_app/common/widgets/peer_tab_page.dart';
 import 'package:camellia_remote_app/consts.dart';
 import 'package:camellia_remote_app/desktop/pages/connection_page.dart';
 import 'package:camellia_remote_app/desktop/pages/desktop_setting_page.dart';
-import 'package:camellia_remote_app/desktop/widgets/update_progress.dart';
 import 'package:camellia_remote_app/models/platform_model.dart';
 import 'package:camellia_remote_app/models/server_model.dart';
 import 'package:camellia_remote_app/models/state_model.dart';
@@ -360,9 +359,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
       if (!isOutgoingOnly) buildIDBoard(context),
       if (!isOutgoingOnly) buildPasswordBoard(context),
       FutureBuilder<Widget>(
-        future: Future.value(
-          Obx(() => buildHelpCards(stateGlobal.updateUrl.value)),
-        ),
+        future: Future.value(buildHelpCards()),
         builder: (_, data) {
           if (data.hasData) {
             if (isIncomingOnly) {
@@ -737,34 +734,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
     );
   }
 
-  Widget buildHelpCards(String updateUrl) {
-    if (!bind.isCustomClient() &&
-        updateUrl.isNotEmpty &&
-        !isCardClosed &&
-        bind.mainUriPrefixSync().contains('camellia')) {
-      final isToUpdate = (isWindows || isMacOS) && bind.mainIsInstalled();
-      String btnText = isToUpdate ? 'Update' : 'Download';
-      GestureTapCallback onPressed = () async {
-        final Uri url = Uri.parse('https://github.com/camellia-computing/remote-client/releases');
-        await launchUrl(url);
-      };
-      if (isToUpdate) {
-        onPressed = () {
-          handleUpdate(updateUrl);
-        };
-      }
-      return buildInstallCard(
-        "Status",
-        "${translate("new-version-of-{${bind.mainGetAppNameSync()}}-tip")} (${bind.mainGetNewVersion()}).",
-        btnText,
-        onPressed,
-        closeButton: true,
-        help: isToUpdate ? 'Changelog' : null,
-        link: isToUpdate
-            ? 'https://github.com/camellia-computing/remote-client/releases/tag/${bind.mainGetNewVersion()}'
-            : null,
-      );
-    }
+  Widget buildHelpCards() {
     if (systemError.isNotEmpty) {
       return buildInstallCard("", systemError, "", () {}, tone: AppTone.danger);
     }

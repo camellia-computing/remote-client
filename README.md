@@ -48,7 +48,10 @@ Useful component paths:
 - Pairing, session, file-transfer, clipboard, input, and proxy inputs are bounded and validated before resource allocation or filesystem access.
 - Secrets and deployment endpoints must be supplied through the documented build/deployment trust channel; never commit private keys, access tokens, or customer configuration.
 - Desktop application data uses the `com.camellia.remote` identity. No old application directory is scanned or migrated.
-- Auto-update accepts only the Camellia Computing repository/artifact allow-list and release integrity metadata.
+- The application contains no version service or background updater and never
+  discovers or downloads releases. Obtain an immutable reviewed Release,
+  verify its checksum and signing evidence, then invoke the platform installer
+  on that user-selected local package.
 - Web assets embedded by the management server are accepted only from the full commit in `web-client.lock` after a successful client push CI run.
 
 Report vulnerabilities through GitHub private vulnerability reporting as described in [SECURITY.md](SECURITY.md).

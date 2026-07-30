@@ -104,7 +104,6 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
       false; //androidVersion >= 26; // remove because not work on every device
   var _ignoreBatteryOpt = false;
   var _enableStartOnBoot = false;
-  var _checkUpdateOnStartup = false;
   var _showTerminalExtraKeys = false;
   var _floatingWindowDisabled = false;
   var _keepScreenOn = KeepScreenOn.duringControlled; // relay on floating window
@@ -235,14 +234,6 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
       if (enableStartOnBoot != _enableStartOnBoot) {
         update = true;
         _enableStartOnBoot = enableStartOnBoot;
-      }
-
-      var checkUpdateOnStartup = mainGetLocalBoolOptionSync(
-        kOptionAllowCheckUpdate,
-      );
-      if (checkUpdateOnStartup != _checkUpdateOnStartup) {
-        update = true;
-        _checkUpdateOnStartup = checkUpdateOnStartup;
       }
 
       var floatingWindowDisabled =
@@ -707,22 +698,6 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
         },
       ),
     );
-
-    if (!bind.isCustomClient()) {
-      enhancementsTiles.add(
-        SettingsTile.switchTile(
-          initialValue: _checkUpdateOnStartup,
-          title: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [Text(translate('Check for software update on startup'))],
-          ),
-          onToggle: (bool toValue) async {
-            await mainSetLocalBoolOption(kOptionAllowCheckUpdate, toValue);
-            setState(() => _checkUpdateOnStartup = toValue);
-          },
-        ),
-      );
-    }
 
     enhancementsTiles.add(
       SettingsTile.switchTile(

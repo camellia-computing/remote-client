@@ -3274,7 +3274,7 @@ lazy_static::lazy_static! {
             msgtype: "error",
             title: "Login Error",
             text: "Login screen using Wayland is not supported",
-            link: "https://github.com/camellia-computing/remote-client/blob/main/docs/platform-notes.md#linux-display-requirements",
+            link: LINK_HEADLESS_LINUX_SUPPORT,
             try_again: true,
         }), (LOGIN_MSG_DESKTOP_SESSION_NOT_READY, LoginErrorMsgBox{
             msgtype: "session-login",

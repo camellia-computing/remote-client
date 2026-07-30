@@ -11,7 +11,6 @@ use serde_json::{json, Map, Value};
 #[cfg(not(target_os = "ios"))]
 use camellia_remote_protocol::whoami;
 use camellia_remote_protocol::{
-    allow_err,
     anyhow::{anyhow, Context},
     bail,
     base64::{engine::general_purpose::STANDARD as BASE64, Engine as _},
@@ -22,7 +21,7 @@ use camellia_remote_protocol::{
     crypto::{box_, secretbox, sign},
     futures::future::join_all,
     futures_util::future::poll_fn,
-    get_version_number, log,
+    log,
     message_proto::*,
     protobuf::{Enum, Message as _},
     rendezvous_proto::*,
@@ -88,7 +87,6 @@ pub mod input {
 }
 
 lazy_static::lazy_static! {
-    pub static ref SOFTWARE_UPDATE_URL: Arc<Mutex<String>> = Default::default();
     pub static ref DEVICE_ID: Arc<Mutex<String>> = Default::default();
     pub static ref DEVICE_NAME: Arc<Mutex<String>> = Default::default();
     static ref PUBLIC_IPV6_ADDR: Arc<Mutex<(Option<SocketAddr>, Option<Instant>)>> = Default::default();
@@ -866,58 +864,6 @@ pub fn is_modifier(evt: &KeyEvent) -> bool {
     } else {
         false
     }
-}
-
-pub fn check_software_update() {
-    if is_custom_client() {
-        return;
-    }
-    let opt = LocalConfig::get_option(keys::OPTION_ALLOW_CHECK_UPDATE);
-    if config::option2bool(keys::OPTION_ALLOW_CHECK_UPDATE, &opt) {
-        std::thread::spawn(move || allow_err!(do_check_software_update()));
-    }
-}
-
-#[tokio::main(flavor = "current_thread")]
-pub async fn do_check_software_update() -> camellia_remote_protocol::ResultType<()> {
-    let (request, url) = camellia_remote_protocol::version_check_request(
-        camellia_remote_protocol::VER_TYPE_CAMELLIA_REMOTE_CLIENT.to_string(),
-    );
-    if url.is_empty() {
-        return Ok(());
-    }
-    let proxy_conf = Config::get_socks();
-    let tls_url = get_url_for_tls(&url, &proxy_conf);
-    let tls_type = get_cached_tls_type(tls_url);
-    let tls_type = tls_type.unwrap_or(TlsType::Rustls);
-    let client = create_http_client_async_with_tls(tls_type);
-    let latest_release_response = match client.post(&url).json(&request).send().await {
-        Ok(resp) => {
-            upsert_tls_cache(tls_url, tls_type);
-            resp
-        }
-        Err(err) => return Err(err.into()),
-    };
-    let bytes = latest_release_response.bytes().await?;
-    let resp: camellia_remote_protocol::VersionCheckResponse = serde_json::from_slice(&bytes)?;
-    let response_url = resp.url;
-    let latest_release_version = response_url.rsplit('/').next().unwrap_or_default();
-
-    if get_version_number(&latest_release_version) > get_version_number(crate::VERSION) {
-        #[cfg(feature = "flutter")]
-        {
-            let mut m = HashMap::new();
-            m.insert("name", "check_software_update_finish");
-            m.insert("url", &response_url);
-            if let Ok(data) = serde_json::to_string(&m) {
-                let _ = crate::flutter::push_global_event(crate::flutter::APP_TYPE_MAIN, data);
-            }
-        }
-        *SOFTWARE_UPDATE_URL.lock().unwrap() = response_url;
-    } else {
-        *SOFTWARE_UPDATE_URL.lock().unwrap() = "".to_string();
-    }
-    Ok(())
 }
 
 #[inline]

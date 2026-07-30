@@ -1,10 +1,8 @@
 use camellia_remote_protocol::{
-    bail,
     config::{Config, Socks5Server},
     log::{self, info},
     proxy::{Proxy, ProxyScheme},
     tls::{get_cached_tls_type, is_plain, upsert_tls_cache, TlsType},
-    ResultType,
 };
 use reqwest::{blocking::Client as SyncClient, Client as AsyncClient};
 
@@ -104,25 +102,6 @@ pub fn get_url_for_tls<'a>(url: &'a str, proxy_conf: &'a Option<Socks5Server>) -
         }
     }
     url
-}
-
-fn ensure_https(url: &str) -> ResultType<()> {
-    if url::Url::parse(url)?.scheme() != "https" {
-        bail!("Strict HTTP client requires HTTPS: {}", url);
-    }
-    Ok(())
-}
-
-/// Client for update downloads: HTTPS is mandatory and certificates are always verified.
-pub fn create_http_client_with_url_strict(url: &str) -> ResultType<SyncClient> {
-    ensure_https(url)?;
-    Ok(create_http_client_with_tls(TlsType::Rustls))
-}
-
-/// Async counterpart of [`create_http_client_with_url_strict`].
-pub async fn create_http_client_async_with_url_strict(url: &str) -> ResultType<AsyncClient> {
-    ensure_https(url)?;
-    Ok(create_http_client_async_with_tls(TlsType::Rustls))
 }
 
 pub fn create_http_client_with_url(url: &str) -> SyncClient {
