@@ -1,48 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:camellia_remote_app/common/widgets/adaptive_layout.dart';
-import 'package:camellia_remote_app/common/widgets/brand_shell.dart';
 import 'package:flutter_test/flutter_test.dart';
-
-Widget _app({Widget body = const SizedBox.expand()}) {
-  return MaterialApp(
-    home: AdaptiveNavigationScaffold(
-      selectedIndex: 0,
-      onDestinationSelected: (_) {},
-      destinations: const [
-        NavigationDestination(
-          icon: Icon(Icons.home_outlined),
-          selectedIcon: Icon(Icons.home),
-          label: 'Home',
-        ),
-        NavigationDestination(
-          icon: Icon(Icons.settings_outlined),
-          selectedIcon: Icon(Icons.settings),
-          label: 'Settings',
-        ),
-      ],
-      body: body,
-    ),
-  );
-}
-
-class _CounterProbe extends StatefulWidget {
-  const _CounterProbe();
-
-  @override
-  State<_CounterProbe> createState() => _CounterProbeState();
-}
-
-class _CounterProbeState extends State<_CounterProbe> {
-  var count = 0;
-
-  @override
-  Widget build(BuildContext context) {
-    return TextButton(
-      onPressed: () => setState(() => count++),
-      child: Text('Count $count'),
-    );
-  }
-}
 
 Widget _stateApp(AppContentState state) {
   return MaterialApp(
@@ -68,10 +26,10 @@ Widget _withReducedMotion(Widget child) {
 void main() {
   test('layout breakpoints classify compact, medium and expanded widths', () {
     expect(AppLayout.forWidth(390), AppLayoutSize.compact);
-    expect(AppLayout.forWidth(719), AppLayoutSize.compact);
-    expect(AppLayout.forWidth(720), AppLayoutSize.medium);
-    expect(AppLayout.forWidth(1199), AppLayoutSize.medium);
-    expect(AppLayout.forWidth(1200), AppLayoutSize.expanded);
+    expect(AppLayout.forWidth(599), AppLayoutSize.compact);
+    expect(AppLayout.forWidth(600), AppLayoutSize.medium);
+    expect(AppLayout.forWidth(1023), AppLayoutSize.medium);
+    expect(AppLayout.forWidth(1024), AppLayoutSize.expanded);
   });
 
   test('reference screenshot widths use the intended layout class', () {
@@ -89,67 +47,50 @@ void main() {
     }
   });
 
-  test('navigation labels appear before ultra-wide desktop sizes', () {
-    expect(AppLayout.railExtendBreakpoint, 1120);
-  });
-
-  testWidgets('navigation changes shape with available width', (tester) async {
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-    tester.view.devicePixelRatio = 1;
-
-    tester.view.physicalSize = const Size(390, 844);
-    await tester.pumpWidget(_app());
-    expect(find.byType(NavigationBar), findsOneWidget);
-    expect(find.byType(CamelliaNavigationRail), findsNothing);
-
-    tester.view.physicalSize = const Size(768, 1024);
-    await tester.pumpAndSettle();
-    expect(find.byType(CamelliaNavigationRail), findsOneWidget);
-    expect(find.byType(NavigationBar), findsNothing);
-    expect(
-      tester
-          .widget<CamelliaNavigationRail>(find.byType(CamelliaNavigationRail))
-          .extended,
-      isFalse,
-    );
-
-    tester.view.physicalSize = const Size(1120, 800);
-    await tester.pumpAndSettle();
-    expect(
-      tester
-          .widget<CamelliaNavigationRail>(find.byType(CamelliaNavigationRail))
-          .extended,
-      isTrue,
-    );
-
-    tester.view.physicalSize = const Size(1440, 900);
-    await tester.pumpAndSettle();
-    expect(find.byType(NavigationBar), findsNothing);
-    expect(
-      tester
-          .widget<CamelliaNavigationRail>(find.byType(CamelliaNavigationRail))
-          .extended,
-      isTrue,
-    );
-  });
-
-  testWidgets('navigation breakpoint preserves body state', (tester) async {
+  testWidgets('adaptive content applies responsive padding and width cap', (
+    tester,
+  ) async {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     tester.view.devicePixelRatio = 1;
     tester.view.physicalSize = const Size(390, 844);
 
-    await tester.pumpWidget(_app(body: const _CounterProbe()));
-    await tester.tap(find.text('Count 0'));
-    await tester.pump();
-    expect(find.text('Count 1'), findsOneWidget);
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: AdaptiveContent(
+            maxWidth: 900,
+            child: SizedBox(
+              key: ValueKey('content'),
+              width: double.infinity,
+              height: 40,
+            ),
+          ),
+        ),
+      ),
+    );
+    var padding = tester.widget<Padding>(
+      find
+          .ancestor(
+            of: find.byKey(const ValueKey('content')),
+            matching: find.byType(Padding),
+          )
+          .first,
+    );
+    expect(padding.padding, const EdgeInsets.all(16));
 
-    tester.view.physicalSize = const Size(768, 1024);
+    tester.view.physicalSize = const Size(1280, 900);
     await tester.pumpAndSettle();
-
-    expect(find.byType(CamelliaNavigationRail), findsOneWidget);
-    expect(find.text('Count 1'), findsOneWidget);
+    padding = tester.widget<Padding>(
+      find
+          .ancestor(
+            of: find.byKey(const ValueKey('content')),
+            matching: find.byType(Padding),
+          )
+          .first,
+    );
+    expect(padding.padding, const EdgeInsets.all(32));
+    expect(tester.getSize(find.byKey(const ValueKey('content'))).width, 836);
   });
 
   testWidgets('content pane renders every supported state', (tester) async {

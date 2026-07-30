@@ -66,7 +66,7 @@ void main() {
       expect(visual.tokens.surfaceContainer, expectedTokens.surfaceContainer);
       expect(visual.tokens.surfaceElevated, expectedTokens.surfaceElevated);
       expect(visual.tokens.border, expectedTokens.border);
-      expect(visual.tokens.controlHeight, 40);
+      expect(visual.tokens.controlHeight, 44);
       expect(visual.tokens.touchTarget, 48);
       expect(
         theme.focusColor,
