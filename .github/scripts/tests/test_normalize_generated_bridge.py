@@ -49,6 +49,10 @@ class NormalizeGeneratedBridgeTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "symbolic-link"):
                 normalizer.dart_files((link,))
 
+    def test_cli_rejects_custom_paths(self) -> None:
+        with self.assertRaisesRegex(SystemExit, "usage"):
+            normalizer.main(["outside.dart"])
+
 
 if __name__ == "__main__":
     unittest.main()
