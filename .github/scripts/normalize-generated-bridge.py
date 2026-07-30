@@ -53,8 +53,9 @@ def normalize(paths: Iterable[Path]) -> tuple[int, int]:
 
 
 def main(argv: list[str]) -> int:
-    paths = [Path(value).resolve() for value in argv] if argv else list(DEFAULT_PATHS)
-    total, changed = normalize(paths)
+    if argv:
+        raise SystemExit("usage: normalize-generated-bridge.py")
+    total, changed = normalize(DEFAULT_PATHS)
     print(f"Normalized {total} Dart bridge files ({changed} changed)")
     return 0
 
