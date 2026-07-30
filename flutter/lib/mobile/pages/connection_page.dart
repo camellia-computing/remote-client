@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:camellia_remote_app/common/formatter/id_formatter.dart';
 import 'package:camellia_remote_app/common/widgets/connection_page_title.dart';
 import 'package:camellia_remote_app/common/widgets/brand_shell.dart';
-import 'package:camellia_remote_app/models/state_model.dart';
 import 'package:camellia_remote_app/ui/camellia_design.dart';
 import 'package:get/get.dart';
 import 'package:provider/provider.dart';

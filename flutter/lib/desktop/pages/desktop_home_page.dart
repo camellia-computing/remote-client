@@ -17,7 +17,6 @@ import 'package:camellia_remote_app/desktop/pages/connection_page.dart';
 import 'package:camellia_remote_app/desktop/pages/desktop_setting_page.dart';
 import 'package:camellia_remote_app/models/platform_model.dart';
 import 'package:camellia_remote_app/models/server_model.dart';
-import 'package:camellia_remote_app/models/state_model.dart';
 import 'package:camellia_remote_app/models/user_model.dart';
 import 'package:camellia_remote_app/plugin/ui_manager.dart';
 import 'package:camellia_remote_app/utils/multi_window_manager.dart';
