@@ -187,21 +187,6 @@
           "version": "0.2.14"
         }
       ]
-    },
-    {
-      "id": "yanked-spin-transitive",
-      "owner": "remote-security-maintainers",
-      "expires_on": "2026-08-31",
-      "reason": "spin 0.9.8 is locked through flume in reviewed image and camera dependency chains. It has no RustSec vulnerability advisory, but a yanked crate must be removed promptly.",
-      "exit_condition": "Upgrade the flume/image/nokhwa chains until spin 0.9.8 is absent from Cargo.lock.",
-      "warnings": [
-        {
-          "category": "yanked",
-          "advisory_id": null,
-          "package": "spin",
-          "version": "0.9.8"
-        }
-      ]
     }
   ]
 }
