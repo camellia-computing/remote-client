@@ -1,6 +1,13 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
-  <rect width="128" height="128" rx="28" fill="#f1f6f9"/>
-  <g transform="scale(.125)"><defs><path id="b" d="M475 497C378 445 400 266 579 144C646 259 638 400 549 508Q512 542 475 497Z"/></defs><use href="#b" fill="#f3a33a"/><use href="#b" fill="#f0803c" transform="rotate(72 512 512)"/><use href="#b" fill="#ed6a52" transform="rotate(144 512 512)"/><use href="#b" fill="#d84e7e" transform="rotate(216 512 512)"/><use href="#b" fill="#e36448" transform="rotate(288 512 512)"/></g>
-  <circle cx="64" cy="64" r="11.4" fill="#f1f6f9"/><circle cx="64" cy="64" r="6.1" fill="#132536"/>
-  <circle cx="64" cy="64" r="12.75" fill="none" stroke="#f3a33a" stroke-width="1.25"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="plate" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#f7f8ff"/><stop offset="1" stop-color="#e9edff"/></linearGradient>
+    <linearGradient id="rear" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#1ba7ff"/><stop offset="1" stop-color="#19bfa9"/></linearGradient>
+    <linearGradient id="front" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#6558f5"/><stop offset="1" stop-color="#8c63f7"/></linearGradient>
+    <mask id="rear-mask"><rect x="185" y="216" width="451" height="389" rx="117" fill="#ffffff"/><rect x="255" y="286" width="311" height="249" rx="70" fill="#000000"/></mask>
+    <mask id="front-mask"><rect x="387" y="419" width="451" height="389" rx="117" fill="#ffffff"/><rect x="458" y="489" width="311" height="249" rx="70" fill="#000000"/></mask>
+  </defs>
+  <rect width="1024" height="1024" rx="236" fill="url(#plate)"/>
+  <rect x="185" y="216" width="451" height="389" rx="117" fill="url(#rear)" mask="url(#rear-mask)"/>
+  <path d="M458 450 L566 574" stroke="#ff5c7a" stroke-width="93" stroke-linecap="round"/>
+  <rect x="387" y="419" width="451" height="389" rx="117" fill="url(#front)" mask="url(#front-mask)"/>
 </svg>

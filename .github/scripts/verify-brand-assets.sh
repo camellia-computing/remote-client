@@ -25,8 +25,8 @@ asset_status="$(
 		flutter/android/app/src/main/res \
 		flutter/assets/brand-mark.png \
 		flutter/assets/brand-mark-dark.png \
+		flutter/assets/icon.svg \
 		flutter/ios/Runner/Assets.xcassets/AppIcon.appiconset \
-		flutter/ios/Runner/Assets.xcassets/LaunchImage.imageset \
 		flutter/macos/Runner/AppIcon.icns \
 		flutter/web/favicon.png \
 		flutter/web/favicon.svg \
