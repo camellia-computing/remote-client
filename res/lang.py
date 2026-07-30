@@ -11,12 +11,24 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 LANG_DIRECTORY = ROOT / "src" / "lang"
 LANGUAGE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,31}$")
+LANGUAGE_SOURCES = {
+    path.stem: path
+    for path in LANG_DIRECTORY.glob("*.rs")
+    if path.is_file() and not path.is_symlink()
+}
 
 
 def language_path(language: str, suffix: str) -> Path:
     if LANGUAGE_NAME.fullmatch(language) is None:
         raise ValueError(f"invalid language name: {language!r}")
-    return LANG_DIRECTORY / f"{language}{suffix}"
+    source = LANGUAGE_SOURCES.get(language)
+    if source is None:
+        raise ValueError(f"unknown checked-in language: {language!r}")
+    if suffix == ".rs":
+        return source
+    if suffix == ".csv":
+        return source.with_suffix(".csv")
+    raise ValueError(f"unsupported language file suffix: {suffix!r}")
 
 
 def get_lang(language: str) -> dict[str, str]:
@@ -83,8 +95,8 @@ def rust_string(value: str) -> str:
 
 
 def to_rs(language: str) -> None:
-    csv_path = Path.cwd() / f"{language}.csv"
     source_path = language_path(language, ".rs")
+    csv_path = language_path(language, ".csv")
     with (
         csv_path.open(encoding="utf-8", newline="") as csv_file,
         source_path.open("w", encoding="utf-8", newline="\n") as destination,

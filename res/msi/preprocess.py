@@ -17,12 +17,12 @@ g_version = ""
 g_build_date = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M")
 SCRIPT_DIR = Path(__file__).resolve().parent
 PACKAGE_DIR = SCRIPT_DIR / "Package"
-EXECUTABLE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+REPOSITORY_ROOT = SCRIPT_DIR.parents[1]
+APPLICATION_EXECUTABLE = "camellia-remote"
+WINDOWS_BUILD_ROOT = REPOSITORY_ROOT / "flutter" / "build" / "windows"
+ARM64_DISTRIBUTION_DIRECTORY = WINDOWS_BUILD_ROOT / "arm64" / "runner" / "Release"
+X64_DISTRIBUTION_DIRECTORY = WINDOWS_BUILD_ROOT / "x64" / "runner" / "Release"
 PRODUCT_TEXT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._()+-]{0,79}$")
-SEMVER = re.compile(
-    r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)",
-    re.ASCII,
-)
 BUILD_DATE = re.compile(
     r"(?:19|20)[0-9]{2}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01]) "
     r"(?:[01][0-9]|2[0-3]):[0-5][0-9]",
@@ -59,11 +59,10 @@ def default_revision_version():
 def make_parser():
     parser = argparse.ArgumentParser(description="Msi preprocess script.")
     parser.add_argument(
-        "-d",
-        "--dist-dir",
-        type=str,
-        default="../../camellia",
-        help="The dist directory to install.",
+        "--architecture",
+        choices=("arm64", "x64"),
+        default="x64",
+        help="The checked-in Windows build architecture to package.",
     )
     parser.add_argument(
         "--arp",
@@ -88,13 +87,7 @@ def make_parser():
         help='Connection type, e.g. "incoming", "outgoing". Default is empty, means incoming-outgoing',
     )
     parser.add_argument(
-        "--app-name", type=str, default="Camellia", help="The app name."
-    )
-    parser.add_argument(
-        "--exe-name",
-        type=str,
-        default="camellia",
-        help="The executable base name without extension.",
+        "--app-name", type=str, default="Camellia Remote", help="The app name."
     )
     parser.add_argument(
         "-v", "--version", type=str, default="", help="The app version."
@@ -122,8 +115,28 @@ def package_path(relative_path):
     return file_path
 
 
-def valid_executable_name(value):
-    return EXECUTABLE_NAME.fullmatch(value) is not None and Path(value).stem == value
+def stable_semver(value):
+    if len(value) > 64:
+        return None
+    parts = value.split(".")
+    if len(parts) != 3:
+        return None
+    for part in parts:
+        if (
+            not part
+            or not all("0" <= character <= "9" for character in part)
+            or (len(part) > 1 and part.startswith("0"))
+        ):
+            return None
+    return tuple(parts)
+
+
+def distribution_directory(architecture):
+    if architecture == "arm64":
+        return ARM64_DISTRIBUTION_DIRECTORY
+    if architecture == "x64":
+        return X64_DISTRIBUTION_DIRECTORY
+    raise ValueError(f"unsupported Windows architecture: {architecture}")
 
 
 def read_lines_and_tag_indexes(file_path, tag_start, tag_end):
@@ -510,8 +523,8 @@ def prepare_resources():
         return False
 
 
-def init_global_vars(dist_dir, app_name, exe_name, args):
-    dist_app = dist_dir.joinpath(exe_name + ".exe")
+def init_global_vars(dist_dir, args):
+    dist_app = dist_dir / f"{APPLICATION_EXECUTABLE}.exe"
     if dist_app.is_symlink() or not dist_app.is_file():
         print(f"Error: expected a regular executable at {dist_app}")
         return False
@@ -530,7 +543,7 @@ def init_global_vars(dist_dir, app_name, exe_name, args):
     g_version = args.version.replace("-", ".")
     if g_version == "":
         g_version = read_process_output("--version")
-    if SEMVER.fullmatch(g_version) is None:
+    if stable_semver(g_version) is None:
         print(f"Error: version {g_version} not found in {dist_app}")
         return False
     if g_version.count(".") == 2:
@@ -574,19 +587,18 @@ if __name__ == "__main__":
         parser.error(
             "--manufacturer contains unsupported installer metadata characters"
         )
-    dist_dir = (SCRIPT_DIR / args.dist_dir).resolve()
-    if not dist_dir.is_dir():
-        parser.error("--dist-dir must resolve to an existing directory")
+    dist_dir = distribution_directory(args.architecture)
+    if dist_dir.is_symlink() or not dist_dir.is_dir():
+        parser.error(
+            f"the {args.architecture} Windows distribution must be a regular directory: "
+            f"{dist_dir}"
+        )
 
     if not prepare_resources():
         sys.exit(-1)
 
-    exe_name = args.exe_name
-    if not valid_executable_name(exe_name):
-        parser.error(
-            "--exe-name must be a safe executable base name without an extension"
-        )
-    if not init_global_vars(dist_dir, app_name, exe_name, args):
+    exe_name = APPLICATION_EXECUTABLE
+    if not init_global_vars(dist_dir, args):
         sys.exit(-1)
 
     update_license_file(app_name)

@@ -11,9 +11,11 @@ SPEC.loader.exec_module(language)
 
 class LanguageMaintenanceTests(unittest.TestCase):
     def test_language_names_cannot_escape_the_translation_directory(self) -> None:
-        for invalid in ["../en", "nested/en", "", "en.csv"]:
+        for invalid in ["../en", "nested/en", "", "en.csv", "not_a_language"]:
             with self.assertRaises(ValueError):
                 language.language_path(invalid, ".rs")
+        with self.assertRaisesRegex(ValueError, "unsupported language file suffix"):
+            language.language_path("en", ".txt")
 
     def test_rust_strings_are_escaped(self) -> None:
         self.assertEqual(

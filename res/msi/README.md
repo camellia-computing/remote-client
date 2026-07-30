@@ -8,10 +8,11 @@ installer sources documented in the repository provenance files.
 
 ## Steps
 
-1. Run `python preprocess.py`, using `python preprocess.py -h` for the supported
-   inputs. The distribution directory must already contain the named application
-   executable. Product names, executable names, versions, and custom ARP metadata
-   are validated before they are written into WiX sources.
+1. Run `python preprocess.py --architecture x64` (or `arm64`), using
+   `python preprocess.py -h` for the supported inputs. The corresponding checked-in
+   Flutter build directory must already contain the canonical application
+   executable. Product names, versions, and custom ARP metadata are validated
+   before they are written into WiX sources.
 2. Build the .sln solution.
 
 Preprocessing is repeatable: generated marker sections are replaced rather than

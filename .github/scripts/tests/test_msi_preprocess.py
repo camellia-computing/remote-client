@@ -54,13 +54,20 @@ class MsiPreprocessTests(unittest.TestCase):
             self.assertEqual(first, second)
             self.assertIn("a&amp;b.dll", "".join(first))
 
-    def test_executable_name_and_version_inputs_are_strict(self) -> None:
-        self.assertTrue(preprocess.valid_executable_name("camellia-remote"))
-        for invalid in ["../camellia", "camellia.exe", "a/b", ""]:
-            self.assertFalse(preprocess.valid_executable_name(invalid))
-        self.assertIsNotNone(preprocess.SEMVER.fullmatch("1.2.3"))
+    def test_product_and_version_inputs_are_strict(self) -> None:
+        self.assertEqual(preprocess.stable_semver("1.2.3"), ("1", "2", "3"))
         for invalid in ["1.2.3suffix", "01.2.3", "1.2", "1.2.3.4"]:
-            self.assertIsNone(preprocess.SEMVER.fullmatch(invalid))
+            self.assertIsNone(preprocess.stable_semver(invalid))
+        self.assertEqual(
+            preprocess.distribution_directory("arm64"),
+            preprocess.ARM64_DISTRIBUTION_DIRECTORY,
+        )
+        self.assertEqual(
+            preprocess.distribution_directory("x64"),
+            preprocess.X64_DISTRIBUTION_DIRECTORY,
+        )
+        with self.assertRaisesRegex(ValueError, "unsupported Windows architecture"):
+            preprocess.distribution_directory("../x64")
         self.assertIsNotNone(preprocess.PRODUCT_TEXT.fullmatch("Camellia Remote"))
         for invalid in ['Bad "Name"', "Bad<Name", "Bad&Name", "line\nbreak"]:
             self.assertIsNone(preprocess.PRODUCT_TEXT.fullmatch(invalid))
@@ -84,11 +91,7 @@ class MsiPreprocessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             args = argparse.Namespace(version="1.2.3", revision_version=1)
             with redirect_stdout(io.StringIO()):
-                self.assertFalse(
-                    preprocess.init_global_vars(
-                        Path(directory), "Camellia Remote", "camellia-remote", args
-                    )
-                )
+                self.assertFalse(preprocess.init_global_vars(Path(directory), args))
 
 
 if __name__ == "__main__":
