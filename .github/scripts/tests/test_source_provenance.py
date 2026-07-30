@@ -15,12 +15,13 @@ SPEC.loader.exec_module(PROVENANCE)
 
 REPOSITORY = Path(__file__).resolve().parents[3]
 COMMIT = "a" * 40
+PROTOCOL_REPOSITORY = "../remote-protocol.git"
 
 
 def document(commit: object = COMMIT) -> dict[str, object]:
     return {
         "schema_version": 1,
-        "protocol_repository": PROVENANCE.PROTOCOL_REPOSITORY,
+        "protocol_repository": PROTOCOL_REPOSITORY,
         "protocol_source_commit": commit,
     }
 
@@ -30,7 +31,7 @@ class SourceProvenanceTests(unittest.TestCase):
         PROVENANCE.validate_repository(REPOSITORY)
 
     def test_accepts_exact_canonical_source(self) -> None:
-        PROVENANCE.validate_document(document(), COMMIT)
+        PROVENANCE.validate_document(document(), COMMIT, PROTOCOL_REPOSITORY)
 
     def test_rejects_malformed_or_stale_source(self) -> None:
         cases = (
@@ -42,7 +43,27 @@ class SourceProvenanceTests(unittest.TestCase):
         for provenance, actual_commit in cases:
             with self.subTest(provenance=provenance, actual_commit=actual_commit):
                 with self.assertRaises(PROVENANCE.ProvenanceError):
-                    PROVENANCE.validate_document(provenance, actual_commit)
+                    PROVENANCE.validate_document(
+                        provenance,
+                        actual_commit,
+                        PROTOCOL_REPOSITORY,
+                    )
+
+    def test_rejects_nonportable_or_drifted_submodule_repository(self) -> None:
+        for actual_repository in (
+            "https://github.com/example/remote-protocol",
+            "../remote-protocol",
+            "../../remote-protocol.git",
+            "../..git",
+            "../other-protocol.git",
+        ):
+            with self.subTest(actual_repository=actual_repository):
+                with self.assertRaises(PROVENANCE.ProvenanceError):
+                    PROVENANCE.validate_document(
+                        document(),
+                        COMMIT,
+                        actual_repository,
+                    )
 
 
 if __name__ == "__main__":

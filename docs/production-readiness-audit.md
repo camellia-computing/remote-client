@@ -1,7 +1,7 @@
 # Camellia Remote production-readiness audit
 
-Audit date: 2026-07-29
-Scope: `remote-client`, `remote-protocol`, `remote-server`, and `remote-management-server`
+Audit date: 2026-07-30
+Scope: logical repositories `remote-client`, `remote-protocol`, `remote-server`, and `remote-management`
 Baseline policy: fresh repositories and current product/data identities only
 
 ## Decision
@@ -18,7 +18,7 @@ The source baseline is suitable for protected pre-release integration. No review
 | Management | PostgreSQL-only production state; SQLite is debug-only; encryption, device proof, proxy trust, uploads, OIDC, and audit have explicit bounds | Pass |
 | Local data | New application IDs and directories are used; no obsolete development data migration or compatibility scanner is retained | Pass |
 | Deployment | Immutable OCI digests, read-only containers, dropped capabilities, systemd hardening, explicit migration, and backup timer | Pass |
-| Release | Stable SemVer, exact full default-branch CI reuse, protected approval, checksums, SBOM/provenance, attestations/signatures, and immutable assets | Pass with environment prerequisites |
+| Release/update | Stable SemVer, exact full default-branch CI reuse, protected approval, checksums, SBOM/provenance, attestations/signatures, immutable assets, and verified operator-initiated installation only | Pass with environment prerequisites |
 | Legal | AGPL source/provenance obligations and upstream attribution are retained across every copied component | Pass |
 
 ## Findings resolved
@@ -27,9 +27,9 @@ The source baseline is suitable for protected pre-release integration. No review
 
 Resolved by creating `remote-protocol`, pinning the same full submodule commit in client and server, preserving the public API, and running its 98-test suite from both consumers.
 
-### RM-P0-02 — Product identity was mixed with upstream package, bundle, executable, and update identities
+### RM-P0-02 — Product identity was mixed with upstream package, bundle, executable, and distribution identities
 
-Resolved across Cargo/Flutter packages, FFI library loading, Windows executable metadata, Android/iOS/macOS/Linux identifiers, URI scheme, portable packer, artifacts, update allow-list, and management model names. Upstream references remain only where required for attribution, third-party forks, or protocol behavior.
+Resolved across Cargo/Flutter packages, FFI library loading, Windows executable metadata, Android/iOS/macOS/Linux identifiers, URI scheme, portable packer, artifacts, release evidence, and management model names. Upstream references remain only where required for attribution, third-party forks, or protocol behavior.
 
 ### RM-P0-03 — Production management storage could silently use a local database
 
@@ -49,7 +49,14 @@ Resolved by invoking only `pwsh` and the current PowerShell 7 installation path.
 
 ### RM-P1-04 — Pre-release compatibility left credential and transfer limits fail-open
 
-Resolved by accepting only the current random-nonce local encryption envelope and current salted permanent-password storage, regenerating rather than importing plaintext device IDs, and removing obsolete installer/CLI aliases. File-transfer requests now use a 10,000-file safe default for missing or invalid configuration and a non-removable 100,000-file hard ceiling.
+Resolved by exposing only fallible local secret-storage APIs, accepting only the
+current random-nonce authenticated envelope and salted permanent-password
+storage, requiring hashed and salted preset passwords, and regenerating rather
+than importing plaintext device IDs. 2FA and notification tokens propagate
+encryption and authentication failures instead of storing or accepting their
+input unchanged. Obsolete installer/CLI aliases were removed. File-transfer
+requests use a 10,000-file safe default for missing or invalid configuration and
+a non-removable 100,000-file hard ceiling.
 
 ### RM-P1-05 — A pinned Flutter action retained a transitive floating dependency
 
@@ -166,11 +173,22 @@ inspect a build before intentional packages are created. Policy tests enforce
 the dependency-manager contract, locks, inherited linkage, link anchor,
 build/stage boundary, and absence of the stale archive copy.
 
+### RM-P1-18 — A dormant updater could execute an asset without integrity proof
+
+Resolved by removing the version-service contract, background schedulers,
+automatic download/elevation paths, update settings and banners. The product
+now uses only immutable reviewed Releases and operator-verified local
+installation. The retained local installer replacement mode never selects or
+downloads an asset. Any future automated updater requires a bounded signed
+manifest, exact digest/size and platform identity binding, anti-rollback,
+exclusive staging, re-verification at elevation, active-session exclusion and
+an explicit privacy/administrative policy.
+
 ## Verification evidence
 
-- Shared protocol: the client and server pin commit `2daff94dc8d4dae97b04ff47563f70842c47e28b`; format, Clippy with warnings denied, 98 current-format unit tests, and the Apple-specific hosted compile gate passed.
+- Shared protocol: the client pins commit `6fb11a4ee8cb446edb847d528c905a8038efff0b`; the paired server update is a merge-order prerequisite. Format, Clippy with warnings denied, 103 current-format unit tests, dependency audit, and the Apple-specific hosted compile gate are required.
 - Identity/relay server: Rust check/format and protocol (98), identity (33), relay (21), utilities (2), and recursion (1) tests passed. The production image built successfully, runs as `10001:10001` with a read-only root, exposes canonical OCI labels, and returns successful help/version output before configuration startup.
-- Client: the Linux workspace/all-target Flutter feature suite passed (88 client, 98 protocol, 4 portable-packer, 30 screen-capture, and 6 input tests, with one documented long-running codec matrix ignored by the ordinary gate). Vendored input implementations are compiled on hosted Windows x64/arm64 and macOS. The required Xcode 26.2 gate links the iOS Rust library, compiles the complete unsigned iOS application, and must revalidate the exact locked Apple dependency graph before merge. Flutter analysis reported no errors or warnings and all 66 widget/unit tests passed. Rust dependency warnings are bounded by an owner/expiry/exit-condition register; every vulnerability, warning increase, or expired exception fails CI. Portable generation is deterministic and rejects unsafe inputs.
+- Client: the Linux Flutter-feature suite contains 92 client tests and 103 shared-protocol tests, including fail-closed signed-session and local 2FA storage contracts. Vendored input implementations are compiled on hosted Windows x64/arm64 and macOS. The required Xcode 26.2 gate links the iOS Rust library, compiles the complete unsigned iOS application, and must revalidate the exact locked Apple dependency graph before merge. Flutter analysis and widget/unit tests remain required hosted gates. Rust dependency warnings are bounded by an owner/expiry/exit-condition register; every vulnerability, warning increase, or expired exception fails CI. Portable generation is deterministic and rejects unsafe inputs.
 - Web client: protobuf codecs were regenerated from the pinned protocol, the TypeScript bridge lint/build and CSP/provenance synchronization check passed, and npm reported no vulnerabilities at the configured threshold.
 - Management: Ruff format/check, Django migration drift, 48 ordinary tests (2 environment-specific skips), the real PostgreSQL test/deployment path, Compose expansion through Docker Desktop, release metadata, and systemd hardening analysis passed.
 - All 22 repository workflow files passed Actionlint 1.7.12; the vendored setup script also passed ShellCheck and resolved Flutter 3.44.5 manifests for Linux, Windows, Intel macOS, and Apple Silicon macOS. Final management-image/Web provenance, every target-platform package, and platform-native acceptance remain mandatory hosted gates even where an equivalent local runner is unavailable.

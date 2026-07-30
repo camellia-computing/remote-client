@@ -14,7 +14,7 @@ All four repositories start from clean root histories. Camellia Remote is prelau
 
 ## Development
 
-Validated toolchains are Rust 1.93.0, Flutter 3.44.5, Node.js 24.18.0, and the locked package managers/dependencies in this repository. Apple CI and release builds use the `macos-26` hosted image with Xcode 26.2 selected through `DEVELOPER_DIR`; the workflow fails if that exact Xcode installation or its iPhoneOS/macOS SDKs are unavailable. Platform builds also require the native SDK, compiler, and vcpkg dependencies declared by CI.
+Validated toolchains are Rust 1.97.1, Flutter 3.44.5, Node.js 24.18.0, and the locked package managers/dependencies in this repository. Apple CI and release builds use the `macos-26` hosted image with Xcode 26.2 selected through `DEVELOPER_DIR`; the workflow fails if that exact Xcode installation or its iPhoneOS/macOS SDKs are unavailable. Platform builds also require the native SDK, compiler, and vcpkg dependencies declared by CI.
 The current Apple deployment baselines are iOS 13.0 and macOS 10.15. The
 Apple Silicon slice uses its architecture floor, macOS 11.0, while the
 x86_64 slice preserves the 10.15 product baseline. Rust, Flutter/Xcode,
@@ -48,7 +48,10 @@ Useful component paths:
 - Pairing, session, file-transfer, clipboard, input, and proxy inputs are bounded and validated before resource allocation or filesystem access.
 - Secrets and deployment endpoints must be supplied through the documented build/deployment trust channel; never commit private keys, access tokens, or customer configuration.
 - Desktop application data uses the `com.camellia.remote` identity. No old application directory is scanned or migrated.
-- Auto-update accepts only the Camellia Computing repository/artifact allow-list and release integrity metadata.
+- The application contains no version service or background updater and never
+  discovers or downloads releases. Obtain an immutable reviewed Release,
+  verify its checksum and signing evidence, then invoke the platform installer
+  on that user-selected local package.
 - Web assets embedded by the management server are accepted only from the full commit in `web-client.lock` after a successful client push CI run.
 
 Report vulnerabilities through GitHub private vulnerability reporting as described in [SECURITY.md](SECURITY.md).

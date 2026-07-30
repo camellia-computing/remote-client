@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "reviewed_on": "2026-07-28",
+  "reviewed_on": "2026-07-29",
   "exception_groups": [
     {
       "id": "gtk3-stack-migration",
-      "owner": "camellia-computing/remote",
+      "owner": "remote-security-maintainers",
       "expires_on": "2026-10-31",
       "reason": "The Linux desktop currently depends on the GTK3 Rust bindings. Moving to the maintained GTK4 stack changes tray, window, capture, and input integration and requires a dedicated native acceptance cycle.",
       "exit_condition": "Remove this group after the Linux desktop no longer resolves GTK3 bindings or glib 0.18 and the replacement passes the native Linux acceptance matrix.",
@@ -73,7 +73,7 @@
     },
     {
       "id": "inherited-transitive-modernization",
-      "owner": "camellia-computing/remote",
+      "owner": "remote-security-maintainers",
       "expires_on": "2026-10-31",
       "reason": "These informational advisories are inherited through reviewed upstream media, windowing, code-generation, and text stacks. None is classified by cargo-audit as an exploitable vulnerability, but the exact set must not grow.",
       "exit_condition": "Remove each entry when its upstream chain is upgraded or replaced; complete the remaining removals before the group expires.",
@@ -83,12 +83,6 @@
           "advisory_id": "RUSTSEC-2017-0008",
           "package": "serial",
           "version": "0.4.0"
-        },
-        {
-          "category": "unmaintained",
-          "advisory_id": "RUSTSEC-2021-0137",
-          "package": "sodiumoxide",
-          "version": "0.2.7"
         },
         {
           "category": "unmaintained",
@@ -191,21 +185,6 @@
           "advisory_id": "RUSTSEC-2021-0145",
           "package": "atty",
           "version": "0.2.14"
-        }
-      ]
-    },
-    {
-      "id": "yanked-spin-transitive",
-      "owner": "camellia-computing/remote",
-      "expires_on": "2026-08-31",
-      "reason": "spin 0.9.8 is locked through flume in reviewed image and camera dependency chains. It has no RustSec vulnerability advisory, but a yanked crate must be removed promptly.",
-      "exit_condition": "Upgrade the flume/image/nokhwa chains until spin 0.9.8 is absent from Cargo.lock.",
-      "warnings": [
-        {
-          "category": "yanked",
-          "advisory_id": null,
-          "package": "spin",
-          "version": "0.9.8"
         }
       ]
     }

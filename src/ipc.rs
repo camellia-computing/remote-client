@@ -458,18 +458,11 @@ pub enum Data {
     #[cfg(all(target_os = "windows", feature = "flutter"))]
     PrinterData(Vec<u8>),
     InstallOption(Option<(String, String)>),
-    #[cfg(all(
-        feature = "flutter",
-        not(any(target_os = "android", target_os = "ios"))
-    ))]
-    ControllingSessionCount(usize),
     #[cfg(target_os = "linux")]
     TerminalSessionCount(usize),
     #[cfg(target_os = "windows")]
     PortForwardSessionCount(Option<usize>),
     SocksWs(Option<Box<(Option<config::Socks5Server>, String)>>),
-    #[cfg(target_os = "macos")]
-    HasNoActiveConns(Option<bool>),
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     Whiteboard((String, crate::whiteboard::CustomEvent)),
     ControlPermissionsRemoteModify(Option<bool>),
@@ -989,23 +982,6 @@ async fn handle(data: Data, stream: &mut Connection) {
                     ))
                     .await
             );
-        }
-        #[cfg(target_os = "macos")]
-        Data::HasNoActiveConns(None) => {
-            allow_err!(
-                stream
-                    .send(&Data::HasNoActiveConns(Some(
-                        crate::updater::has_no_active_conns()
-                    )))
-                    .await
-            );
-        }
-        #[cfg(all(
-            feature = "flutter",
-            not(any(target_os = "android", target_os = "ios"))
-        ))]
-        Data::ControllingSessionCount(count) => {
-            crate::updater::update_controlling_session_count(count);
         }
         #[cfg(target_os = "linux")]
         Data::TerminalSessionCount(_) => {
@@ -2010,17 +1986,6 @@ pub async fn clear_wayland_screencast_restore_token(key: String) -> ResultType<b
         return Ok(v.is_empty());
     }
     return Ok(false);
-}
-
-#[cfg(all(
-    feature = "flutter",
-    not(any(target_os = "android", target_os = "ios"))
-))]
-#[tokio::main(flavor = "current_thread")]
-pub async fn update_controlling_session_count(count: usize) -> ResultType<()> {
-    let mut c = connect(1000, "").await?;
-    c.send(&Data::ControllingSessionCount(count)).await?;
-    Ok(())
 }
 
 #[cfg(target_os = "linux")]

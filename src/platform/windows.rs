@@ -3589,51 +3589,6 @@ pub fn handle_custom_client_staging_dir_before_update(
     Ok(())
 }
 
-// Used for auto update and manual update in the main window.
-pub fn update_to(file: &str) -> ResultType<()> {
-    if file.ends_with(".exe") {
-        let custom_client_staging_dir = get_custom_client_staging_dir();
-        if crate::is_custom_client() {
-            handle_custom_client_staging_dir_before_update(&custom_client_staging_dir)?;
-        } else {
-            // Clean up any residual staging directory from previous custom client
-            allow_err!(remove_custom_client_staging_dir(&custom_client_staging_dir));
-        }
-        if !run_uac(file, "--update")? {
-            bail!(
-                "Failed to run the update exe with UAC, error: {:?}",
-                std::io::Error::last_os_error()
-            );
-        }
-    } else if file.ends_with(".msi") {
-        if let Err(e) = update_me_msi(file, false) {
-            bail!("Failed to run the update msi: {}", e);
-        }
-    } else {
-        // unreachable!()
-        bail!("Unsupported update file format: {}", file);
-    }
-    Ok(())
-}
-
-// Don't launch tray app when running with `\qn`.
-// 1. Because `/qn` requires administrator permission and the tray app should be launched with user permission.
-//   Or launching the main window from the tray app will cause the main window to be launched with administrator permission.
-// 2. We are not able to launch the tray app if the UI is in the login screen.
-// `fn update_me()` can handle the above cases, but for msi update, we need to do more work to handle the above cases.
-//    1. Record the tray app session ids.
-//    2. Do the update.
-//    3. Restore the tray app sessions.
-//    `1` and `3` must be done in custom actions.
-//    We need also to handle the command line parsing to find the tray processes.
-pub fn update_me_msi(msi: &str, quiet: bool) -> ResultType<()> {
-    let quiet_args = if quiet { " /qn LAUNCH_TRAY_APP=N" } else { "" };
-    let cmds =
-        format!("chcp 65001 && msiexec /i \"{msi}\"{quiet_args} REBOOT=ReallySuppress /norestart");
-    run_cmds(cmds, false, "update-msi")?;
-    Ok(())
-}
-
 pub fn get_tray_shortcut(
     install_dir: &str,
     exe: &str,

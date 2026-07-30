@@ -39,11 +39,11 @@ def policy_warning() -> dict[str, object]:
 def policy(*, expires_on: str = "2099-12-31") -> dict[str, object]:
     return {
         "schema_version": 1,
-        "reviewed_on": "2026-07-28",
+        "reviewed_on": "2026-07-29",
         "exception_groups": [
             {
                 "id": "reviewed-example",
-                "owner": "camellia-computing/remote",
+                "owner": "remote-security-maintainers",
                 "expires_on": expires_on,
                 "reason": "Test-only reviewed warning.",
                 "exit_condition": "Remove the dependency.",
@@ -69,7 +69,7 @@ class CargoAuditPolicyTests(unittest.TestCase):
         errors, active, inactive = AUDITOR.evaluate_report(
             report(warnings=[warning()]),
             policy(),
-            today=date(2026, 7, 28),
+            today=date(2026, 7, 29),
         )
         self.assertEqual(errors, [])
         self.assertEqual(len(active), 1)
@@ -86,7 +86,7 @@ class CargoAuditPolicyTests(unittest.TestCase):
                 ]
             ),
             policy(),
-            today=date(2026, 7, 28),
+            today=date(2026, 7, 29),
         )
         self.assertRegex(errors[0], "Unapproved cargo-audit warning")
 
@@ -101,7 +101,7 @@ class CargoAuditPolicyTests(unittest.TestCase):
                 ]
             ),
             policy(),
-            today=date(2026, 7, 28),
+            today=date(2026, 7, 29),
         )
         self.assertRegex(errors[0], "Rust vulnerability")
 
@@ -110,7 +110,7 @@ class CargoAuditPolicyTests(unittest.TestCase):
             AUDITOR.evaluate_report(
                 report(warnings=[warning()]),
                 policy(expires_on="2026-07-27"),
-                today=date(2026, 7, 28),
+                today=date(2026, 7, 29),
             )
 
     def test_duplicate_warning_exception_is_rejected(self) -> None:
@@ -120,7 +120,7 @@ class CargoAuditPolicyTests(unittest.TestCase):
             AUDITOR.evaluate_report(
                 report(warnings=[warning()]),
                 duplicate_policy,
-                today=date(2026, 7, 28),
+                today=date(2026, 7, 29),
             )
 
 
