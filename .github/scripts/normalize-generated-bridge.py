@@ -3,10 +3,9 @@
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Iterable
 from pathlib import Path
-import sys
-
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PATHS = (
@@ -18,12 +17,19 @@ DEFAULT_PATHS = (
 def dart_files(paths: Iterable[Path]) -> list[Path]:
     files: set[Path] = set()
     for path in paths:
+        if path.is_symlink():
+            raise ValueError(f"refusing symbolic-link input {path}")
         if path.is_file():
             if path.suffix != ".dart":
                 raise ValueError(f"expected a Dart source path, found {path}")
             files.add(path)
         elif path.is_dir():
-            files.update(path.rglob("*.dart"))
+            for candidate in path.rglob("*.dart"):
+                if candidate.is_symlink() or not candidate.is_file():
+                    raise ValueError(
+                        f"expected a regular Dart source, found {candidate}"
+                    )
+                files.add(candidate)
         else:
             raise FileNotFoundError(path)
     return sorted(files)
@@ -31,9 +37,7 @@ def dart_files(paths: Iterable[Path]) -> list[Path]:
 
 def normalize_file(path: Path) -> bool:
     original = path.read_text(encoding="utf-8")
-    normalized = "\n".join(
-        line.rstrip(" \t") for line in original.splitlines()
-    )
+    normalized = "\n".join(line.rstrip(" \t") for line in original.splitlines())
     if normalized:
         normalized += "\n"
     if normalized == original:

@@ -358,8 +358,7 @@ jobs:
             artifacts/camellia-remote-${{ needs.prepare.outputs.version }}-windows-x64-portable.exe
           Push-Location res/msi
           python preprocess.py --arp `
-            -d ../../flutter/build/windows/x64/runner/Release `
-            --app-name "Camellia Remote" --exe-name camellia-remote `
+            --architecture x64 --app-name "Camellia Remote" `
             -v "${{ needs.prepare.outputs.version }}"
           nuget restore msi.sln
           msbuild msi.sln -p:Configuration=Release -p:Platform=x64 /p:TargetVersion=Windows10
@@ -510,8 +509,7 @@ jobs:
             artifacts/camellia-remote-${{ needs.prepare.outputs.version }}-windows-arm64-portable.exe
           Push-Location res/msi
           python preprocess.py --arp `
-            -d ../../flutter/build/windows/arm64/runner/Release `
-            --app-name "Camellia Remote" --exe-name camellia-remote `
+            --architecture arm64 --app-name "Camellia Remote" `
             -v "${{ needs.prepare.outputs.version }}"
           nuget restore msi.sln
           msbuild msi.sln -p:Configuration=Release -p:Platform=ARM64 /p:TargetVersion=Windows10
