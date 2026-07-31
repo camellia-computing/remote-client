@@ -64,3 +64,9 @@ protected `release` environment, and the complete logical
 the post-release lock PR, the mapped Management repository. It receives only
 the per-job Contents, Pull requests, Issues, Metadata, and Administration
 permissions declared by the workflows—never Actions or Workflows write access.
+
+GitHub exposes the complete repository merge-policy fields only to a caller
+with push access. The hosted-policy check therefore uses a separate,
+repository-scoped App token with short-lived Contents write permission. That
+token is not reused for release authorization; the authorization controller
+receives a distinct read-only token.
