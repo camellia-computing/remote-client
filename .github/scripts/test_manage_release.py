@@ -198,6 +198,32 @@ class ManagedReleaseTests(unittest.TestCase):
         self.assertTrue(config["logical_id"].startswith("remote-"))
         self.assertNotIn("/", config["logical_id"])
 
+    def test_metadata_script_receives_no_repository_tokens(self) -> None:
+        process = release.subprocess.CompletedProcess(
+            [], 0, '{"version":"1.0.0","tag":"v1.0.0"}', ""
+        )
+        with patch.object(release, "run", return_value=process) as command:
+            metadata = release.current_metadata(
+                {"metadata_script": ".github/scripts/release_metadata.py"}
+            )
+        self.assertEqual(metadata["version"], "1.0.0")
+        self.assertEqual(
+            command.call_args.kwargs["env"],
+            {"ACTIONS_TOKEN": "", "GH_TOKEN": ""},
+        )
+
+    def test_draft_authorization_uses_the_scoped_app_token(self) -> None:
+        workflow = (
+            Path(__file__).parents[1] / "workflows" / "publish-release.yml"
+        ).read_text(encoding="utf-8")
+        prepare = workflow.split("  build_linux:", maxsplit=1)[0]
+        self.assertIn("permission-contents: write", prepare)
+        self.assertIn("permission-pull-requests: read", prepare)
+        self.assertIn("ACTIONS_TOKEN: ${{ github.token }}", prepare)
+        self.assertIn(
+            "GH_TOKEN: ${{ steps.policy-token.outputs.token }}", prepare
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

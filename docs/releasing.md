@@ -65,8 +65,11 @@ the post-release lock PR, the mapped Management repository. It receives only
 the per-job Contents, Pull requests, Issues, Metadata, and Administration
 permissions declared by the workflows—never Actions or Workflows write access.
 
-GitHub exposes the complete repository merge-policy fields only to a caller
-with push access. The hosted-policy check therefore uses a separate,
-repository-scoped App token with short-lived Contents write permission. That
-token is not reused for release authorization; the authorization controller
-uses the job token constrained to Contents, Actions, and pull-request read.
+GitHub exposes the complete repository merge-policy fields and draft Releases
+only to a caller with push access. Hosted policy and managed-draft lookups
+therefore use one repository-scoped App token with short-lived Contents write
+permission; the trusted authorization command performs only reads. Exact CI
+run and bridge-artifact lookups use the separate job token constrained to
+Contents, Actions, and pull-request read. Repository metadata/version scripts
+receive neither token, and no token receives Actions or Workflows write
+permission.
