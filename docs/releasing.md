@@ -39,6 +39,11 @@ publication mode are not operator inputs. A rerun may resume only the same
 App-authored draft or read-only verify an immutable Release. Fixes always use a
 new version.
 
+An incomplete publication must retain `release:pending`. After the exact
+immutable `release-complete:<SHA>` marker is validated, recovery accepts the
+authorizing PR both immediately before and after label cleanup while still
+revalidating its identity, reviewed head, approval, merge topology and tag.
+
 ## Evidence and native trust
 
 `release-evidence.json` identifies every distributable file, checksum, size,

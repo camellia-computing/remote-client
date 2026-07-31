@@ -3,8 +3,7 @@
     "CHANGELOG.md",
     "Cargo.lock",
     "Cargo.toml",
-    "flutter/pubspec.yaml",
-    "src/version.rs"
+    "flutter/pubspec.yaml"
   ],
   "container": false,
   "logical_id": "remote-client",
