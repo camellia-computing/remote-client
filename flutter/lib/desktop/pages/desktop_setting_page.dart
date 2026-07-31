@@ -9,9 +9,9 @@ import 'package:camellia_remote_app/common.dart';
 import 'package:camellia_remote_app/common/widgets/adaptive_layout.dart';
 import 'package:camellia_remote_app/common/widgets/audio_input.dart';
 import 'package:camellia_remote_app/common/widgets/setting_widgets.dart';
+import 'package:camellia_remote_app/common/widgets/settings_overlay.dart';
 import 'package:camellia_remote_app/consts.dart';
 import 'package:camellia_remote_app/desktop/pages/desktop_home_page.dart';
-import 'package:camellia_remote_app/desktop/pages/desktop_tab_page.dart';
 import 'package:camellia_remote_app/desktop/widgets/remote_toolbar.dart';
 import 'package:camellia_remote_app/mobile/widgets/dialog.dart';
 import 'package:camellia_remote_app/models/platform_model.dart';
@@ -95,7 +95,6 @@ class DesktopSettingPage extends StatefulWidget {
         return;
       }
       if (Get.isRegistered<PageController>(tag: _kSettingPageControllerTag)) {
-        DesktopTabPage.onAddSetting(initialPage: page);
         PageController controller = Get.find<PageController>(
           tag: _kSettingPageControllerTag,
         );
@@ -105,7 +104,13 @@ class DesktopSettingPage extends StatefulWidget {
         selected.value = page;
         controller.jumpToPage(index);
       } else {
-        DesktopTabPage.onAddSetting(initialPage: page);
+        final context = globalKey.currentContext;
+        if (context == null) return;
+        showSettingsOverlay<void>(
+          context: context,
+          title: translate('Settings'),
+          builder: (_) => DesktopSettingPage(initialTabkey: page),
+        );
       }
     } catch (e) {
       debugPrintStack(label: '$e');
@@ -635,16 +640,6 @@ class _GeneralState extends State<_General> {
           'Confirm before closing multiple tabs',
           kOptionEnableConfirmClosingTabs,
           isServer: false,
-        ),
-      if (!incomingOnly)
-        _OptionCheckBox(
-          context,
-          'allow-remote-toolbar-docking-any-edge',
-          kOptionAllowMultiEdgeToolbarDock,
-          isServer: false,
-          update: (_) {
-            reloadAllWindows();
-          },
         ),
       if (!isWeb && !outgoingOnly)
         _OptionCheckBox(context, 'Adaptive bitrate', kOptionEnableAbr),
@@ -2894,7 +2889,9 @@ class _AboutState extends State<_About> {
                   ),
                   InkWell(
                     onTap: () {
-                      launchUrlString('https://github.com/camellia-computing/remote-client');
+                      launchUrlString(
+                        'https://github.com/camellia-computing/remote-client',
+                      );
                     },
                     child: Text(
                       translate('Website'),
@@ -3517,9 +3514,11 @@ void changeSocks5Proxy() async {
                             child: Icon(
                               Icons.help_outline_outlined,
                               size: 16,
-                              color: Theme.of(
-                                context,
-                              ).textTheme.titleLarge?.color?.withValues(alpha: 0.5),
+                              color: Theme.of(context)
+                                  .textTheme
+                                  .titleLarge
+                                  ?.color
+                                  ?.withValues(alpha: 0.5),
                             ),
                           ),
                         ],

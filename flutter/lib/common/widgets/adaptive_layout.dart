@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:camellia_remote_app/common/widgets/brand_shell.dart';
 import 'package:camellia_remote_app/ui/camellia_design.dart';
 
 enum AppLayoutSize { compact, medium, expanded }
@@ -9,14 +8,11 @@ enum AppLayoutSize { compact, medium, expanded }
 class AppLayout {
   AppLayout._();
 
-  static const double compactBreakpoint = 720;
-  static const double expandedBreakpoint = 1200;
+  static const double compactBreakpoint = 600;
+  static const double expandedBreakpoint = 1024;
 
   /// Width at which a two-pane home workspace becomes comfortable.
-  static const double splitBreakpoint = 960;
-
-  /// Width at which the navigation rail can afford inline labels.
-  static const double railExtendBreakpoint = 1120;
+  static const double splitBreakpoint = 1024;
 
   static AppLayoutSize forWidth(double width) {
     if (width < compactBreakpoint) return AppLayoutSize.compact;
@@ -27,11 +23,11 @@ class AppLayout {
   static EdgeInsets pagePadding(BuildContext context) {
     switch (forWidth(MediaQuery.sizeOf(context).width)) {
       case AppLayoutSize.compact:
-        return const EdgeInsets.all(12);
+        return const EdgeInsets.all(16);
       case AppLayoutSize.medium:
-        return const EdgeInsets.all(20);
+        return const EdgeInsets.all(24);
       case AppLayoutSize.expanded:
-        return const EdgeInsets.all(28);
+        return const EdgeInsets.all(32);
     }
   }
 }
@@ -55,108 +51,6 @@ class AppMotion {
   static const Curve standardCurve = CamelliaMotion.standard;
   static const Curve enterCurve = CamelliaMotion.enter;
   static const Curve exitCurve = CamelliaMotion.exit;
-}
-
-class FixedTextScale extends StatelessWidget {
-  const FixedTextScale({super.key, required this.child});
-
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    return MediaQuery(
-      data: MediaQuery.of(context).copyWith(textScaler: TextScaler.linear(1)),
-      child: child,
-    );
-  }
-}
-
-class AdaptiveNavigationScaffold extends StatelessWidget {
-  const AdaptiveNavigationScaffold({
-    super.key,
-    required this.destinations,
-    required this.selectedIndex,
-    required this.onDestinationSelected,
-    required this.body,
-    this.appBar,
-    this.backgroundColor,
-  });
-
-  final List<NavigationDestination> destinations;
-  final int selectedIndex;
-  final ValueChanged<int> onDestinationSelected;
-  final Widget body;
-  final PreferredSizeWidget? appBar;
-  final Color? backgroundColor;
-
-  @override
-  Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final size = AppLayout.forWidth(constraints.maxWidth);
-        final compact = size == AppLayoutSize.compact;
-        return Scaffold(
-          appBar: appBar,
-          backgroundColor: backgroundColor,
-          bottomNavigationBar: compact
-              ? _CamelliaMobileNavigation(
-                  selectedIndex: selectedIndex,
-                  destinations: destinations,
-                  onDestinationSelected: onDestinationSelected,
-                )
-              : null,
-          body: CamelliaBackdrop(
-            child: Row(
-              children: [
-                if (!compact) ...[
-                  CamelliaNavigationRail(
-                    extended:
-                        constraints.maxWidth >= AppLayout.railExtendBreakpoint,
-                    selectedIndex: selectedIndex,
-                    onDestinationSelected: onDestinationSelected,
-                    destinations: destinations,
-                  ),
-                ],
-                Expanded(
-                  key: const ValueKey<String>('adaptive-navigation-body'),
-                  child: body,
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-  }
-}
-
-class _CamelliaMobileNavigation extends StatelessWidget {
-  const _CamelliaMobileNavigation({
-    required this.selectedIndex,
-    required this.destinations,
-    required this.onDestinationSelected,
-  });
-
-  final int selectedIndex;
-  final List<NavigationDestination> destinations;
-  final ValueChanged<int> onDestinationSelected;
-
-  @override
-  Widget build(BuildContext context) {
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surface,
-        border: Border(
-          top: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
-        ),
-      ),
-      child: NavigationBar(
-        selectedIndex: selectedIndex,
-        destinations: destinations,
-        onDestinationSelected: onDestinationSelected,
-      ),
-    );
-  }
 }
 
 class AdaptiveContent extends StatelessWidget {

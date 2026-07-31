@@ -4,71 +4,118 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:image/image.dart' as image;
+import 'package:camellia_remote_app/ui/brand/portal_mark_spec.dart';
 
-const _lightPlate = (241, 246, 249);
-const _lightPlateBorder = (196, 210, 219);
-const _darkPlate = (24, 33, 45);
-const _darkPlateBorder = (53, 69, 86);
-const _amber = (243, 163, 58);
-const _orange = (240, 128, 60);
-const _coral = (237, 106, 82);
-const _rose = (216, 78, 126);
-const _ember = (227, 100, 72);
-const _ivory = (240, 250, 252);
-const _darkInk = (19, 37, 54);
-const _bladeColors = [_amber, _orange, _coral, _rose, _ember];
+const _lightPlate = (243, 245, 255);
+const _lightPlateBorder = (217, 221, 242);
+const _darkPlate = (18, 21, 34);
+const _darkPlateBorder = (52, 57, 81);
+const _blue = (27, 167, 255);
+const _indigo = (101, 88, 245);
+const _coral = (255, 92, 122);
 
 image.ColorRgba8 _color((int, int, int) value, [int alpha = 255]) =>
     image.ColorRgba8(value.$1, value.$2, value.$3, alpha);
 
-double _cubic(double a, double b, double c, double d, double t) {
-  final mt = 1 - t;
-  return mt * mt * mt * a +
-      3 * mt * mt * t * b +
-      3 * mt * t * t * c +
-      t * t * t * d;
+({int x1, int y1, int x2, int y2, int radius}) _scaledRect(
+  PortalRectSpec spec,
+  double left,
+  double top,
+  double side,
+) => (
+  x1: (left + spec.left * side).round(),
+  y1: (top + spec.top * side).round(),
+  x2: (left + (spec.left + spec.width) * side).round(),
+  y2: (top + (spec.top + spec.height) * side).round(),
+  radius: (spec.radius * side).round(),
+);
+
+void _fillRounded(
+  image.Image target,
+  ({int x1, int y1, int x2, int y2, int radius}) rect,
+  image.Color color,
+) {
+  image.fillRect(
+    target,
+    x1: rect.x1,
+    y1: rect.y1,
+    x2: rect.x2,
+    y2: rect.y2,
+    radius: rect.radius,
+    color: color,
+  );
 }
 
-List<(double, double)> _blade(double radius) {
-  const segments = 24;
-  final points = <(double, double)>[];
-  for (var index = 0; index <= segments; index++) {
-    final t = index / segments;
-    points.add((
-      _cubic(-0.10, -0.36, -0.30, 0.18, t) * radius,
-      _cubic(-0.04, -0.18, -0.66, -0.99, t) * radius,
-    ));
+void _clearRounded(
+  image.Image target,
+  ({int x1, int y1, int x2, int y2, int radius}) rect,
+) {
+  final radius = rect.radius.toDouble();
+  final left = rect.x1.toDouble();
+  final top = rect.y1.toDouble();
+  final right = rect.x2.toDouble();
+  final bottom = rect.y2.toDouble();
+  final innerLeft = left + radius;
+  final innerRight = right - radius;
+  final innerTop = top + radius;
+  final innerBottom = bottom - radius;
+  final transparent = image.ColorRgba8(0, 0, 0, 0);
+
+  final pixels = target.getRange(
+    rect.x1,
+    rect.y1,
+    rect.x2 - rect.x1 + 1,
+    rect.y2 - rect.y1 + 1,
+  );
+  while (pixels.moveNext()) {
+    final pixel = pixels.current;
+    final x = pixel.x + 0.5;
+    final y = pixel.y + 0.5;
+    final nearestX = x.clamp(innerLeft, innerRight);
+    final nearestY = y.clamp(innerTop, innerBottom);
+    final dx = x - nearestX;
+    final dy = y - nearestY;
+    if (dx * dx + dy * dy <= radius * radius) {
+      pixel.set(transparent);
+    }
   }
-  for (var index = 1; index <= segments; index++) {
-    final t = index / segments;
-    points.add((
-      _cubic(0.18, 0.36, 0.34, 0.10, t) * radius,
-      _cubic(-0.99, -0.68, -0.30, -0.01, t) * radius,
-    ));
-  }
-  for (var index = 1; index <= 8; index++) {
-    final t = index / 8;
-    points.add((
-      ((1 - t) * (1 - t) * 0.10 - 0.10 * t * t) * radius,
-      ((1 - t) * (1 - t) * -0.01 + 2 * (1 - t) * t * 0.08 - 0.04 * t * t) *
-          radius,
-    ));
-  }
-  return points;
 }
 
-List<image.Point> _rotatePoints(
-  List<(double, double)> points, {
-  required double angle,
-  required double cx,
-  required double cy,
+void _drawThickLine(
+  image.Image target, {
+  required double x1,
+  required double y1,
+  required double x2,
+  required double y2,
+  required int width,
+  required image.Color color,
 }) {
-  final cosine = math.cos(angle);
-  final sine = math.sin(angle);
-  return [
-    for (final (x, y) in points)
-      image.Point(cx + x * cosine - y * sine, cy + x * sine + y * cosine),
-  ];
+  final dx = x2 - x1;
+  final dy = y2 - y1;
+  final length = math.sqrt(dx * dx + dy * dy);
+  final halfWidth = width / 2;
+  final offsetX = -dy / length * halfWidth;
+  final offsetY = dx / length * halfWidth;
+  image.fillPolygon(
+    target,
+    vertices: [
+      image.Point((x1 + offsetX).round(), (y1 + offsetY).round()),
+      image.Point((x2 + offsetX).round(), (y2 + offsetY).round()),
+      image.Point((x2 - offsetX).round(), (y2 - offsetY).round()),
+      image.Point((x1 - offsetX).round(), (y1 - offsetY).round()),
+    ],
+    color: color,
+  );
+  for (final point in [(x1, y1), (x2, y2)]) {
+    image.fillCircle(
+      target,
+      x: point.$1.round(),
+      y: point.$2.round(),
+      radius: width ~/ 2,
+      color: color,
+      antialias: false,
+    );
+  }
 }
 
 void _drawMark(
@@ -78,74 +125,36 @@ void _drawMark(
   required double radius,
   bool monochrome = false,
   bool white = false,
-  bool darkSurface = true,
+  (int, int, int)? cutoutColor,
 }) {
-  final mono = white ? (255, 255, 255) : (0, 0, 0);
-  final blade = _blade(radius);
-  for (var index = 0; index < 5; index++) {
-    image.fillPolygon(
-      target,
-      vertices: _rotatePoints(
-        blade,
-        angle: index * math.pi * 2 / 5,
-        cx: cx,
-        cy: cy,
-      ),
-      color: _color(monochrome ? mono : _bladeColors[index]),
-    );
-  }
-  final hub = (radius * 0.245).round();
-  final aperture = (hub * 0.54).round();
-  if (monochrome) {
-    image.fillCircle(
-      target,
-      x: cx.round(),
-      y: cy.round(),
-      radius: hub,
-      color: _color(mono),
-      antialias: true,
-    );
-    _clearCircle(target, cx.round(), cy.round(), aperture);
+  final side = radius * 2;
+  final left = cx - radius;
+  final top = cy - radius;
+  final mono = white ? (255, 255, 255) : (14, 17, 28);
+  final rear = _scaledRect(PortalMarkSpec.rearScreen, left, top, side);
+  final rearCutout = _scaledRect(PortalMarkSpec.rearCutout, left, top, side);
+  final front = _scaledRect(PortalMarkSpec.frontScreen, left, top, side);
+  final frontCutout = _scaledRect(PortalMarkSpec.frontCutout, left, top, side);
+  _fillRounded(target, rear, _color(monochrome ? mono : _blue));
+  if (cutoutColor == null) {
+    _clearRounded(target, rearCutout);
   } else {
-    image.fillCircle(
-      target,
-      x: cx.round(),
-      y: cy.round(),
-      radius: hub,
-      color: _color(darkSurface ? _darkPlate : _lightPlate),
-      antialias: true,
-    );
-    image.fillCircle(
-      target,
-      x: cx.round(),
-      y: cy.round(),
-      radius: aperture,
-      color: _color(darkSurface ? _ivory : _darkInk),
-      antialias: true,
-    );
-    final ringRadius = (hub * 1.12).round();
-    final ringWidth = math.max(2, (radius * 0.025).round());
-    for (var offset = 0; offset < ringWidth; offset++) {
-      image.drawCircle(
-        target,
-        x: cx.round(),
-        y: cy.round(),
-        radius: ringRadius - offset,
-        color: _color(_amber, 220),
-        antialias: true,
-      );
-    }
+    _fillRounded(target, rearCutout, _color(cutoutColor));
   }
-}
-
-void _clearCircle(image.Image target, int cx, int cy, int radius) {
-  final radiusSquared = radius * radius;
-  for (var y = -radius; y <= radius; y++) {
-    for (var x = -radius; x <= radius; x++) {
-      if (x * x + y * y <= radiusSquared) {
-        target.setPixelRgba(cx + x, cy + y, 0, 0, 0, 0);
-      }
-    }
+  _drawThickLine(
+    target,
+    x1: left + PortalMarkSpec.connectorStartX * side,
+    y1: top + PortalMarkSpec.connectorStartY * side,
+    x2: left + PortalMarkSpec.connectorEndX * side,
+    y2: top + PortalMarkSpec.connectorEndY * side,
+    width: (PortalMarkSpec.connectorWidth * side).round(),
+    color: _color(monochrome ? mono : _coral),
+  );
+  _fillRounded(target, front, _color(monochrome ? mono : _indigo));
+  if (cutoutColor == null) {
+    _clearRounded(target, frontCutout);
+  } else {
+    _fillRounded(target, frontCutout, _color(cutoutColor));
   }
 }
 
@@ -186,7 +195,7 @@ image.Image _renderAppIcon(
     cx: renderSize / 2,
     cy: renderSize / 2,
     radius: 372 * scale,
-    darkSurface: dark,
+    cutoutColor: dark ? _darkPlate : _lightPlate,
   );
   return image.copyResize(
     icon,
@@ -202,7 +211,7 @@ image.Image _renderMark(
   bool white = false,
   bool colored = true,
 }) {
-  final renderSize = size * 4;
+  final renderSize = size * 2;
   final icon = image.Image(
     width: renderSize,
     height: renderSize,
@@ -303,35 +312,16 @@ void _writeIcns(String path, image.Image source) {
   file.writeAsBytesSync(output.takeBytes());
 }
 
-const _markSvg =
-    '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
-  <rect width="1024" height="1024" rx="224" fill="#f1f6f9"/>
-  <rect x="18" y="18" width="988" height="988" rx="206" fill="none" stroke="#c4d2db" stroke-width="12"/>
-  <defs><path id="blade" d="M475 497C378 445 400 266 579 144C646 259 638 400 549 508Q512 542 475 497Z"/></defs>
-  <use href="#blade" fill="#f3a33a"/><use href="#blade" fill="#f0803c" transform="rotate(72 512 512)"/><use href="#blade" fill="#ed6a52" transform="rotate(144 512 512)"/><use href="#blade" fill="#d84e7e" transform="rotate(216 512 512)"/><use href="#blade" fill="#e36448" transform="rotate(288 512 512)"/>
-  <circle cx="512" cy="512" r="91" fill="#f1f6f9"/><circle cx="512" cy="512" r="49" fill="#132536"/>
-  <circle cx="512" cy="512" r="102" fill="none" stroke="#f3a33a" stroke-width="10"/>
-</svg>
-''';
-
-const _faviconSvg =
-    '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
-  <rect width="128" height="128" rx="28" fill="#f1f6f9"/>
-  <g transform="scale(.125)"><defs><path id="b" d="M475 497C378 445 400 266 579 144C646 259 638 400 549 508Q512 542 475 497Z"/></defs><use href="#b" fill="#f3a33a"/><use href="#b" fill="#f0803c" transform="rotate(72 512 512)"/><use href="#b" fill="#ed6a52" transform="rotate(144 512 512)"/><use href="#b" fill="#d84e7e" transform="rotate(216 512 512)"/><use href="#b" fill="#e36448" transform="rotate(288 512 512)"/></g>
-  <circle cx="64" cy="64" r="11.4" fill="#f1f6f9"/><circle cx="64" cy="64" r="6.1" fill="#132536"/>
-  <circle cx="64" cy="64" r="12.75" fill="none" stroke="#f3a33a" stroke-width="1.25"/>
-</svg>
-''';
-
 void _writeVectorAssets() {
+  final markSvg = PortalMarkSpec.svg();
   for (final path in [
     '../res/camellia-mark.svg',
     '../res/scalable.svg',
     'assets/icon.svg',
   ]) {
-    File(path).writeAsStringSync(_markSvg);
+    File(path).writeAsStringSync(markSvg);
   }
-  File('web/favicon.svg').writeAsStringSync(_faviconSvg);
+  File('web/favicon.svg').writeAsStringSync(markSvg);
 }
 
 void _writeAppleIconSet(String directory, image.Image source) {

@@ -513,14 +513,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.0.0"
-  flutter_launcher_icons:
-    dependency: "direct dev"
-    description:
-      name: flutter_launcher_icons
-      sha256: "10f13781741a2e3972126fae08393d3c4e01fa4cd7473326b94b72cf594195e7"
-      url: "https://pub.dev"
-    source: hosted
-    version: "0.14.4"
   flutter_lints:
     dependency: "direct dev"
     description:
@@ -1024,14 +1016,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.5.0"
-  pull_down_button:
-    dependency: "direct main"
-    description:
-      name: pull_down_button
-      sha256: "12cdd8ff187a3150ebdf075e5074299f085579b158d2b4e655ccbafccf95f25b"
-      url: "https://pub.dev"
-    source: hosted
-    version: "0.10.2"
   qr:
     dependency: transitive
     description:
@@ -1088,14 +1072,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "0.5.0"
-  settings_ui:
-    dependency: "direct main"
-    description:
-      name: settings_ui
-      sha256: "7437c9c867f331ff6c90e951f2333441eab5cf5e654c3a7f3e4aad0c01db51ef"
-      url: "https://pub.dev"
-    source: hosted
-    version: "3.0.1"
   shelf:
     dependency: transitive
     description:
@@ -1246,14 +1222,6 @@ packages:
       url: "https://github.com/rustdesk-org/flutter_texture_rgba_renderer"
     source: git
     version: "0.0.16"
-  toggle_switch:
-    dependency: "direct main"
-    description:
-      name: toggle_switch
-      sha256: dca04512d7c23ed320d6c5ede1211a404f177d54d353bf785b07d15546a86ce5
-      url: "https://pub.dev"
-    source: hosted
-    version: "2.3.0"
   tuple:
     dependency: "direct main"
     description:

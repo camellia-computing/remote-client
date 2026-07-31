@@ -41,13 +41,13 @@ void _disableAndroidSoftKeyboard({bool? isKeyboardVisible}) {
 }
 
 class RemotePage extends StatefulWidget {
-  RemotePage({
-    Key? key,
+  const RemotePage({
+    super.key,
     required this.id,
     this.password,
     this.isSharedPassword,
     this.forceRelay,
-  }) : super(key: key);
+  });
 
   final String id;
   final String? password;
@@ -55,12 +55,11 @@ class RemotePage extends StatefulWidget {
   final bool? forceRelay;
 
   @override
-  State<RemotePage> createState() => _RemotePageState(id);
+  State<RemotePage> createState() => _RemotePageState();
 }
 
 class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   Timer? _timer;
-  bool _showBar = !isWebDesktop;
   bool _showGestureHelp = false;
   String _value = '';
   Orientation? _currentOrientation;
@@ -85,15 +84,12 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     text: initText,
   );
 
-  _RemotePageState(String id) {
-    initSharedStates(id);
-    gFFI.chatModel.voiceCallStatus.value = VoiceCallStatus.notStarted;
-    gFFI.dialogManager.loadMobileActionsOverlayVisible();
-  }
-
   @override
   void initState() {
     super.initState();
+    initSharedStates(widget.id);
+    gFFI.chatModel.voiceCallStatus.value = VoiceCallStatus.notStarted;
+    gFFI.dialogManager.loadMobileActionsOverlayVisible();
     gFFI.ffiModel.updateEventListener(sessionId, widget.id);
     gFFI.start(
       widget.id,
@@ -453,20 +449,21 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
 
   Widget _bottomWidget() => _showGestureHelp
       ? getGestureHelp()
-      : (_showBar && gFFI.ffiModel.pi.displays.isNotEmpty
+      : (gFFI.ffiModel.pi.displays.isNotEmpty
             ? getBottomAppBar()
-            : Offstage());
+            : const SizedBox.shrink());
 
   @override
   Widget build(BuildContext context) {
     final keyboardIsVisible =
         keyboardVisibilityController.isVisible && _showEdit;
-    final showActionButton = !_showBar || keyboardIsVisible || _showGestureHelp;
+    final showActionButton = keyboardIsVisible || _showGestureHelp;
 
-    return WillPopScope(
-      onWillPop: () async {
-        clientClose(sessionId, gFFI);
-        return false;
+    final scheme = Theme.of(context).colorScheme;
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) clientClose(sessionId, gFFI);
       },
       child: Scaffold(
         // workaround for https://github.com/rustdesk/rustdesk/issues/3131
@@ -475,29 +472,25 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
             : null,
         floatingActionButton: !showActionButton
             ? null
-            : FloatingActionButton(
-                mini: !keyboardIsVisible,
-                child: Icon(
-                  (keyboardIsVisible || _showGestureHelp)
-                      ? Icons.expand_more
-                      : Icons.expand_less,
-                  color: Colors.white,
+            : Tooltip(
+                message: translate('Close'),
+                child: FloatingActionButton.small(
+                  foregroundColor: scheme.onSecondaryContainer,
+                  backgroundColor: scheme.secondaryContainer,
+                  child: const Icon(Icons.expand_more_rounded),
+                  onPressed: () {
+                    setState(() {
+                      if (keyboardIsVisible) {
+                        _showEdit = false;
+                        gFFI.invokeMethod("enable_soft_keyboard", false);
+                        _mobileFocusNode.unfocus();
+                        _physicalFocusNode.requestFocus();
+                      } else if (_showGestureHelp) {
+                        _showGestureHelp = false;
+                      }
+                    });
+                  },
                 ),
-                backgroundColor: const Color(0xFFFF4F70),
-                onPressed: () {
-                  setState(() {
-                    if (keyboardIsVisible) {
-                      _showEdit = false;
-                      gFFI.invokeMethod("enable_soft_keyboard", false);
-                      _mobileFocusNode.unfocus();
-                      _physicalFocusNode.requestFocus();
-                    } else if (_showGestureHelp) {
-                      _showGestureHelp = false;
-                    } else {
-                      _showBar = !_showBar;
-                    }
-                  });
-                },
               ),
         bottomNavigationBar: Obx(
           () => Stack(
@@ -585,114 +578,87 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
 
   Widget getBottomAppBar() {
     final ffiModel = Provider.of<FfiModel>(context);
-    return BottomAppBar(
-      elevation: 10,
-      color: MyTheme.accent,
-      child: Row(
-        mainAxisSize: MainAxisSize.max,
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: <Widget>[
-          Row(
-            children:
-                <Widget>[
-                  IconButton(
-                    color: Colors.white,
-                    icon: Icon(Icons.clear),
-                    onPressed: () {
-                      clientClose(sessionId, gFFI);
-                    },
-                  ),
-                  IconButton(
-                    color: Colors.white,
-                    icon: Icon(Icons.tv),
-                    onPressed: () {
-                      setState(() => _showEdit = false);
-                      showOptions(context, widget.id, gFFI.dialogManager);
-                    },
-                  ),
-                ] +
-                (isWebDesktop || ffiModel.viewOnly || !ffiModel.keyboard
-                    ? []
-                    : gFFI.ffiModel.isPeerAndroid
-                    ? [
-                        IconButton(
-                          color: Colors.white,
-                          icon: Icon(Icons.keyboard),
-                          onPressed: openKeyboard,
-                        ),
-                        IconButton(
-                          color: Colors.white,
-                          icon: const Icon(Icons.build),
-                          onPressed: () => gFFI.dialogManager
-                              .toggleMobileActionsOverlay(ffi: gFFI),
-                        ),
-                      ]
-                    : [
-                        IconButton(
-                          color: Colors.white,
-                          icon: Icon(Icons.keyboard),
-                          onPressed: openKeyboard,
-                        ),
-                        IconButton(
-                          color: Colors.white,
-                          icon: Icon(
-                            gFFI.ffiModel.touchMode
-                                ? Icons.touch_app
-                                : Icons.mouse,
-                          ),
-                          onPressed: () => setState(
-                            () => _showGestureHelp = !_showGestureHelp,
-                          ),
-                        ),
-                      ]) +
-                (isWeb
-                    ? []
-                    : <Widget>[
-                        futureBuilder(
-                          future: gFFI.invokeMethod(
-                            "get_value",
-                            "KEY_IS_SUPPORT_VOICE_CALL",
-                          ),
-                          hasData: (isSupportVoiceCall) => IconButton(
-                            color: Colors.white,
-                            icon: isAndroid && isSupportVoiceCall
-                                ? SvgPicture.asset(
-                                    'assets/chat.svg',
-                                    colorFilter: ColorFilter.mode(
-                                      Colors.white,
-                                      BlendMode.srcIn,
-                                    ),
-                                  )
-                                : Icon(Icons.message),
-                            onPressed: () => isAndroid && isSupportVoiceCall
-                                ? showChatOptions(widget.id)
-                                : onPressedTextChat(widget.id),
-                          ),
-                        ),
-                      ]) +
-                [
-                  IconButton(
-                    color: Colors.white,
-                    icon: Icon(Icons.more_vert),
-                    onPressed: () {
-                      setState(() => _showEdit = false);
-                      showActions(widget.id);
-                    },
-                  ),
+    final canInput = !isWebDesktop && !ffiModel.viewOnly && ffiModel.keyboard;
+    final actions = <Widget>[
+      _RemoteDockButton(
+        icon: Icons.close_rounded,
+        label: translate('Close'),
+        destructive: true,
+        onPressed: () => clientClose(sessionId, gFFI),
+      ),
+      _RemoteDockButton(
+        icon: Icons.display_settings_outlined,
+        label: translate('Display'),
+        onPressed: () {
+          setState(() => _showEdit = false);
+          showOptions(context, widget.id, gFFI.dialogManager);
+        },
+      ),
+      if (canInput)
+        _RemoteDockButton(
+          icon: Icons.keyboard_alt_outlined,
+          label: translate('Keyboard'),
+          onPressed: openKeyboard,
+        ),
+      if (canInput)
+        _RemoteDockButton(
+          icon: ffiModel.isPeerAndroid
+              ? Icons.smartphone_rounded
+              : ffiModel.touchMode
+              ? Icons.touch_app_outlined
+              : Icons.mouse_outlined,
+          label: translate(ffiModel.isPeerAndroid ? 'Actions' : 'Input'),
+          onPressed: ffiModel.isPeerAndroid
+              ? () => gFFI.dialogManager.toggleMobileActionsOverlay(ffi: gFFI)
+              : () => setState(() => _showGestureHelp = true),
+        ),
+      if (!isWeb)
+        FutureBuilder<dynamic>(
+          future: gFFI.invokeMethod("get_value", "KEY_IS_SUPPORT_VOICE_CALL"),
+          builder: (context, snapshot) {
+            final supportsVoice = snapshot.data == true;
+            return _RemoteDockButton(
+              icon: Icons.forum_outlined,
+              label: translate('Chat'),
+              onPressed: () => isAndroid && supportsVoice
+                  ? showChatOptions(widget.id)
+                  : onPressedTextChat(widget.id),
+            );
+          },
+        ),
+      _RemoteDockButton(
+        icon: Icons.more_horiz_rounded,
+        label: translate('More'),
+        onPressed: () {
+          setState(() => _showEdit = false);
+          showActions(widget.id);
+        },
+      ),
+    ];
+    return Material(
+      elevation: 12,
+      color: Theme.of(context).colorScheme.surface,
+      shape: Border(
+        top: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
+      ),
+      child: SafeArea(
+        top: false,
+        minimum: const EdgeInsets.fromLTRB(8, 6, 8, 8),
+        child: Center(
+          heightFactor: 1,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 760),
+            child: SizedBox(
+              height: 64,
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  for (final action in actions) Expanded(child: action),
                 ],
-          ),
-          Obx(
-            () => IconButton(
-              color: Colors.white,
-              icon: Icon(Icons.expand_more),
-              onPressed: gFFI.ffiModel.waitForFirstImage.isTrue
-                  ? null
-                  : () {
-                      setState(() => _showBar = !_showBar);
-                    },
+              ),
             ),
           ),
-        ],
+        ),
       ),
     );
   }
@@ -870,16 +836,18 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     );
   }
 
-  onPressedTextChat(String id) {
+  void onPressedTextChat(String id) {
     gFFI.chatModel.changeCurrentKey(MessageKey(id, ChatModel.clientModeID));
     gFFI.chatModel.toggleChatOverlay();
   }
 
-  showChatOptions(String id) async {
-    onPressVoiceCall() => bind.sessionRequestVoiceCall(sessionId: sessionId);
-    onPressEndVoiceCall() => bind.sessionCloseVoiceCall(sessionId: sessionId);
+  Future<void> showChatOptions(String id) async {
+    void onPressVoiceCall() =>
+        bind.sessionRequestVoiceCall(sessionId: sessionId);
+    void onPressEndVoiceCall() =>
+        bind.sessionCloseVoiceCall(sessionId: sessionId);
 
-    makeTextMenu(
+    TTextMenu makeTextMenu(
       String label,
       Widget icon,
       VoidCallback onPressed, {
@@ -931,20 +899,19 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
         .entries
         .map((e) => PopupMenuItem<int>(child: e.value.getChild(), value: e.key))
         .toList();
-    Future.delayed(Duration.zero, () async {
-      final size = MediaQuery.of(context).size;
-      final x = 120.0;
-      final y = size.height;
-      var index = await showMenu(
-        context: context,
-        position: RelativeRect.fromLTRB(x, y, x, y),
-        items: menuItems,
-        elevation: 8,
-      );
-      if (index != null && index < menus.length) {
-        menus[index].onPressed?.call();
-      }
-    });
+    if (!mounted) return;
+    final size = MediaQuery.sizeOf(context);
+    const x = 120.0;
+    final y = size.height;
+    final index = await showMenu(
+      context: context,
+      position: RelativeRect.fromLTRB(x, y, x, y),
+      items: menuItems,
+      elevation: 8,
+    );
+    if (index != null && index < menus.length) {
+      menus[index].onPressed?.call();
+    }
   }
 
   /// aka changeTouchMode
@@ -987,6 +954,57 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   // }
 }
 
+class _RemoteDockButton extends StatelessWidget {
+  const _RemoteDockButton({
+    required this.icon,
+    required this.label,
+    required this.onPressed,
+    this.destructive = false,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback? onPressed;
+  final bool destructive;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final color = destructive ? scheme.error : scheme.onSurfaceVariant;
+    return Semantics(
+      button: true,
+      label: label,
+      child: Tooltip(
+        message: label,
+        child: InkWell(
+          onTap: onPressed,
+          borderRadius: BorderRadius.circular(12),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 6),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(icon, size: 22, color: onPressed == null ? null : color),
+                const SizedBox(height: 4),
+                Text(
+                  label,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: onPressed == null ? null : color,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class KeyHelpTools extends StatefulWidget {
   final bool keyboardIsVisible;
   final bool showGestureHelp;
@@ -994,7 +1012,8 @@ class KeyHelpTools extends StatefulWidget {
   /// need to show by external request, etc [keyboardIsVisible] or [changeTouchMode]
   bool get requestShow => keyboardIsVisible || showGestureHelp;
 
-  KeyHelpTools({
+  const KeyHelpTools({
+    super.key,
     required this.keyboardIsVisible,
     required this.showGestureHelp,
   });
@@ -1017,35 +1036,56 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
     void Function() onPressed, {
     bool? active,
     IconData? icon,
+    String? tooltip,
   }) {
-    return TextButton(
+    final scheme = Theme.of(context).colorScheme;
+    final selected = active == true;
+    final label = tooltip ?? text.trim();
+    final foreground = selected
+        ? scheme.onPrimaryContainer
+        : scheme.onSurfaceVariant;
+    final button = TextButton(
       style: TextButton.styleFrom(
-        minimumSize: Size(0, 0),
-        padding: EdgeInsets.symmetric(vertical: 10, horizontal: 9.75),
-        //adds padding inside the button
-        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-        //limits the touch area to the button area
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(5.0)),
-        backgroundColor: active == true ? MyTheme.accent80 : null,
+        foregroundColor: foreground,
+        backgroundColor: selected
+            ? scheme.primaryContainer
+            : scheme.surfaceContainerHighest,
+        minimumSize: const Size(44, 44),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        tapTargetSize: MaterialTapTargetSize.padded,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        side: BorderSide(
+          color: selected ? scheme.primary : scheme.outlineVariant,
+        ),
       ),
-      child: icon != null
-          ? Icon(icon, size: 14, color: Colors.white)
-          : Text(
-              translate(text),
-              style: TextStyle(color: Colors.white, fontSize: 11),
-            ),
       onPressed: onPressed,
+      child: icon != null
+          ? Icon(icon, size: 20)
+          : Text(
+              translate(text.trim()),
+              style: Theme.of(
+                context,
+              ).textTheme.labelMedium?.copyWith(fontWeight: FontWeight.w700),
+            ),
+    );
+    return Semantics(
+      button: true,
+      selected: selected,
+      label: label.isEmpty ? null : translate(label),
+      child: label.isEmpty
+          ? button
+          : Tooltip(message: translate(label), child: button),
     );
   }
 
-  _updateRect() {
-    RenderObject? renderObject = _key.currentContext?.findRenderObject();
+  void _updateRect() {
+    final renderObject = _key.currentContext?.findRenderObject();
     if (renderObject == null) {
       return;
     }
     if (renderObject is RenderBox) {
       final size = renderObject.size;
-      Offset pos = renderObject.localToGlobal(Offset.zero);
+      final pos = renderObject.localToGlobal(Offset.zero);
       gFFI.cursorModel.keyHelpToolsVisibilityChanged(
         Rect.fromLTWH(pos.dx, pos.dy, size.width, size.height),
         widget.keyboardIsVisible,
@@ -1104,6 +1144,7 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
         () => setState(() => _pin = !_pin),
         active: _pin,
         icon: Icons.push_pin,
+        tooltip: 'Pin',
       ),
       wrap(
         ' ... ',
@@ -1116,7 +1157,8 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
         active: _more,
       ),
     ];
-    final fn = <Widget>[SizedBox(width: 9999)];
+    final lineBreak = SizedBox(width: size.width, height: 0);
+    final fn = <Widget>[lineBreak];
     for (var i = 1; i <= 12; ++i) {
       final name = 'F$i';
       fn.add(
@@ -1126,7 +1168,7 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
       );
     }
     final more = <Widget>[
-      SizedBox(width: 9999),
+      lineBreak,
       wrap('Esc', () {
         inputModel.inputKey('VK_ESCAPE');
       }),
@@ -1173,19 +1215,39 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
       wrap('Enter', () {
         inputModel.inputKey('VK_ENTER');
       }),
-      SizedBox(width: 9999),
-      wrap('', () {
-        inputModel.inputKey('VK_LEFT');
-      }, icon: Icons.keyboard_arrow_left),
-      wrap('', () {
-        inputModel.inputKey('VK_UP');
-      }, icon: Icons.keyboard_arrow_up),
-      wrap('', () {
-        inputModel.inputKey('VK_DOWN');
-      }, icon: Icons.keyboard_arrow_down),
-      wrap('', () {
-        inputModel.inputKey('VK_RIGHT');
-      }, icon: Icons.keyboard_arrow_right),
+      lineBreak,
+      wrap(
+        '',
+        () {
+          inputModel.inputKey('VK_LEFT');
+        },
+        icon: Icons.keyboard_arrow_left,
+        tooltip: 'Left',
+      ),
+      wrap(
+        '',
+        () {
+          inputModel.inputKey('VK_UP');
+        },
+        icon: Icons.keyboard_arrow_up,
+        tooltip: 'Up',
+      ),
+      wrap(
+        '',
+        () {
+          inputModel.inputKey('VK_DOWN');
+        },
+        icon: Icons.keyboard_arrow_down,
+        tooltip: 'Down',
+      ),
+      wrap(
+        '',
+        () {
+          inputModel.inputKey('VK_RIGHT');
+        },
+        icon: Icons.keyboard_arrow_right,
+        tooltip: 'Right',
+      ),
       wrap(isMac ? 'Cmd+C' : 'Ctrl+C', () {
         sendPrompt(isMac, 'VK_C');
       }),
@@ -1197,26 +1259,35 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
       }),
     ];
     final space = size.width > 320 ? 4.0 : 2.0;
-    // 500 ms is long enough for this widget to be built!
-    Future.delayed(Duration(milliseconds: 500), () {
-      _updateRect();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _updateRect();
     });
-    return Container(
+    final scheme = Theme.of(context).colorScheme;
+    return Material(
       key: _key,
-      color: Color(0xAA000000),
-      padding: EdgeInsets.only(
-        top: _keyboardVisibilityController.isVisible ? 24 : 4,
-        bottom: 8,
-      ),
-      child: Wrap(
-        spacing: space,
-        runSpacing: space,
-        children:
-            <Widget>[SizedBox(width: 9999)] +
-            modifiers +
-            keys +
-            (_fn ? fn : []) +
-            (_more ? more : []),
+      elevation: 10,
+      color: scheme.surface.withValues(alpha: 0.96),
+      shape: Border(bottom: BorderSide(color: scheme.outlineVariant)),
+      child: SafeArea(
+        bottom: false,
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(
+            10,
+            _keyboardVisibilityController.isVisible ? 10 : 8,
+            10,
+            10,
+          ),
+          child: Wrap(
+            spacing: space,
+            runSpacing: space,
+            children:
+                <Widget>[lineBreak] +
+                modifiers +
+                keys +
+                (_fn ? fn : []) +
+                (_more ? more : []),
+          ),
+        ),
       ),
     );
   }
@@ -1224,7 +1295,7 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
 
 class ImagePaint extends StatelessWidget {
   final FfiModel ffiModel;
-  ImagePaint({Key? key, required this.ffiModel}) : super(key: key);
+  const ImagePaint({super.key, required this.ffiModel});
 
   @override
   Widget build(BuildContext context) {
@@ -1250,8 +1321,8 @@ class ImagePaint extends StatelessWidget {
 }
 
 class CursorPaint extends StatelessWidget {
-  late final String id;
-  CursorPaint(this.id);
+  final String id;
+  const CursorPaint(this.id, {super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -1319,40 +1390,20 @@ void showOptions(
           allowDisplaySwitchInPrivacyMode(pi, privacyModeState.value))) {
     final cur = pi.currentDisplay;
     final children = <Widget>[];
-    final isDarkTheme = MyTheme.currentThemeMode() == ThemeMode.dark;
-    final numColorSelected = Colors.white;
-    final numColorUnselected = isDarkTheme ? Colors.grey : Colors.black87;
-    // We can't use `Theme.of(context).primaryColor` here, the color is:
-    // - light theme: 0xff2196f3 (Colors.blue)
-    // - dark theme: 0xff212121 (the canvas color?)
-    final numBgSelected = Theme.of(
-      context,
-    ).colorScheme.primary.withValues(alpha: 0.6);
     for (var i = 0; i < pi.displays.length; ++i) {
       children.add(
-        InkWell(
-          onTap: () {
-            if (i == cur) return;
-            openMonitorInTheSameTab(i, gFFI, pi);
-            gFFI.dialogManager.dismissAll();
-          },
-          child: Ink(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              border: Border.all(color: Theme.of(context).hintColor),
-              borderRadius: BorderRadius.circular(2),
-              color: i == cur ? numBgSelected : null,
-            ),
-            child: Center(
-              child: Text(
-                (i + 1).toString(),
-                style: TextStyle(
-                  color: i == cur ? numColorSelected : numColorUnselected,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
+        ConstrainedBox(
+          constraints: const BoxConstraints(minWidth: 56, minHeight: 44),
+          child: ChoiceChip(
+            selected: i == cur,
+            avatar: const Icon(Icons.monitor_rounded, size: 18),
+            label: Text('${i + 1}'),
+            onSelected: i == cur
+                ? null
+                : (_) {
+                    openMonitorInTheSameTab(i, gFFI, pi);
+                    gFFI.dialogManager.dismissAll();
+                  },
           ),
         ),
       );
@@ -1368,27 +1419,17 @@ void showOptions(
       ),
     );
   }
-  if (displays.isNotEmpty) {
-    displays.add(const Divider(color: MyTheme.border));
-  }
 
-  List<TRadioMenu<String>> viewStyleRadios = await toolbarViewStyle(
-    context,
-    id,
-    gFFI,
-  );
-  List<TRadioMenu<String>> imageQualityRadios = await toolbarImageQuality(
-    context,
-    id,
-    gFFI,
-  );
-  List<TRadioMenu<String>> codecRadios = await toolbarCodec(context, id, gFFI);
-  List<TToggleMenu> cursorToggles = await toolbarCursor(context, id, gFFI);
-  List<TToggleMenu> displayToggles = await toolbarDisplayToggle(
-    context,
-    id,
-    gFFI,
-  );
+  final viewStyleRadios = await toolbarViewStyle(context, id, gFFI);
+  if (!context.mounted) return;
+  final imageQualityRadios = await toolbarImageQuality(context, id, gFFI);
+  if (!context.mounted) return;
+  final codecRadios = await toolbarCodec(context, id, gFFI);
+  if (!context.mounted) return;
+  final cursorToggles = await toolbarCursor(context, id, gFFI);
+  if (!context.mounted) return;
+  final displayToggles = await toolbarDisplayToggle(context, id, gFFI);
+  if (!context.mounted) return;
 
   List<TToggleMenu> privacyModeList = [];
   if ((gFFI.ffiModel.pi.features.privacyMode && gFFI.ffiModel.keyboard) ||
@@ -1399,191 +1440,279 @@ void showOptions(
     }
   }
 
-  dialogManager
-      .show(
-        (setState, close, context) {
-          var viewStyle =
-              (viewStyleRadios.isNotEmpty ? viewStyleRadios[0].groupValue : '')
-                  .obs;
-          var imageQuality =
-              (imageQualityRadios.isNotEmpty
-                      ? imageQualityRadios[0].groupValue
-                      : '')
-                  .obs;
-          var codec =
-              (codecRadios.isNotEmpty ? codecRadios[0].groupValue : '').obs;
-          final radios = [
-            for (var e in viewStyleRadios)
-              Obx(
-                () => getRadio<String>(
-                  e.child,
-                  e.value,
-                  viewStyle.value,
-                  e.onChanged != null
-                      ? (v) {
-                          e.onChanged?.call(v);
-                          if (v != null) viewStyle.value = v;
-                        }
-                      : null,
-                ),
-              ),
-            // Show custom scale controls when custom view style is selected
-            Obx(
-              () => viewStyle.value == kRemoteViewStyleCustom
-                  ? MobileCustomScaleControls(ffi: gFFI)
-                  : const SizedBox.shrink(),
-            ),
-            const Divider(color: MyTheme.border),
-            for (var e in imageQualityRadios)
-              Obx(
-                () => getRadio<String>(
-                  e.child,
-                  e.value,
-                  imageQuality.value,
-                  e.onChanged != null
-                      ? (v) {
-                          e.onChanged?.call(v);
-                          if (v != null) imageQuality.value = v;
-                        }
-                      : null,
-                ),
-              ),
-            const Divider(color: MyTheme.border),
-            for (var e in codecRadios)
-              Obx(
-                () => getRadio<String>(
-                  e.child,
-                  e.value,
-                  codec.value,
-                  e.onChanged != null
-                      ? (v) {
-                          e.onChanged?.call(v);
-                          if (v != null) codec.value = v;
-                        }
-                      : null,
-                ),
-              ),
-            if (codecRadios.isNotEmpty) const Divider(color: MyTheme.border),
-          ];
-          final rxCursorToggleValues = cursorToggles
-              .map((e) => e.value.obs)
-              .toList();
-          final cursorTogglesList = cursorToggles
-              .asMap()
-              .entries
-              .map(
-                (e) => Obx(
-                  () => CheckboxListTile(
-                    contentPadding: EdgeInsets.zero,
-                    visualDensity: VisualDensity.compact,
-                    value: rxCursorToggleValues[e.key].value,
-                    onChanged: e.value.onChanged != null
-                        ? (v) {
-                            e.value.onChanged?.call(v);
-                            if (v != null)
-                              rxCursorToggleValues[e.key].value = v;
-                          }
-                        : null,
-                    title: e.value.child,
+  await dialogManager.show(
+    (setState, close, context) {
+      final viewStyle =
+          (viewStyleRadios.isNotEmpty ? viewStyleRadios[0].groupValue : '').obs;
+      final imageQuality =
+          (imageQualityRadios.isNotEmpty
+                  ? imageQualityRadios[0].groupValue
+                  : '')
+              .obs;
+      final codec =
+          (codecRadios.isNotEmpty ? codecRadios[0].groupValue : '').obs;
+      final rxCursorToggleValues = cursorToggles
+          .map((e) => e.value.obs)
+          .toList();
+      final rxToggleValues = displayToggles.map((e) => e.value.obs).toList();
+      final scheme = Theme.of(context).colorScheme;
+
+      Widget section(String title, IconData icon, List<Widget> children) {
+        if (children.isEmpty) return const SizedBox.shrink();
+        return Container(
+          margin: const EdgeInsets.only(bottom: 14),
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: scheme.surfaceContainerLow,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: scheme.outlineVariant),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  Icon(icon, size: 20, color: scheme.primary),
+                  const SizedBox(width: 10),
+                  Text(
+                    translate(title),
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
-                ),
-              )
-              .toList();
-
-          final rxToggleValues = displayToggles
-              .map((e) => e.value.obs)
-              .toList();
-          final displayTogglesList = displayToggles
-              .asMap()
-              .entries
-              .map(
-                (e) => Obx(
-                  () => CheckboxListTile(
-                    contentPadding: EdgeInsets.zero,
-                    visualDensity: VisualDensity.compact,
-                    value: rxToggleValues[e.key].value,
-                    onChanged: e.value.onChanged != null
-                        ? (v) {
-                            e.value.onChanged?.call(v);
-                            if (v != null) rxToggleValues[e.key].value = v;
-                          }
-                        : null,
-                    title: e.value.child,
-                  ),
-                ),
-              )
-              .toList();
-          final toggles = [
-            ...cursorTogglesList,
-            if (cursorToggles.isNotEmpty) const Divider(color: MyTheme.border),
-            ...displayTogglesList,
-          ];
-
-          Widget privacyModeWidget = Offstage();
-          if (privacyModeList.length > 1) {
-            privacyModeWidget = ListTile(
-              contentPadding: EdgeInsets.zero,
-              visualDensity: VisualDensity.compact,
-              title: Text(translate('Privacy mode')),
-              onTap: () => setPrivacyModeDialog(
-                dialogManager,
-                privacyModeList,
-                privacyModeState,
+                ],
               ),
-            );
-          }
+              const SizedBox(height: 10),
+              ...children,
+            ],
+          ),
+        );
+      }
 
-          var popupDialogMenus = List<Widget>.empty(growable: true);
-          final resolution = getResolutionMenu(gFFI, id);
-          if (resolution != null) {
-            popupDialogMenus.add(
-              ListTile(
-                contentPadding: EdgeInsets.zero,
-                visualDensity: VisualDensity.compact,
-                title: resolution.child,
-                onTap: () {
-                  close();
-                  resolution.onPressed?.call();
-                },
+      Widget radioSection(
+        String title,
+        IconData icon,
+        List<TRadioMenu<String>> entries,
+        RxString selected, {
+        Widget? footer,
+      }) {
+        if (entries.isEmpty) return const SizedBox.shrink();
+        return Obx(
+          () => section(title, icon, [
+            RadioGroup<String>(
+              groupValue: selected.value,
+              onChanged: (value) {
+                if (value == null) return;
+                for (final entry in entries) {
+                  if (entry.value == value) {
+                    entry.onChanged?.call(value);
+                    selected.value = value;
+                    break;
+                  }
+                }
+              },
+              child: Column(
+                children: [
+                  for (final entry in entries)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 6),
+                      child: RadioListTile<String>(
+                        value: entry.value,
+                        enabled: entry.onChanged != null,
+                        title: entry.child,
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                        ),
+                        minTileHeight: 52,
+                        tileColor: scheme.surfaceContainer,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                    ),
+                ],
               ),
-            );
-          }
-          final virtualDisplayMenu = getVirtualDisplayMenu(gFFI, id);
-          if (virtualDisplayMenu != null) {
-            popupDialogMenus.add(
-              ListTile(
-                contentPadding: EdgeInsets.zero,
-                visualDensity: VisualDensity.compact,
-                title: virtualDisplayMenu.child,
-                onTap: () {
-                  close();
-                  virtualDisplayMenu.onPressed?.call();
-                },
-              ),
-            );
-          }
-          if (popupDialogMenus.isNotEmpty) {
-            popupDialogMenus.add(const Divider(color: MyTheme.border));
-          }
-
-          return CustomAlertDialog(
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children:
-                  displays +
-                  radios +
-                  popupDialogMenus +
-                  toggles +
-                  [privacyModeWidget],
             ),
-          );
-        },
-        clickMaskDismiss: true,
-        backDismiss: true,
-      )
-      .then((value) {
-        _disableAndroidSoftKeyboard();
-      });
+            ?footer,
+          ]),
+        );
+      }
+
+      Widget toggleTile(TToggleMenu entry, RxBool value, IconData icon) {
+        return Obx(
+          () => Padding(
+            padding: const EdgeInsets.only(bottom: 6),
+            child: SwitchListTile(
+              value: value.value,
+              onChanged: entry.onChanged == null
+                  ? null
+                  : (next) {
+                      entry.onChanged?.call(next);
+                      value.value = next;
+                    },
+              secondary: Icon(icon, color: scheme.onSurfaceVariant),
+              title: entry.child,
+              contentPadding: const EdgeInsets.symmetric(horizontal: 10),
+              minTileHeight: 52,
+              tileColor: scheme.surfaceContainer,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+          ),
+        );
+      }
+
+      final popupDialogMenus = <Widget>[];
+      final resolution = getResolutionMenu(gFFI, id);
+      if (resolution != null) {
+        popupDialogMenus.add(
+          ListTile(
+            leading: const Icon(Icons.aspect_ratio_rounded),
+            title: resolution.child,
+            trailing: const Icon(Icons.chevron_right_rounded),
+            tileColor: scheme.surfaceContainer,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+            onTap: () {
+              close();
+              resolution.onPressed?.call();
+            },
+          ),
+        );
+      }
+      final virtualDisplayMenu = getVirtualDisplayMenu(gFFI, id);
+      if (virtualDisplayMenu != null) {
+        popupDialogMenus.add(
+          Padding(
+            padding: EdgeInsets.only(top: popupDialogMenus.isEmpty ? 0 : 6),
+            child: ListTile(
+              leading: const Icon(Icons.add_to_queue_rounded),
+              title: virtualDisplayMenu.child,
+              trailing: const Icon(Icons.chevron_right_rounded),
+              tileColor: scheme.surfaceContainer,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+              onTap: () {
+                close();
+                virtualDisplayMenu.onPressed?.call();
+              },
+            ),
+          ),
+        );
+      }
+
+      final generalTiles = <Widget>[
+        for (var i = 0; i < cursorToggles.length; i++)
+          toggleTile(
+            cursorToggles[i],
+            rxCursorToggleValues[i],
+            Icons.mouse_outlined,
+          ),
+        for (var i = 0; i < displayToggles.length; i++)
+          toggleTile(
+            displayToggles[i],
+            rxToggleValues[i],
+            Icons.display_settings_outlined,
+          ),
+        if (privacyModeList.length > 1)
+          ListTile(
+            leading: const Icon(Icons.visibility_off_outlined),
+            title: Text(translate('Privacy mode')),
+            trailing: const Icon(Icons.chevron_right_rounded),
+            tileColor: scheme.surfaceContainer,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+            onTap: () => setPrivacyModeDialog(
+              dialogManager,
+              privacyModeList,
+              privacyModeState,
+            ),
+          ),
+      ];
+
+      return CustomAlertDialog(
+        title: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 48,
+              height: 48,
+              decoration: BoxDecoration(
+                color: scheme.primaryContainer,
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Icon(
+                Icons.display_settings_rounded,
+                color: scheme.primary,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              translate('Display Settings'),
+              style: Theme.of(
+                context,
+              ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
+            ),
+          ],
+        ),
+        contentBoxConstraints: const BoxConstraints(maxWidth: 480),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (displays.isNotEmpty)
+              section('Display', Icons.monitor_rounded, displays),
+            radioSection(
+              'View Mode',
+              Icons.fit_screen_rounded,
+              viewStyleRadios,
+              viewStyle,
+              footer: Obx(
+                () => viewStyle.value == kRemoteViewStyleCustom
+                    ? MobileCustomScaleControls(ffi: gFFI)
+                    : const SizedBox.shrink(),
+              ),
+            ),
+            radioSection(
+              'Image Quality',
+              Icons.high_quality_outlined,
+              imageQualityRadios,
+              imageQuality,
+            ),
+            radioSection(
+              'Codec',
+              Icons.video_settings_outlined,
+              codecRadios,
+              codec,
+            ),
+            if (popupDialogMenus.isNotEmpty)
+              section('Display', Icons.aspect_ratio_rounded, popupDialogMenus),
+            if (generalTiles.isNotEmpty)
+              section('General', Icons.tune_rounded, generalTiles),
+          ],
+        ),
+        actions: [
+          SizedBox(
+            width: 132,
+            child: dialogButton(
+              'OK',
+              icon: const Icon(Icons.done_rounded),
+              onPressed: close,
+            ),
+          ),
+        ],
+        onSubmit: close,
+        onCancel: close,
+      );
+    },
+    clickMaskDismiss: true,
+    backDismiss: true,
+  );
+  _disableAndroidSoftKeyboard();
 }
 
 TTextMenu? getVirtualDisplayMenu(FFI ffi, String id) {

@@ -16,7 +16,7 @@ import 'package:camellia_remote_app/desktop/widgets/material_mod_popup_menu.dart
     as mod_menu;
 import 'package:camellia_remote_app/desktop/widgets/popup_menu.dart';
 import 'package:camellia_remote_app/utils/multi_window_manager.dart';
-import 'package:flutter_svg/flutter_svg.dart';
+import 'package:camellia_remote_app/ui/camellia_design.dart';
 import 'package:get/get.dart';
 import 'package:bot_toast/bot_toast.dart';
 
@@ -40,8 +40,9 @@ class ConnectionTabPage extends StatefulWidget {
 }
 
 class _ConnectionTabPageState extends State<ConnectionTabPage> {
-  final tabController =
-      Get.put(DesktopTabController(tabType: DesktopTabType.remoteScreen));
+  final tabController = Get.put(
+    DesktopTabController(tabType: DesktopTabType.remoteScreen),
+  );
   final contentKey = UniqueKey();
   static const IconData selectedIcon = Icons.desktop_windows_sharp;
   static const IconData unselectedIcon = Icons.desktop_windows_outlined;
@@ -71,39 +72,42 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
           final ffi = remotePage.ffi;
           bind.setCurSessionId(sessionId: ffi.sessionId);
         }
-        WindowController.fromWindowId(params['windowId'])
-            .setTitle(getWindowNameWithId(id));
+        WindowController.fromWindowId(
+          params['windowId'],
+        ).setTitle(getWindowNameWithId(id));
         UnreadChatCountState.find(id).value = 0;
       };
-      tabController.add(TabInfo(
-        key: peerId!,
-        label: peerId!,
-        selectedIcon: selectedIcon,
-        unselectedIcon: unselectedIcon,
-        onTabCloseButton: () async {
-          if (await desktopTryShowTabAuditDialogCloseCancelled(
+      tabController.add(
+        TabInfo(
+          key: peerId!,
+          label: peerId!,
+          selectedIcon: selectedIcon,
+          unselectedIcon: unselectedIcon,
+          onTabCloseButton: () async {
+            if (await desktopTryShowTabAuditDialogCloseCancelled(
+              id: peerId!,
+              tabController: tabController,
+            )) {
+              return;
+            }
+            tabController.closeBy(peerId!);
+          },
+          page: RemotePage(
+            key: ValueKey(peerId),
             id: peerId!,
+            sessionId: sessionId == null ? null : SessionID(sessionId),
+            tabWindowId: tabWindowId,
+            display: display,
+            displays: displays?.cast<int>(),
+            password: params['password'],
+            toolbarState: ToolbarState(),
             tabController: tabController,
-          )) {
-            return;
-          }
-          tabController.closeBy(peerId!);
-        },
-        page: RemotePage(
-          key: ValueKey(peerId),
-          id: peerId!,
-          sessionId: sessionId == null ? null : SessionID(sessionId),
-          tabWindowId: tabWindowId,
-          display: display,
-          displays: displays?.cast<int>(),
-          password: params['password'],
-          toolbarState: ToolbarState(),
-          tabController: tabController,
-          switchUuid: params['switch_uuid'],
-          forceRelay: params['forceRelay'],
-          isSharedPassword: params['isSharedPassword'],
+            switchUuid: params['switch_uuid'],
+            forceRelay: params['forceRelay'],
+            isSharedPassword: params['isSharedPassword'],
+          ),
         ),
-      ));
+      );
       _update_remote_count();
     }
     tabController.onRemoved = (_, id) => onRemoveId(id);
@@ -150,10 +154,7 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
           if (!connectionType.isValid()) {
             return Row(
               mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                icon,
-                label,
-              ],
+              children: [icon, label],
             );
           } else {
             bool secure =
@@ -161,7 +162,10 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
             bool direct =
                 connectionType.direct.value == ConnectionType.strDirect;
             String msgConn = getConnectionText(
-                secure, direct, connectionType.stream_type.value);
+              secure,
+              direct,
+              connectionType.stream_type.value,
+            );
             var msgFingerprint = '${translate('Fingerprint')}:\n';
             var fingerprint = FingerprintState.find(key).value;
             if (fingerprint.isEmpty) {
@@ -181,15 +185,55 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
                 icon,
                 Tooltip(
                   message: '$msgConn\n$msgFingerprint',
-                  child: SvgPicture.asset(
-                    'assets/${connectionType.secure.value}${connectionType.direct.value}.svg',
-                    width: themeConf.iconSize,
-                    height: themeConf.iconSize,
-                  ).paddingOnly(right: 5),
+                  child: Container(
+                    constraints: const BoxConstraints(minHeight: 26),
+                    margin: const EdgeInsets.symmetric(horizontal: 6),
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    decoration: BoxDecoration(
+                      color:
+                          (secure
+                                  ? CamelliaColors.aqua
+                                  : Theme.of(context).colorScheme.error)
+                              .withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(
+                        CamelliaRadius.status,
+                      ),
+                      border: Border.all(
+                        color:
+                            (secure
+                                    ? CamelliaColors.aqua
+                                    : Theme.of(context).colorScheme.error)
+                                .withValues(alpha: 0.42),
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          secure
+                              ? Icons.shield_rounded
+                              : Icons.gpp_maybe_rounded,
+                          size: 14,
+                          color: secure
+                              ? CamelliaColors.aquaStrong
+                              : Theme.of(context).colorScheme.error,
+                        ),
+                        const SizedBox(width: 5),
+                        Text(
+                          '${translate(secure ? 'Secure' : 'Insecure')} · ${translate(direct ? 'Direct' : 'Relay')}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.labelSmall
+                              ?.copyWith(fontWeight: FontWeight.w700),
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
                 label,
-                unreadMessageCountBuilder(UnreadChatCountState.find(key))
-                    .marginOnly(left: 4),
+                unreadMessageCountBuilder(
+                  UnreadChatCountState.find(key),
+                ).marginOnly(left: 4),
               ],
             );
 
@@ -198,16 +242,15 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
                 if (e.kind != ui.PointerDeviceKind.mouse) {
                   return;
                 }
-                final remotePage = tabController.state.value.tabs
-                    .firstWhere((tab) => tab.key == key)
-                    .page as RemotePage;
+                final remotePage =
+                    tabController.state.value.tabs
+                            .firstWhere((tab) => tab.key == key)
+                            .page
+                        as RemotePage;
                 if (remotePage.ffi.ffiModel.pi.isSet.isTrue && e.buttons == 2) {
-                  showRightMenu(
-                    (CancelFunc cancelFunc) {
-                      return _tabMenuBuilder(key, cancelFunc);
-                    },
-                    target: e.position,
-                  );
+                  showRightMenu((CancelFunc cancelFunc) {
+                    return _tabMenuBuilder(key, cancelFunc);
+                  }, target: e.position);
                 }
               },
               child: tab,
@@ -220,17 +263,22 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
         ? buildVirtualWindowFrame(context, child)
         : workaroundWindowBorder(
             context,
-            Obx(() => Container(
-                  decoration: BoxDecoration(
-                    border: Border.all(
-                        color: MyTheme.color(context).border!,
-                        width: stateGlobal.windowBorderWidth.value),
+            Obx(
+              () => Container(
+                decoration: BoxDecoration(
+                  border: Border.all(
+                    color: MyTheme.color(context).border!,
+                    width: stateGlobal.windowBorderWidth.value,
                   ),
-                  child: child,
-                )));
+                ),
+                child: child,
+              ),
+            ),
+          );
     return isMacOS
         ? tabWidget
-        : Obx(() => SubWindowDragToResizeArea(
+        : Obx(
+            () => SubWindowDragToResizeArea(
               key: contentKey,
               child: tabWidget,
               // Specially configured for a better resize area and remote control.
@@ -238,16 +286,17 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
               resizeEdgeSize: stateGlobal.resizeEdgeSize.value,
               enableResizeEdges: subWindowManagerEnableResizeEdges,
               windowId: stateGlobal.windowId,
-            ));
+            ),
+          );
   }
 
   // Note: Some dup code to ../widgets/remote_toolbar
   Widget _tabMenuBuilder(String key, CancelFunc cancelFunc) {
     final List<MenuEntryBase<String>> menu = [];
     const EdgeInsets padding = EdgeInsets.only(left: 8.0, right: 5.0);
-    final remotePage = tabController.state.value.tabs
-        .firstWhere((tab) => tab.key == key)
-        .page as RemotePage;
+    final remotePage =
+        tabController.state.value.tabs.firstWhere((tab) => tab.key == key).page
+            as RemotePage;
     final ffi = remotePage.ffi;
     final pi = ffi.ffiModel.pi;
     final perms = ffi.ffiModel.permissions;
@@ -255,11 +304,14 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
     final toolbarState = remotePage.toolbarState;
     menu.addAll([
       MenuEntryButton<String>(
-        childBuilder: (TextStyle? style) => Obx(() => Text(
-              translate(
-                  toolbarState.hide.isTrue ? 'Show Toolbar' : 'Hide Toolbar'),
-              style: style,
-            )),
+        childBuilder: (TextStyle? style) => Obx(
+          () => Text(
+            translate(
+              toolbarState.hide.isTrue ? 'Show Toolbar' : 'Hide Toolbar',
+            ),
+            style: style,
+          ),
+        ),
         proc: () {
           toolbarState.switchHide(sessionId);
           cancelFunc();
@@ -270,15 +322,14 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
 
     if (tabController.state.value.tabs.length > 1) {
       final splitAction = MenuEntryButton<String>(
-        childBuilder: (TextStyle? style) => Text(
-          translate('Move tab to new window'),
-          style: style,
-        ),
+        childBuilder: (TextStyle? style) =>
+            Text(translate('Move tab to new window'), style: style),
         proc: () async {
           await DesktopMultiWindow.invokeMethod(
-              kMainWindowId,
-              kWindowEventMoveTabToNewWindow,
-              '${windowId()},$key,$sessionId,RemoteDesktop');
+            kMainWindowId,
+            kWindowEventMoveTabToNewWindow,
+            '${windowId()},$key,$sessionId,RemoteDesktop',
+          );
           cancelFunc();
         },
         padding: padding,
@@ -290,46 +341,52 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
         (pi.platform == kPeerPlatformLinux ||
             pi.platform == kPeerPlatformWindows ||
             pi.platform == kPeerPlatformMacOS)) {
-      menu.add(MenuEntryButton<String>(
-        childBuilder: (TextStyle? style) => Text(
-          translate('Restart remote device'),
-          style: style,
+      menu.add(
+        MenuEntryButton<String>(
+          childBuilder: (TextStyle? style) =>
+              Text(translate('Restart remote device'), style: style),
+          proc: () => showRestartRemoteDevice(
+            pi,
+            peerId ?? '',
+            sessionId,
+            ffi.dialogManager,
+          ),
+          padding: padding,
+          dismissOnClicked: true,
+          dismissCallback: cancelFunc,
         ),
-        proc: () => showRestartRemoteDevice(
-            pi, peerId ?? '', sessionId, ffi.dialogManager),
-        padding: padding,
-        dismissOnClicked: true,
-        dismissCallback: cancelFunc,
-      ));
+      );
     }
 
     if (perms['keyboard'] != false && !ffi.ffiModel.viewOnly) {
-      menu.add(RemoteMenuEntry.insertLock(sessionId, padding,
-          dismissFunc: cancelFunc));
+      menu.add(
+        RemoteMenuEntry.insertLock(sessionId, padding, dismissFunc: cancelFunc),
+      );
 
       if (pi.platform == kPeerPlatformLinux || pi.sasEnabled) {
-        menu.add(RemoteMenuEntry.insertCtrlAltDel(sessionId, padding,
-            dismissFunc: cancelFunc));
+        menu.add(
+          RemoteMenuEntry.insertCtrlAltDel(
+            sessionId,
+            padding,
+            dismissFunc: cancelFunc,
+          ),
+        );
       }
     }
 
     menu.addAll([
       MenuEntryDivider<String>(),
       MenuEntryButton<String>(
-        childBuilder: (TextStyle? style) => Text(
-          translate('Copy Fingerprint'),
-          style: style,
-        ),
+        childBuilder: (TextStyle? style) =>
+            Text(translate('Copy Fingerprint'), style: style),
         proc: () => onCopyFingerprint(FingerprintState.find(key).value),
         padding: padding,
         dismissOnClicked: true,
         dismissCallback: cancelFunc,
       ),
       MenuEntryButton<String>(
-        childBuilder: (TextStyle? style) => Text(
-          translate('Close'),
-          style: style,
-        ),
+        childBuilder: (TextStyle? style) =>
+            Text(translate('Close'), style: style),
         proc: () async {
           if (await desktopTryShowTabAuditDialogCloseCancelled(
             id: key,
@@ -341,18 +398,21 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
           cancelFunc();
         },
         padding: padding,
-      )
+      ),
     ]);
 
     return mod_menu.PopupMenu<String>(
       items: menu
-          .map((entry) => entry.build(
+          .map(
+            (entry) => entry.build(
               context,
               const MenuConfig(
                 commonColor: _MenuTheme.blueColor,
                 height: _MenuTheme.height,
                 dividerHeight: _MenuTheme.dividerHeight,
-              )))
+              ),
+            ),
+          )
           .expand((i) => i)
           .toList(),
     );
@@ -404,8 +464,10 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
       return true;
     } else {
       final bool res;
-      if (!option2bool(kOptionEnableConfirmClosingTabs,
-          bind.mainGetLocalOption(key: kOptionEnableConfirmClosingTabs))) {
+      if (!option2bool(
+        kOptionEnableConfirmClosingTabs,
+        bind.mainGetLocalOption(key: kOptionEnableConfirmClosingTabs),
+      )) {
         res = true;
       } else {
         res = await closeConfirmDialog();
@@ -422,7 +484,8 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
 
   Future<dynamic> _remoteMethodHandler(call, fromWindowId) async {
     debugPrint(
-        "[Remote Page] call ${call.method} with args ${call.arguments} from window $fromWindowId");
+      "[Remote Page] call ${call.method} with args ${call.arguments} from window $fromWindowId",
+    );
 
     dynamic returnValue;
     // for simplify, just replace connectionId
@@ -441,42 +504,50 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
           await WindowController.fromWindowId(windowId()).setFullscreen(false);
           stateGlobal.setFullscreen(false, procWnd: false);
         }
-        await setNewConnectWindowFrame(windowId(), id!, prePeerCount,
-            WindowType.RemoteDesktop, display, screenRect);
+        await setNewConnectWindowFrame(
+          windowId(),
+          id!,
+          prePeerCount,
+          WindowType.RemoteDesktop,
+          display,
+          screenRect,
+        );
         Future.delayed(Duration(milliseconds: isWindows ? 100 : 0), () async {
           await windowOnTop(windowId());
         });
       });
       ConnectionTypeState.init(id);
-      tabController.add(TabInfo(
-        key: id,
-        label: id,
-        selectedIcon: selectedIcon,
-        unselectedIcon: unselectedIcon,
-        onTabCloseButton: () async {
-          if (await desktopTryShowTabAuditDialogCloseCancelled(
+      tabController.add(
+        TabInfo(
+          key: id,
+          label: id,
+          selectedIcon: selectedIcon,
+          unselectedIcon: unselectedIcon,
+          onTabCloseButton: () async {
+            if (await desktopTryShowTabAuditDialogCloseCancelled(
+              id: id,
+              tabController: tabController,
+            )) {
+              return;
+            }
+            tabController.closeBy(id);
+          },
+          page: RemotePage(
+            key: ValueKey(id),
             id: id,
+            sessionId: sessionId == null ? null : SessionID(sessionId),
+            tabWindowId: tabWindowId,
+            display: display,
+            displays: displays?.cast<int>(),
+            password: args['password'],
+            toolbarState: ToolbarState(),
             tabController: tabController,
-          )) {
-            return;
-          }
-          tabController.closeBy(id);
-        },
-        page: RemotePage(
-          key: ValueKey(id),
-          id: id,
-          sessionId: sessionId == null ? null : SessionID(sessionId),
-          tabWindowId: tabWindowId,
-          display: display,
-          displays: displays?.cast<int>(),
-          password: args['password'],
-          toolbarState: ToolbarState(),
-          tabController: tabController,
-          switchUuid: switchUuid,
-          forceRelay: args['forceRelay'],
-          isSharedPassword: args['isSharedPassword'],
+            switchUuid: switchUuid,
+            forceRelay: args['forceRelay'],
+            isSharedPassword: args['isSharedPassword'],
+          ),
         ),
-      ));
+      );
     } else if (call.method == kWindowDisableGrabKeyboard) {
       // ???
     } else if (call.method == "onDestroy") {
@@ -515,9 +586,11 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
       final close = args['close'];
       RemotePage? remotePage;
       try {
-        remotePage = tabController.state.value.tabs
-            .firstWhere((tab) => tab.key == id)
-            .page as RemotePage;
+        remotePage =
+            tabController.state.value.tabs
+                    .firstWhere((tab) => tab.key == id)
+                    .page
+                as RemotePage;
         returnValue = remotePage.ffi.ffiModel.cachedPeerData.toString();
       } catch (e) {
         debugPrint('Failed to get cached session data: $e');
@@ -539,15 +612,17 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
           frame = await wc.getFrame();
         } catch (e) {
           debugPrint(
-              "Failed to get frame of window $windowId, it may be hidden");
+            "Failed to get frame of window $windowId, it may be hidden",
+          );
         }
         if (frame != null) {
           ffi.cursorModel.moveLocal(0, 0);
           final coords = RemoteWindowCoords(
-              frame,
-              CanvasCoords.fromCanvasModel(ffi.canvasModel),
-              CursorCoords.fromCursorModel(ffi.cursorModel),
-              displayRect);
+            frame,
+            CanvasCoords.fromCanvasModel(ffi.canvasModel),
+            CursorCoords.fromCursorModel(ffi.cursorModel),
+            displayRect,
+          );
           returnValue = jsonEncode(coords.toJson());
         }
       }
@@ -565,7 +640,7 @@ class _RelativeMouseModeHint extends StatelessWidget {
   final DesktopTabController tabController;
 
   const _RelativeMouseModeHint({Key? key, required this.tabController})
-      : super(key: key);
+    : super(key: key);
 
   @override
   Widget build(BuildContext context) {
@@ -604,19 +679,13 @@ class _RelativeMouseModeHint extends StatelessWidget {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(
-              Icons.mouse,
-              size: 14,
-              color: Colors.orange[700],
-            ),
+            Icon(Icons.mouse, size: 14, color: Colors.orange[700]),
             const SizedBox(width: 4),
             Text(
               translate(
-                  'rel-mouse-exit-{${isMacOS ? "Cmd+G" : "Ctrl+Alt"}}-tip'),
-              style: TextStyle(
-                fontSize: 11,
-                color: Colors.orange[700],
+                'rel-mouse-exit-{${isMacOS ? "Cmd+G" : "Ctrl+Alt"}}-tip',
               ),
+              style: TextStyle(fontSize: 11, color: Colors.orange[700]),
             ),
           ],
         ),

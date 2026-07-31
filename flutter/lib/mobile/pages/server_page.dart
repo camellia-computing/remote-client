@@ -27,7 +27,7 @@ class ServerPage extends StatefulWidget implements PageShape {
   final appBarActions =
       (!bind.isDisableSettings() &&
           bind.mainGetBuildinOption(key: kOptionHideSecuritySetting) != 'Y')
-      ? [_DropDownAction()]
+      ? [const ServerAccessMenuButton()]
       : [];
 
   ServerPage({Key? key}) : super(key: key);
@@ -36,12 +36,13 @@ class ServerPage extends StatefulWidget implements PageShape {
   State<StatefulWidget> createState() => _ServerPageState();
 }
 
-class _DropDownAction extends StatelessWidget {
-  _DropDownAction();
+class ServerAccessMenuButton extends StatelessWidget {
+  const ServerAccessMenuButton({super.key});
 
   // should only have one action
-  final actions = [
-    PopupMenuButton<String>(
+  @override
+  Widget build(BuildContext context) {
+    return PopupMenuButton<String>(
       tooltip: "",
       icon: const Icon(Icons.more_vert),
       itemBuilder: (context) {
@@ -186,16 +187,32 @@ class _DropDownAction extends StatelessWidget {
           }
         }
       },
-    ),
-  ];
-
-  @override
-  Widget build(BuildContext context) {
-    return actions[0];
+    );
   }
 }
 
 class _ServerPageState extends State<ServerPage> {
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      controller: gFFI.serverModel.controller,
+      child: const AdaptiveContent(
+        maxWidth: 760,
+        child: ServerWorkspaceSection(),
+      ),
+    );
+  }
+}
+
+/// Embeddable incoming-access area used by the single mobile workspace.
+class ServerWorkspaceSection extends StatefulWidget {
+  const ServerWorkspaceSection({super.key});
+
+  @override
+  State<ServerWorkspaceSection> createState() => _ServerWorkspaceSectionState();
+}
+
+class _ServerWorkspaceSectionState extends State<ServerWorkspaceSection> {
   Timer? _updateTimer;
 
   @override
@@ -219,27 +236,23 @@ class _ServerPageState extends State<ServerPage> {
     return ChangeNotifierProvider.value(
       value: gFFI.serverModel,
       child: Consumer<ServerModel>(
-        builder: (context, serverModel, child) => SingleChildScrollView(
-          controller: gFFI.serverModel.controller,
-          child: AdaptiveContent(
-            maxWidth: 760,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                buildPresetPasswordWarningMobile(),
-                AppStateTransition(
-                  stateKey: serverModel.isStart,
-                  child: serverModel.isStart
-                      ? ServerInfo()
-                      : ServiceNotRunningNotification(),
-                ),
-                const ConnectionManager(),
-                const PermissionChecker(),
-                const SizedBox(height: 16),
-              ],
-            ),
-          ),
-        ),
+        builder: (context, serverModel, child) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              buildPresetPasswordWarningMobile(),
+              AppStateTransition(
+                stateKey: serverModel.isStart,
+                child: serverModel.isStart
+                    ? ServerInfo()
+                    : ServiceNotRunningNotification(),
+              ),
+              const ConnectionManager(),
+              const PermissionChecker(),
+              const SizedBox(height: 16),
+            ],
+          );
+        },
       ),
     );
   }

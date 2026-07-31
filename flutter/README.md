@@ -1,16 +1,53 @@
-# camellia_remote_app
+# Remote client UI
 
-A new Flutter project.
+This package provides the Flutter interface for the desktop, mobile, and Web
+remote client. The Rust core remains responsible for transport, capture, input,
+clipboard, file transfer, and session security.
 
-## Getting Started
+## UI architecture
 
-This project is a starting point for a Flutter application.
+- `lib/ui/camellia_design.dart` owns semantic color, type, radius, elevation,
+  and motion tokens.
+- `lib/common/widgets/adaptive_layout.dart` owns shared layout breakpoints,
+  content bounds, reduced-motion behavior, and content states.
+- `lib/common/widgets/brand_shell.dart` paints the runtime portal mark.
+- `lib/ui/brand/portal_mark_spec.dart` is the single geometry source for both
+  the runtime mark and generated platform assets.
+- Desktop, mobile, and Web each expose one root workspace. Settings are an
+  overlay or route, not a competing root destination.
+- Remote-session command surfaces remain visible, labeled, keyboard reachable,
+  and at least 44 logical pixels high.
 
-A few resources to get you started if this is your first Flutter project:
+The complete interaction and responsive contract is documented in
+`../docs/ui-design-system.md`.
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+## Local verification
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples and guidance on mobile development, and a full API reference.
+Format the Dart files changed by the branch from the repository root, then run
+the package gates:
+
+```bash
+git diff --name-only --diff-filter=ACMR origin/main...HEAD -- 'flutter/**/*.dart' \
+  | xargs -r dart format --output=none --set-exit-if-changed
+cd flutter
+flutter pub get --enforce-lockfile
+flutter analyze --no-fatal-infos
+flutter test
+```
+
+Build a target only after its native prerequisites are installed. Web-specific
+commands and reproducible build inputs are documented in `web/README.md`.
+
+## Brand assets
+
+Do not edit exported PNG, ICO, ICNS, or platform launcher assets individually.
+Change the shared mark specification or generator, then run:
+
+```bash
+dart run tool/generate_brand_assets.dart
+cd ..
+bash .github/scripts/verify-brand-assets.sh
+```
+
+The verifier regenerates every consumed artifact and fails when the reviewed
+source and committed output differ.

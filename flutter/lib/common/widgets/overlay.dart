@@ -1,8 +1,8 @@
-import 'package:auto_size_text/auto_size_text.dart';
 import 'package:debounce_throttle/debounce_throttle.dart';
 import 'package:flutter/material.dart';
 import 'package:camellia_remote_app/common.dart';
 import 'package:camellia_remote_app/models/platform_model.dart';
+import 'package:camellia_remote_app/ui/camellia_design.dart';
 import 'package:get/get.dart';
 import 'package:provider/provider.dart';
 
@@ -13,13 +13,13 @@ import '../../models/model.dart';
 import 'chat_page.dart';
 
 class DraggableChatWindow extends StatelessWidget {
-  const DraggableChatWindow(
-      {Key? key,
-      this.position = Offset.zero,
-      required this.width,
-      required this.height,
-      required this.chatModel})
-      : super(key: key);
+  const DraggableChatWindow({
+    Key? key,
+    this.position = Offset.zero,
+    required this.width,
+    required this.height,
+    required this.chatModel,
+  }) : super(key: key);
 
   final Offset position;
   final double width;
@@ -41,9 +41,7 @@ class DraggableChatWindow extends StatelessWidget {
               return Column(
                 children: [
                   _buildMobileAppBar(context),
-                  Expanded(
-                    child: ChatPage(chatModel: chatModel),
-                  ),
+                  Expanded(child: ChatPage(chatModel: chatModel)),
                 ],
               );
             },
@@ -67,10 +65,13 @@ class DraggableChatWindow extends StatelessWidget {
                 body: ChatPage(chatModel: chatModel),
               );
               return Container(
-                  decoration:
-                      BoxDecoration(border: Border.all(color: MyTheme.border)),
-                  child: child);
-            });
+                decoration: BoxDecoration(
+                  border: Border.all(color: MyTheme.border),
+                ),
+                child: child,
+              );
+            },
+          );
   }
 
   Widget _buildMobileAppBar(BuildContext context) {
@@ -81,37 +82,38 @@ class DraggableChatWindow extends StatelessWidget {
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
           Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 15),
-              child: Text(
-                translate("Chat"),
-                style: const TextStyle(
-                    color: Colors.white,
-                    fontFamily: 'WorkSans',
-                    fontWeight: FontWeight.bold,
-                    fontSize: 20),
-              )),
+            padding: const EdgeInsets.symmetric(horizontal: 15),
+            child: Text(
+              translate("Chat"),
+              style: const TextStyle(
+                color: Colors.white,
+                fontFamily: 'WorkSans',
+                fontWeight: FontWeight.bold,
+                fontSize: 20,
+              ),
+            ),
+          ),
           Row(
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
               IconButton(
-                  onPressed: () {
-                    chatModel.hideChatWindowOverlay();
-                  },
-                  icon: const Icon(
-                    Icons.keyboard_arrow_down,
-                    color: Colors.white,
-                  )),
+                onPressed: () {
+                  chatModel.hideChatWindowOverlay();
+                },
+                icon: const Icon(
+                  Icons.keyboard_arrow_down,
+                  color: Colors.white,
+                ),
+              ),
               IconButton(
-                  onPressed: () {
-                    chatModel.hideChatWindowOverlay();
-                    chatModel.hideChatIconOverlay();
-                  },
-                  icon: const Icon(
-                    Icons.close,
-                    color: Colors.white,
-                  ))
+                onPressed: () {
+                  chatModel.hideChatWindowOverlay();
+                  chatModel.hideChatIconOverlay();
+                },
+                icon: const Icon(Icons.close, color: Colors.white),
+              ),
             ],
-          )
+          ),
         ],
       ),
     );
@@ -120,32 +122,45 @@ class DraggableChatWindow extends StatelessWidget {
   Widget _buildDesktopAppBar(BuildContext context) {
     return Container(
       decoration: BoxDecoration(
-          border: Border(
-              bottom: BorderSide(
-                  color: Theme.of(context).hintColor.withValues(alpha: 0.4)))),
+        border: Border(
+          bottom: BorderSide(
+            color: Theme.of(context).hintColor.withValues(alpha: 0.4),
+          ),
+        ),
+      ),
       height: 38,
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
           Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 8),
-              child: Obx(() => Opacity(
-                  opacity: chatModel.isWindowFocus.value ? 1.0 : 0.4,
-                  child: Row(children: [
-                    Icon(Icons.chat_bubble_outline,
-                        size: 20, color: Theme.of(context).colorScheme.primary),
+            padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 8),
+            child: Obx(
+              () => Opacity(
+                opacity: chatModel.isWindowFocus.value ? 1.0 : 0.4,
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.chat_bubble_outline,
+                      size: 20,
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
                     SizedBox(width: 6),
-                    Text(translate("Chat"))
-                  ])))),
+                    Text(translate("Chat")),
+                  ],
+                ),
+              ),
+            ),
+          ),
           Padding(
-              padding: EdgeInsets.all(2),
-              child: ActionIcon(
-                message: 'Close',
-                icon: IconFont.close,
-                onTap: chatModel.hideChatWindowOverlay,
-                isClose: true,
-                boxSize: 32,
-              ))
+            padding: EdgeInsets.all(2),
+            child: ActionIcon(
+              message: 'Close',
+              icon: IconFont.close,
+              onTap: chatModel.hideChatWindowOverlay,
+              isClose: true,
+              boxSize: 32,
+            ),
+          ),
         ],
       ),
     );
@@ -156,9 +171,11 @@ class CustomAppBar extends StatelessWidget implements PreferredSizeWidget {
   final GestureDragUpdateCallback onPanUpdate;
   final Widget appBar;
 
-  const CustomAppBar(
-      {Key? key, required this.onPanUpdate, required this.appBar})
-      : super(key: key);
+  const CustomAppBar({
+    Key? key,
+    required this.onPanUpdate,
+    required this.appBar,
+  }) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
@@ -171,15 +188,16 @@ class CustomAppBar extends StatelessWidget implements PreferredSizeWidget {
 
 /// floating buttons of back/home/recent actions for android
 class DraggableMobileActions extends StatelessWidget {
-  DraggableMobileActions(
-      {this.onBackPressed,
-      this.onRecentPressed,
-      this.onHomePressed,
-      this.onHidePressed,
-      required this.position,
-      required this.width,
-      required this.height,
-      required this.scale});
+  DraggableMobileActions({
+    this.onBackPressed,
+    this.onRecentPressed,
+    this.onHomePressed,
+    this.onHidePressed,
+    required this.position,
+    required this.width,
+    required this.height,
+    required this.scale,
+  });
 
   final double scale;
   final DraggableKeyPosition position;
@@ -193,57 +211,64 @@ class DraggableMobileActions extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Draggable(
-        position: position,
-        width: scale * width,
-        height: scale * height,
-        builder: (_, onPanUpdate) {
-          return GestureDetector(
-              onPanUpdate: onPanUpdate,
-              child: Card(
-                  color: Colors.transparent,
-                  shadowColor: Colors.transparent,
-                  child: Container(
-                    decoration: BoxDecoration(
-                        color: MyTheme.accent.withValues(alpha: 0.4),
-                        borderRadius:
-                            BorderRadius.all(Radius.circular(15 * scale))),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceAround,
-                      children: [
-                        IconButton(
-                            color: Colors.white,
-                            onPressed: onBackPressed,
-                            splashRadius: kDesktopIconButtonSplashRadius,
-                            icon: const Icon(Icons.arrow_back),
-                            iconSize: 24 * scale),
-                        IconButton(
-                            color: Colors.white,
-                            onPressed: onHomePressed,
-                            splashRadius: kDesktopIconButtonSplashRadius,
-                            icon: const Icon(Icons.home),
-                            iconSize: 24 * scale),
-                        IconButton(
-                            color: Colors.white,
-                            onPressed: onRecentPressed,
-                            splashRadius: kDesktopIconButtonSplashRadius,
-                            icon: const Icon(Icons.more_horiz),
-                            iconSize: 24 * scale),
-                        const VerticalDivider(
-                          width: 0,
-                          thickness: 2,
-                          indent: 10,
-                          endIndent: 10,
-                        ),
-                        IconButton(
-                            color: Colors.white,
-                            onPressed: onHidePressed,
-                            splashRadius: kDesktopIconButtonSplashRadius,
-                            icon: const Icon(Icons.keyboard_arrow_down),
-                            iconSize: 24 * scale),
-                      ],
-                    ),
-                  )));
-        });
+      position: position,
+      width: scale * width,
+      height: scale * height,
+      builder: (_, onPanUpdate) {
+        return GestureDetector(
+          onPanUpdate: onPanUpdate,
+          child: Card(
+            color: Colors.transparent,
+            shadowColor: Colors.transparent,
+            child: Container(
+              decoration: BoxDecoration(
+                color: MyTheme.accent.withValues(alpha: 0.4),
+                borderRadius: BorderRadius.all(Radius.circular(15 * scale)),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceAround,
+                children: [
+                  IconButton(
+                    color: Colors.white,
+                    onPressed: onBackPressed,
+                    splashRadius: kDesktopIconButtonSplashRadius,
+                    icon: const Icon(Icons.arrow_back),
+                    iconSize: 24 * scale,
+                  ),
+                  IconButton(
+                    color: Colors.white,
+                    onPressed: onHomePressed,
+                    splashRadius: kDesktopIconButtonSplashRadius,
+                    icon: const Icon(Icons.home),
+                    iconSize: 24 * scale,
+                  ),
+                  IconButton(
+                    color: Colors.white,
+                    onPressed: onRecentPressed,
+                    splashRadius: kDesktopIconButtonSplashRadius,
+                    icon: const Icon(Icons.more_horiz),
+                    iconSize: 24 * scale,
+                  ),
+                  const VerticalDivider(
+                    width: 0,
+                    thickness: 2,
+                    indent: 10,
+                    endIndent: 10,
+                  ),
+                  IconButton(
+                    color: Colors.white,
+                    onPressed: onHidePressed,
+                    splashRadius: kDesktopIconButtonSplashRadius,
+                    icon: const Icon(Icons.keyboard_arrow_down),
+                    iconSize: 24 * scale,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
   }
 }
 
@@ -252,7 +277,7 @@ class DraggableKeyPosition {
   Offset _pos;
   late Debouncer<int> _debouncerStore;
   DraggableKeyPosition(this.key)
-      : _pos = DraggablePositions.kInvalidDraggablePosition;
+    : _pos = DraggablePositions.kInvalidDraggablePosition;
 
   get pos => _pos;
 
@@ -269,8 +294,11 @@ class DraggableKeyPosition {
 
   load() {
     _pos = _loadPosition(key);
-    _debouncerStore = Debouncer<int>(const Duration(milliseconds: 500),
-        onChanged: (v) => _store(), initialValue: 0);
+    _debouncerStore = Debouncer<int>(
+      const Duration(milliseconds: 500),
+      onChanged: (v) => _store(),
+      initialValue: 0,
+    );
   }
 
   update(Offset pos) {
@@ -334,16 +362,16 @@ class DraggablePositions {
 DraggablePositions draggablePositions = DraggablePositions();
 
 class Draggable extends StatefulWidget {
-  Draggable(
-      {Key? key,
-      this.checkKeyboard = false,
-      this.checkScreenSize = false,
-      required this.position,
-      required this.width,
-      required this.height,
-      this.chatModel,
-      required this.builder})
-      : super(key: key);
+  Draggable({
+    Key? key,
+    this.checkKeyboard = false,
+    this.checkScreenSize = false,
+    required this.position,
+    required this.width,
+    required this.height,
+    this.chatModel,
+    required this.builder,
+  }) : super(key: key);
 
   final bool checkKeyboard;
   final bool checkScreenSize;
@@ -441,26 +469,29 @@ class _DraggableState extends State<Draggable> {
     if (widget.checkScreenSize) {
       checkScreenSize();
     }
-    return Stack(children: [
-      Positioned(
+    return Stack(
+      children: [
+        Positioned(
           top: position.dy,
           left: position.dx,
           width: widget.width,
           height: widget.height,
-          child: widget.builder(context, onPanUpdate))
-    ]);
+          child: widget.builder(context, onPanUpdate),
+        ),
+      ],
+    );
   }
 }
 
 class IOSDraggable extends StatefulWidget {
-  const IOSDraggable(
-      {Key? key,
-      this.chatModel,
-      required this.position,
-      required this.width,
-      required this.height,
-      required this.builder})
-      : super(key: key);
+  const IOSDraggable({
+    Key? key,
+    this.chatModel,
+    required this.position,
+    required this.width,
+    required this.height,
+    required this.builder,
+  }) : super(key: key);
 
   final DraggableKeyPosition position;
   final ChatModel? chatModel;
@@ -546,8 +577,9 @@ class IOSDraggableState extends State<IOSDraggable> {
               child: Container(
                 width: _width,
                 height: _height,
-                decoration:
-                    BoxDecoration(border: Border.all(color: MyTheme.border)),
+                decoration: BoxDecoration(
+                  border: Border.all(color: MyTheme.border),
+                ),
                 child: widget.builder(context),
               ),
             ),
@@ -560,56 +592,143 @@ class IOSDraggableState extends State<IOSDraggable> {
 
 class QualityMonitor extends StatelessWidget {
   final QualityMonitorModel qualityMonitorModel;
-  QualityMonitor(this.qualityMonitorModel);
+  const QualityMonitor(this.qualityMonitorModel, {super.key});
 
-  Widget _row(String info, String? value, {Color? rightColor}) {
+  Widget _row(BuildContext context, IconData icon, String info, String? value) {
+    final scheme = Theme.of(context).colorScheme;
     return Row(
       children: [
+        Icon(icon, size: 15, color: scheme.primary),
+        const SizedBox(width: 8),
         Expanded(
-            flex: 8,
-            child: AutoSizeText(info,
-                style: TextStyle(color: Color.fromARGB(255, 210, 210, 210)),
-                textAlign: TextAlign.right,
-                maxLines: 1)),
-        Spacer(flex: 1),
-        Expanded(
-            flex: 8,
-            child: AutoSizeText(value ?? '',
-                style: TextStyle(color: rightColor ?? Colors.white),
-                maxLines: 1)),
+          child: Text(
+            translate(info),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(
+              context,
+            ).textTheme.labelMedium?.copyWith(color: scheme.onSurfaceVariant),
+          ),
+        ),
+        const SizedBox(width: 10),
+        Text(
+          value?.trim().isNotEmpty == true ? value! : '—',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: Theme.of(
+            context,
+          ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w700),
+        ),
       ],
     );
   }
 
   @override
   Widget build(BuildContext context) => ChangeNotifierProvider.value(
-      value: qualityMonitorModel,
-      child: Consumer<QualityMonitorModel>(
-          builder: (context, qualityMonitorModel, child) => qualityMonitorModel
-                  .show
-              ? Container(
-                  constraints: BoxConstraints(maxWidth: 200),
-                  padding: const EdgeInsets.all(8),
-                  color: MyTheme.canvasColor.withAlpha(150),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _row("Speed", qualityMonitorModel.data.speed ?? '-'),
-                      _row("FPS", qualityMonitorModel.data.fps ?? '-'),
-                      // let delay be 0 if fps is 0
-                      _row(
-                          "Delay",
-                          "${qualityMonitorModel.data.delay == null ? '-' : (qualityMonitorModel.data.fps ?? "").replaceAll(' ', '').replaceAll('0', '').isEmpty ? 0 : qualityMonitorModel.data.delay}ms",
-                          rightColor: Colors.green),
-                      _row("Target Bitrate",
-                          "${qualityMonitorModel.data.targetBitrate ?? '-'}kb"),
-                      _row(
-                          "Codec", qualityMonitorModel.data.codecFormat ?? '-'),
-                      _row("Chroma", qualityMonitorModel.data.chroma ?? '-'),
-                    ],
+    value: qualityMonitorModel,
+    child: Consumer<QualityMonitorModel>(
+      builder: (context, quality, child) {
+        final delay = quality.data.delay == null
+            ? '—'
+            : (quality.data.fps ?? '')
+                  .replaceAll(' ', '')
+                  .replaceAll('0', '')
+                  .isEmpty
+            ? '0 ms'
+            : '${quality.data.delay} ms';
+        final bitrate = quality.data.targetBitrate == null
+            ? '—'
+            : '${quality.data.targetBitrate} kbps';
+        return AnimatedSwitcher(
+          duration: CamelliaMotion.feedback,
+          child: !quality.show
+              ? const SizedBox.shrink()
+              : IgnorePointer(
+                  key: const ValueKey('quality-monitor'),
+                  child: Material(
+                    elevation: 8,
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.surface.withValues(alpha: 0.94),
+                    shadowColor: Colors.black26,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(
+                        CamelliaRadius.surface,
+                      ),
+                      side: BorderSide(
+                        color: Theme.of(context).colorScheme.outlineVariant,
+                      ),
+                    ),
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(
+                        minWidth: 200,
+                        maxWidth: 240,
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(14),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                const CamelliaStatusDot(
+                                  color: CamelliaColors.aqua,
+                                  size: 8,
+                                ),
+                                const SizedBox(width: 8),
+                                Text(
+                                  translate('Connection quality'),
+                                  style: Theme.of(context).textTheme.titleSmall,
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 12),
+                            _row(
+                              context,
+                              Icons.network_check_rounded,
+                              'Speed',
+                              quality.data.speed,
+                            ),
+                            const SizedBox(height: 8),
+                            _row(
+                              context,
+                              Icons.movie_filter_outlined,
+                              'FPS',
+                              quality.data.fps,
+                            ),
+                            const SizedBox(height: 8),
+                            _row(context, Icons.speed_rounded, 'Delay', delay),
+                            const SizedBox(height: 8),
+                            _row(
+                              context,
+                              Icons.tune_rounded,
+                              'Target Bitrate',
+                              bitrate,
+                            ),
+                            const SizedBox(height: 8),
+                            _row(
+                              context,
+                              Icons.memory_rounded,
+                              'Codec',
+                              quality.data.codecFormat,
+                            ),
+                            const SizedBox(height: 8),
+                            _row(
+                              context,
+                              Icons.palette_outlined,
+                              'Chroma',
+                              quality.data.chroma,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
                   ),
-                )
-              : const SizedBox.shrink()));
+                ),
+        );
+      },
+    ),
+  );
 }
 
 class BlockableOverlayState extends OverlayKeyState {
@@ -645,8 +764,11 @@ class BlockableOverlay extends StatelessWidget {
 
   final BlockableOverlayState state;
 
-  BlockableOverlay(
-      {required this.underlying, required this.state, this.upperLayer});
+  BlockableOverlay({
+    required this.underlying,
+    required this.state,
+    this.upperLayer,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -655,13 +777,17 @@ class BlockableOverlay extends StatelessWidget {
 
       /// middle layer
       OverlayEntry(
-          builder: (context) => Obx(() => Listener(
-              onPointerDown: (_) {
-                state.onMiddleBlockedClick?.call();
-              },
-              child: Container(
-                  color:
-                      state.middleBlocked.value ? Colors.transparent : null)))),
+        builder: (context) => Obx(
+          () => Listener(
+            onPointerDown: (_) {
+              state.onMiddleBlockedClick?.call();
+            },
+            child: Container(
+              color: state.middleBlocked.value ? Colors.transparent : null,
+            ),
+          ),
+        ),
+      ),
     ];
 
     if (upperLayer != null) {

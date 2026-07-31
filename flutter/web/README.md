@@ -19,9 +19,18 @@ favicon, icons) and the JS bridge toolchain under `web/js`.
 5. Record the exact Git revision and tracked-worktree state in
    `build/web/.source_revision`.
 
-Web builds never rewrite tracked launcher icons or favicon sources. Refresh
-icons explicitly with `flutter pub run flutter_launcher_icons`, review the
-generated source diff, and commit it separately from runtime build output.
+Web builds never rewrite tracked launcher icons or favicon sources. Brand
+artifacts have one reviewed geometry source. Refresh and verify them from the
+repository root with:
+
+```bash
+cd flutter
+dart run tool/generate_brand_assets.dart
+cd ..
+bash .github/scripts/verify-brand-assets.sh
+```
+
+Review and commit generated assets separately from runtime build output.
 
 The scripts automatically pass these build-time values as `--dart-define` when
 the environment variables are set:
@@ -61,7 +70,7 @@ Run this from the repository root:
 $env:RS_PUB_KEY='your_rs_pub_key'
 $env:RENDEZVOUS_SERVERS='rs1.example.com:21116,rs2.example.com:21116'
 $env:API_SERVER='https://api.example.com'
-$env:APP_NAME='Camellia'
+$env:APP_NAME='Example Remote Client'
 $env:APP_VERSION='1.0.0'
 
 .\flutter\web\tools\build_web.ps1 -Mode release
@@ -73,7 +82,7 @@ $env:APP_VERSION='1.0.0'
 $env:RS_PUB_KEY='your_rs_pub_key'
 $env:RENDEZVOUS_SERVERS='rs1.example.com:21116'
 $env:API_SERVER='https://api.example.com'
-$env:APP_NAME='Camellia'
+$env:APP_NAME='Example Remote Client'
 
 .\flutter\web\tools\build_web.ps1 -Run
 ```
@@ -93,7 +102,7 @@ New-Item -ItemType Directory -Force $logDir | Out-Null
 $env:RS_PUB_KEY='your_rs_pub_key'
 $env:RENDEZVOUS_SERVERS='rs1.example.com:21116,rs2.example.com:21116'
 $env:API_SERVER='https://api.example.com'
-$env:APP_NAME='Camellia'
+$env:APP_NAME='Example Remote Client'
 $env:APP_VERSION='1.0.0'
 
 .\flutter\web\tools\build_web.ps1 -Run -Mode debug *>&1 |
@@ -109,7 +118,7 @@ New-Item -ItemType Directory -Force $logDir | Out-Null
 $env:RS_PUB_KEY='your_rs_pub_key'
 $env:RENDEZVOUS_SERVERS='rs1.example.com:21116,rs2.example.com:21116'
 $env:API_SERVER='https://api.example.com'
-$env:APP_NAME='Camellia'
+$env:APP_NAME='Example Remote Client'
 $env:APP_VERSION='1.0.0'
 
 .\flutter\web\tools\build_web.ps1 -Mode debug *>&1 |
@@ -125,7 +134,7 @@ is only for captured console logs.
 export RS_PUB_KEY='your_rs_pub_key'
 export RENDEZVOUS_SERVERS='rs1.example.com:21116,rs2.example.com:21116'
 export API_SERVER='https://api.example.com'
-export APP_NAME='Camellia'
+export APP_NAME='Example Remote Client'
 export APP_VERSION='1.0.0'
 
 ./flutter/web/tools/build_web.sh --mode release

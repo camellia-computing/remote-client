@@ -8,13 +8,10 @@ import 'package:camellia_remote_app/common/widgets/adaptive_layout.dart';
 import 'package:camellia_remote_app/common/widgets/autocomplete.dart';
 import 'package:camellia_remote_app/common/widgets/brand_shell.dart';
 import 'package:camellia_remote_app/common/widgets/peer_tab_page.dart';
-import 'package:camellia_remote_app/models/ab_model.dart';
+import 'package:camellia_remote_app/common/widgets/settings_overlay.dart';
 import 'package:camellia_remote_app/models/peer_model.dart';
-import 'package:camellia_remote_app/models/peer_tab_model.dart';
 import 'package:camellia_remote_app/models/state_model.dart';
-import 'package:camellia_remote_app/models/user_model.dart';
 import 'package:camellia_remote_app/ui/camellia_design.dart';
-import 'package:camellia_remote_app/web/settings_page.dart';
 import 'package:camellia_remote_app/web/web_client_settings_page.dart';
 import 'package:get/get.dart';
 import 'package:provider/provider.dart';
@@ -22,61 +19,6 @@ import 'package:provider/provider.dart';
 import '../common.dart';
 import '../models/model.dart';
 import '../models/platform_model.dart';
-
-const Color _camelliaInk = CamelliaColors.lightText;
-const Color _camelliaRose = CamelliaColors.coral;
-const Color _camelliaRoseDark = CamelliaColors.coralStrong;
-const Color _camelliaBlush = CamelliaColors.lightPetalWash;
-const Color _camelliaGold = CamelliaColors.sun;
-const Color _camelliaSlate = CamelliaColors.lightMuted;
-const Color _camelliaMint = CamelliaColors.aqua;
-const Color _camelliaLine = CamelliaColors.lightBorder;
-
-TextStyle _camelliaFraunces({
-  double? fontSize,
-  FontWeight? fontWeight,
-  Color? color,
-  double? letterSpacing,
-  double? height,
-}) {
-  return TextStyle(
-    fontSize: fontSize,
-    fontWeight: fontWeight,
-    color: color,
-    letterSpacing: letterSpacing,
-    height: height,
-    fontFamily: 'SF Pro Display',
-    fontFamilyFallback: const [
-      'SF Pro Text',
-      'Segoe UI',
-      'Helvetica Neue',
-      'Arial',
-    ],
-  );
-}
-
-TextStyle _camelliaOutfit({
-  double? fontSize,
-  FontWeight? fontWeight,
-  Color? color,
-  double? letterSpacing,
-  double? height,
-}) {
-  return TextStyle(
-    fontSize: fontSize,
-    fontWeight: fontWeight,
-    color: color,
-    letterSpacing: letterSpacing,
-    height: height,
-    fontFamily: 'SF Pro Text',
-    fontFamilyFallback: const [
-      'Segoe UI',
-      'Helvetica Neue',
-      'Arial',
-      'sans-serif',
-    ],
-  );
-}
 
 class WebClientHomePage extends StatefulWidget {
   const WebClientHomePage({super.key});
@@ -97,7 +39,6 @@ class _WebClientHomePageState extends State<WebClientHomePage> {
   bool _isFieldFocused = false;
   Timer? _statusTimer;
   String _myId = '';
-  int _navigationIndex = 0;
 
   @override
   void initState() {
@@ -139,7 +80,6 @@ class _WebClientHomePageState extends State<WebClientHomePage> {
     _statusTimer = Timer.periodic(const Duration(seconds: 2), (_) {
       _syncClientStatus();
     });
-    gFFI.peerTabModel.addListener(_syncNavigationWithPeerTab);
   }
 
   @override
@@ -151,7 +91,6 @@ class _WebClientHomePageState extends State<WebClientHomePage> {
     _idEditingController.dispose();
     _statusTimer?.cancel();
     _allPeersLoader.clear();
-    gFFI.peerTabModel.removeListener(_syncNavigationWithPeerTab);
     if (Get.isRegistered<IDTextEditingController>()) {
       Get.delete<IDTextEditingController>();
     }
@@ -213,13 +152,13 @@ class _WebClientHomePageState extends State<WebClientHomePage> {
         final layout = AppLayout.forWidth(constraints.maxWidth);
         final compact = layout == AppLayoutSize.compact;
         final content = AdaptiveContent(
-          maxWidth: 1220,
+          maxWidth: 1440,
           child: Column(
             children: [
-              _buildWorkspaceHeader(context, compact),
+              _buildWorkspaceHeader(context),
               const SizedBox(height: 18),
               if (compact) ...[
-                _buildConnectionSection(true),
+                _buildConnectionSection(),
                 const SizedBox(height: 12),
                 _buildStatusCard(),
               ] else
@@ -227,77 +166,25 @@ class _WebClientHomePageState extends State<WebClientHomePage> {
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      Expanded(child: _buildConnectionSection(false)),
+                      Expanded(child: _buildConnectionSection()),
                       const SizedBox(width: 18),
                       SizedBox(width: 324, child: _buildStatusCard()),
                     ],
                   ),
                 ),
               const SizedBox(height: 18),
-              _buildPeersPanel(compact),
+              _buildPeersPanel(),
             ],
           ),
         );
         return Scaffold(
           backgroundColor: AppVisual.tokens(context).page,
-          bottomNavigationBar: compact
-              ? NavigationBar(
-                  selectedIndex: _navigationIndex,
-                  onDestinationSelected: _selectNavigationDestination,
-                  destinations: [
-                    NavigationDestination(
-                      icon: const Icon(Icons.devices_outlined),
-                      selectedIcon: const Icon(Icons.devices_rounded),
-                      label: translate('Devices'),
-                    ),
-                    NavigationDestination(
-                      icon: const Icon(Icons.menu_book_outlined),
-                      selectedIcon: const Icon(Icons.menu_book_rounded),
-                      label: translate('Address book'),
-                    ),
-                    NavigationDestination(
-                      icon: const Icon(Icons.tune_outlined),
-                      selectedIcon: const Icon(Icons.tune_rounded),
-                      label: translate('Settings'),
-                    ),
-                  ],
-                )
-              : null,
           body: CamelliaBackdrop(
-            child: Row(
-              children: [
-                if (!compact)
-                  CamelliaNavigationRail(
-                    extended: layout == AppLayoutSize.expanded,
-                    selectedIndex: _navigationIndex,
-                    onDestinationSelected: _selectNavigationDestination,
-                    destinations: [
-                      NavigationDestination(
-                        icon: const Icon(Icons.devices_outlined),
-                        selectedIcon: const Icon(Icons.devices_rounded),
-                        label: translate('Devices'),
-                      ),
-                      NavigationDestination(
-                        icon: const Icon(Icons.menu_book_outlined),
-                        selectedIcon: const Icon(Icons.menu_book_rounded),
-                        label: translate('Address book'),
-                      ),
-                      NavigationDestination(
-                        icon: const Icon(Icons.tune_outlined),
-                        selectedIcon: const Icon(Icons.tune_rounded),
-                        label: translate('Settings'),
-                      ),
-                    ],
-                  ),
-                Expanded(
-                  child: SafeArea(
-                    child: FocusTraversalGroup(
-                      policy: WidgetOrderTraversalPolicy(),
-                      child: SingleChildScrollView(child: content),
-                    ),
-                  ),
-                ),
-              ],
+            child: SafeArea(
+              child: FocusTraversalGroup(
+                policy: WidgetOrderTraversalPolicy(),
+                child: SingleChildScrollView(child: content),
+              ),
             ),
           ),
         );
@@ -305,36 +192,15 @@ class _WebClientHomePageState extends State<WebClientHomePage> {
     );
   }
 
-  void _selectNavigationDestination(int index) {
-    if (index == 2) {
-      _openSettings();
-      return;
-    }
-    gFFI.peerTabModel.setCurrentTab(
-      index == 1 ? PeerTabIndex.ab.index : PeerTabIndex.recent.index,
-    );
-    if (index == 1) {
-      gFFI.abModel.pullAb(force: ForcePullAb.listAndCurrent, quiet: false);
-    }
-    setState(() => _navigationIndex = index);
-  }
-
-  void _syncNavigationWithPeerTab() {
-    final index = gFFI.peerTabModel.currentTab == PeerTabIndex.ab.index ? 1 : 0;
-    if (mounted && index != _navigationIndex) {
-      setState(() => _navigationIndex = index);
-    }
-  }
-
-  void _openSettings() {
-    FocusManager.instance.primaryFocus?.unfocus();
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => const WebClientSettingsPage()),
+  Future<void> _openSettings() {
+    return showSettingsOverlay<void>(
+      context: context,
+      title: translate('Settings'),
+      builder: (_) => const WebClientSettingsPage(),
     );
   }
 
-  Widget _buildWorkspaceHeader(BuildContext context, bool compact) {
+  Widget _buildWorkspaceHeader(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: CamelliaPageHeader(
@@ -342,42 +208,19 @@ class _WebClientHomePageState extends State<WebClientHomePage> {
         subtitle: translate(
           'Connect and manage trusted devices in your browser',
         ),
-        leading: compact ? const CamelliaAnimatedBrandMark(size: 42) : null,
+        leading: CamelliaAnimatedBrandMark(
+          size: 42,
+          semanticLabel: bind.mainGetAppNameSync(),
+        ),
         actions: [
-          _buildAccountButton(compact),
+          IconButton.filledTonal(
+            tooltip: translate('Settings'),
+            onPressed: _openSettings,
+            icon: const Icon(Icons.tune_rounded),
+          ),
         ],
       ),
     );
-  }
-
-  Widget _buildAccountButton(bool compact) {
-    return Obx(() {
-      final model = gFFI.userModel;
-      final state = model.accountState.value;
-      return CamelliaAccountButton(
-        label: model.isLogin
-            ? model.displayNameOrUserName
-            : translate('Sign in'),
-        detail: model.isLogin
-            ? model.email.value.trim().isNotEmpty
-                  ? model.email.value.trim()
-                  : '@${model.userName.value}'
-            : translate('Account'),
-        avatarUrl: model.avatar.value,
-        statusColor: switch (state) {
-          UserAccountState.ready => AppVisual.tone(context, AppTone.success),
-          UserAccountState.offline => AppVisual.tone(context, AppTone.warning),
-          UserAccountState.error => AppVisual.tone(context, AppTone.danger),
-          _ => Theme.of(context).colorScheme.primary,
-        },
-        statusIcon: state == UserAccountState.offline
-            ? Icons.cloud_off_rounded
-            : Icons.check_circle_rounded,
-        busy: state == UserAccountState.loading,
-        compact: compact,
-        onPressed: _openSettings,
-      );
-    });
   }
 
   void _onFocusChanged() {
@@ -498,333 +341,6 @@ class _WebClientHomePageState extends State<WebClientHomePage> {
     }
   }
 
-  // Legacy decorative helpers remain available for downstream custom web
-  // builds, but the default client uses the theme-driven workspace above.
-  // ignore: unused_element
-  Widget _buildBackgroundDecoration() {
-    return Stack(
-      children: [
-        Positioned(
-          top: -120,
-          left: -130,
-          child: _buildGlow(
-            size: 300,
-            color: _camelliaRose.withValues(alpha: 0.18),
-            intensity: 0.42,
-          ),
-        ),
-        Positioned(
-          top: -140,
-          right: -70,
-          child: _buildGlow(
-            size: 360,
-            color: _camelliaBlush.withValues(alpha: 0.7),
-            intensity: 0.6,
-          ),
-        ),
-        Positioned(
-          top: 140,
-          right: -120,
-          child: _buildGlow(
-            size: 280,
-            color: _camelliaGold.withValues(alpha: 0.16),
-            intensity: 0.34,
-          ),
-        ),
-        Positioned(
-          bottom: -170,
-          left: -40,
-          child: _buildGlow(
-            size: 340,
-            color: _camelliaMint.withValues(alpha: 0.16),
-            intensity: 0.45,
-          ),
-        ),
-        Positioned(
-          top: 210,
-          left: -100,
-          child: _buildGlow(
-            size: 260,
-            color: _camelliaGold.withValues(alpha: 0.14),
-            intensity: 0.35,
-          ),
-        ),
-        Positioned(
-          bottom: 90,
-          right: -60,
-          child: _buildGlow(
-            size: 260,
-            color: _camelliaMint.withValues(alpha: 0.15),
-            intensity: 0.34,
-          ),
-        ),
-        Positioned(
-          top: 280,
-          right: 80,
-          child: _buildRibbon(
-            width: 220,
-            height: 98,
-            colorA: _camelliaRose.withValues(alpha: 0.16),
-            colorB: _camelliaMint.withValues(alpha: 0.12),
-            angle: 0.36,
-          ),
-        ),
-        Positioned(
-          bottom: 180,
-          left: 90,
-          child: _buildRibbon(
-            width: 190,
-            height: 86,
-            colorA: _camelliaGold.withValues(alpha: 0.13),
-            colorB: _camelliaBlush.withValues(alpha: 0.2),
-            angle: -0.28,
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildGlow({
-    required double size,
-    required Color color,
-    double intensity = 0.5,
-  }) {
-    return Container(
-      width: size,
-      height: size,
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        gradient: RadialGradient(
-          colors: [
-            color.withValues(alpha: intensity),
-            color.withValues(alpha: 0.0),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // ignore: unused_element
-  Widget _buildTopBar(bool isNarrow, bool isPhone) {
-    if (isPhone) {
-      return Padding(
-        padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                _buildBrandMark(),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        bind.mainGetAppNameSync(),
-                        style: _camelliaFraunces(
-                          fontSize: 19,
-                          fontWeight: FontWeight.w600,
-                          color: _camelliaInk,
-                        ),
-                      ),
-                      Text(
-                        translate('Web Client'),
-                        style: _camelliaOutfit(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w500,
-                          color: _camelliaSlate,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                _buildChip(
-                  icon: Icons.verified_user_outlined,
-                  label: translate('Secure'),
-                  color: _camelliaMint,
-                ),
-                const Spacer(),
-                Container(
-                  decoration: BoxDecoration(
-                    color: Colors.white.withValues(alpha: 0.9),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(
-                      color: _camelliaLine.withValues(alpha: 0.8),
-                    ),
-                  ),
-                  child: const WebSettingsPage(),
-                ),
-              ],
-            ),
-          ],
-        ),
-      );
-    }
-
-    return Padding(
-      padding: EdgeInsets.symmetric(
-        horizontal: isNarrow ? 16 : 24,
-        vertical: 8,
-      ),
-      child: Row(
-        children: [
-          _buildBrandMark(),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  bind.mainGetAppNameSync(),
-                  style: _camelliaFraunces(
-                    fontSize: 20,
-                    fontWeight: FontWeight.w600,
-                    color: _camelliaInk,
-                    letterSpacing: 0.2,
-                  ),
-                ),
-                Text(
-                  translate('Web Client'),
-                  style: _camelliaOutfit(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w500,
-                    color: _camelliaSlate,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          if (!isNarrow)
-            _buildChip(
-              icon: Icons.verified_user_outlined,
-              label: translate('Secure'),
-              color: _camelliaMint,
-            ),
-          const SizedBox(width: 8),
-          Container(
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.9),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: _camelliaLine.withValues(alpha: 0.8)),
-            ),
-            child: const WebSettingsPage(),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildBrandMark() {
-    return Container(
-      width: 44,
-      height: 44,
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(14),
-        gradient: const LinearGradient(
-          colors: [_camelliaRose, _camelliaRoseDark],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: _camelliaRose.withValues(alpha: 0.24),
-            blurRadius: 16,
-            offset: const Offset(0, 8),
-          ),
-        ],
-      ),
-      child: Center(
-        child: Text(
-          'C',
-          style: _camelliaFraunces(
-            fontSize: 22,
-            fontWeight: FontWeight.w700,
-            color: Colors.white,
-          ),
-        ),
-      ),
-    );
-  }
-
-  // ignore: unused_element
-  Widget _buildHeroSection(bool isNarrow, bool isPhone) {
-    final hero = Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          translate('Control Remote Desktop'),
-          style: _camelliaFraunces(
-            fontSize: isPhone ? 28 : (isNarrow ? 30 : 38),
-            fontWeight: FontWeight.w600,
-            color: _camelliaInk,
-            height: 1.1,
-          ),
-        ),
-        const SizedBox(height: 10),
-        Text(
-          translate(
-            'Secure Camellia sessions directly in your browser with the same tools you trust on desktop.',
-          ),
-          style: _camelliaOutfit(
-            fontSize: 15,
-            height: 1.5,
-            color: _camelliaSlate,
-          ),
-        ),
-        const SizedBox(height: 16),
-        Wrap(
-          spacing: 10,
-          runSpacing: 8,
-          children: [
-            _buildChip(
-              icon: Icons.lock_outline,
-              label: translate('End-to-end encryption'),
-              color: _camelliaRose,
-            ),
-            _buildChip(
-              icon: Icons.speed,
-              label: translate('Adaptive performance'),
-              color: _camelliaGold,
-            ),
-            _buildChip(
-              icon: Icons.language,
-              label: translate('Browser ready'),
-              color: _camelliaSlate,
-            ),
-          ],
-        ),
-      ],
-    );
-
-    final card = _buildStatusCard();
-
-    return Padding(
-      padding: EdgeInsets.symmetric(
-        horizontal: isNarrow ? 16 : 24,
-        vertical: 10,
-      ),
-      child: isNarrow
-          ? Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [hero, const SizedBox(height: 18), card],
-            )
-          : Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(child: hero),
-                const SizedBox(width: 24),
-                SizedBox(width: 340, child: card),
-              ],
-            ),
-    );
-  }
-
   Widget _buildStatusCard() {
     const rowGap = SizedBox(height: 12);
     final muted = AppVisual.subduedText(context);
@@ -836,11 +352,9 @@ class _WebClientHomePageState extends State<WebClientHomePage> {
         children: [
           Text(
             translate('Session status'),
-            style: _camelliaOutfit(
-              fontSize: 14,
-              fontWeight: FontWeight.w600,
-              color: muted,
-            ),
+            style: Theme.of(
+              context,
+            ).textTheme.labelLarge?.copyWith(color: muted),
           ),
           const SizedBox(height: 12),
           Obx(() {
@@ -942,8 +456,7 @@ class _WebClientHomePageState extends State<WebClientHomePage> {
               title,
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
-              style: _camelliaOutfit(
-                fontSize: 13,
+              style: theme.textTheme.labelMedium?.copyWith(
                 fontWeight: FontWeight.w600,
                 color: theme.colorScheme.onSurface,
               ),
@@ -957,8 +470,7 @@ class _WebClientHomePageState extends State<WebClientHomePage> {
               textAlign: TextAlign.right,
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
-              style: _camelliaOutfit(
-                fontSize: 13,
+              style: theme.textTheme.bodySmall?.copyWith(
                 color: AppVisual.subduedText(context),
               ),
             ),
@@ -973,32 +485,7 @@ class _WebClientHomePageState extends State<WebClientHomePage> {
     );
   }
 
-  Widget _buildRibbon({
-    required double width,
-    required double height,
-    required Color colorA,
-    required Color colorB,
-    required double angle,
-  }) {
-    return Transform.rotate(
-      angle: angle,
-      child: Container(
-        width: width,
-        height: height,
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(36),
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [colorA, colorB],
-          ),
-          border: Border.all(color: Colors.white.withValues(alpha: 0.5)),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildConnectionSection(bool isNarrow) {
+  Widget _buildConnectionSection() {
     return CamelliaSection(
       padding: const EdgeInsets.all(20),
       accent: CamelliaColors.coral,
@@ -1019,7 +506,7 @@ class _WebClientHomePageState extends State<WebClientHomePage> {
           const SizedBox(height: 16),
           _buildRemoteIdField(),
           const SizedBox(height: 12),
-          _buildQuickActions(isNarrow),
+          _buildQuickActions(),
         ],
       ),
     );
@@ -1209,7 +696,7 @@ class _WebClientHomePageState extends State<WebClientHomePage> {
     );
   }
 
-  Widget _buildQuickActions(bool isNarrow) {
+  Widget _buildQuickActions() {
     return Wrap(
       spacing: 10,
       runSpacing: 10,
@@ -1238,66 +725,7 @@ class _WebClientHomePageState extends State<WebClientHomePage> {
     );
   }
 
-  // ignore: unused_element
-  Widget _buildFeatureSection(bool isNarrow) {
-    final cards = [
-      _FeatureCard(
-        title: translate('Trusted access'),
-        body: translate('Connect across devices with the same security model.'),
-        foot: translate('Zero config on the client'),
-        icon: Icons.verified_outlined,
-        color: _camelliaRose,
-      ),
-      _FeatureCard(
-        title: translate('Fast file moves'),
-        body: translate('Drag files directly into the remote session.'),
-        foot: translate('Optimized transfer streams'),
-        icon: Icons.swap_vert,
-        color: _camelliaGold,
-      ),
-      _FeatureCard(
-        title: translate('Multi-session ready'),
-        body: translate('Switch between recent, favorite, and LAN devices.'),
-        foot: translate('Smart peer discovery'),
-        icon: Icons.layers_outlined,
-        color: _camelliaSlate,
-      ),
-      _FeatureCard(
-        title: translate('Camellia controls'),
-        body: translate('Use keyboard shortcuts and terminal tools.'),
-        foot: translate('Desktop-grade features'),
-        icon: Icons.settings_input_component,
-        color: _camelliaRoseDark,
-      ),
-    ];
-    return Padding(
-      padding: EdgeInsets.symmetric(
-        horizontal: isNarrow ? 16 : 24,
-        vertical: 10,
-      ),
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          const spacing = 14.0;
-          final width = constraints.maxWidth;
-          final columns = width >= 1120
-              ? 4
-              : width >= 760
-              ? 2
-              : 1;
-          final cardWidth = (width - (columns - 1) * spacing) / columns;
-          return Wrap(
-            spacing: spacing,
-            runSpacing: spacing,
-            children: cards
-                .map((card) => SizedBox(width: cardWidth, child: card))
-                .toList(),
-          );
-        },
-      ),
-    );
-  }
-
-  Widget _buildPeersPanel(bool isNarrow) {
+  Widget _buildPeersPanel() {
     final viewportHeight = MediaQuery.of(context).size.height;
     final peersPanelHeight = viewportHeight < 760 ? 340.0 : 420.0;
     return AppSurface(
@@ -1319,36 +747,6 @@ class _WebClientHomePageState extends State<WebClientHomePage> {
           ),
           const SizedBox(height: 12),
           SizedBox(height: peersPanelHeight, child: PeerTabPage()),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildChip({
-    required IconData icon,
-    required String label,
-    required Color color,
-  }) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: color.withValues(alpha: 0.25)),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 14, color: color),
-          const SizedBox(width: 6),
-          Text(
-            label,
-            style: _camelliaOutfit(
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-              color: color,
-            ),
-          ),
         ],
       ),
     );
@@ -1396,84 +794,6 @@ class _ActionButton extends StatelessWidget {
       icon: Icon(icon, size: 18),
       label: labelWidget,
       style: style,
-    );
-  }
-}
-
-class _FeatureCard extends StatelessWidget {
-  const _FeatureCard({
-    required this.title,
-    required this.body,
-    required this.foot,
-    required this.icon,
-    required this.color,
-  });
-
-  final String title;
-  final String body;
-  final String foot;
-  final IconData icon;
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      height: 218,
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.94),
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: _camelliaLine.withValues(alpha: 0.9)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.05),
-            blurRadius: 16,
-            offset: const Offset(0, 8),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: 38,
-            height: 38,
-            decoration: BoxDecoration(
-              color: color.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Icon(icon, color: color),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            title,
-            style: _camelliaOutfit(
-              fontSize: 14,
-              fontWeight: FontWeight.w600,
-              color: _camelliaInk,
-            ),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            body,
-            style: _camelliaOutfit(
-              fontSize: 12,
-              height: 1.4,
-              color: _camelliaSlate,
-            ),
-          ),
-          const Spacer(),
-          const SizedBox(height: 8),
-          Text(
-            foot,
-            style: _camelliaOutfit(
-              fontSize: 11,
-              fontWeight: FontWeight.w600,
-              color: color,
-            ),
-          ),
-        ],
-      ),
     );
   }
 }

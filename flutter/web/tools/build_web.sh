@@ -19,7 +19,8 @@ Options:
   -h, --help                    Show this help
 
 The build never rewrites tracked launcher icons. Refresh those explicitly with
-`flutter pub run flutter_launcher_icons` and review the generated source diff.
+`dart run tool/generate_brand_assets.dart` from the Flutter directory and
+review the generated source diff.
 EOF
 }
 

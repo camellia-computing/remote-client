@@ -308,16 +308,16 @@ class AppDesignTokens extends ThemeExtension<AppDesignTokens> {
     surfaceElevated: CamelliaColors.lightRaised,
     border: CamelliaColors.lightBorder,
     muted: CamelliaColors.lightMuted,
-    accentContainer: CamelliaColors.lightPetalWash,
+    accentContainer: CamelliaColors.lightAccentWash,
     secondary: CamelliaColors.indigoStrong,
     success: Color(0xFF087A55),
     warning: Color(0xFF9A6200),
     danger: Color(0xFFB3261E),
     info: CamelliaColors.azureStrong,
     focusRing: CamelliaColors.azure,
-    radiusSmall: 8,
-    radiusMedium: 12,
-    controlHeight: 40,
+    radiusSmall: 12,
+    radiusMedium: 16,
+    controlHeight: 44,
     touchTarget: 48,
     shadow: Color(0x12182033),
     shadowStrong: Color(0x24182033),
@@ -330,16 +330,16 @@ class AppDesignTokens extends ThemeExtension<AppDesignTokens> {
     surfaceElevated: CamelliaColors.darkRaised,
     border: CamelliaColors.darkBorder,
     muted: CamelliaColors.darkMuted,
-    accentContainer: CamelliaColors.darkPetalWash,
+    accentContainer: CamelliaColors.darkAccentWash,
     secondary: Color(0xFFA9A5FF),
     success: Color(0xFF68D6A7),
     warning: Color(0xFFFFC66D),
     danger: Color(0xFFFFB4AB),
     info: Color(0xFF7CB8E4),
     focusRing: Color(0xFF5FA8DE),
-    radiusSmall: 8,
-    radiusMedium: 12,
-    controlHeight: 40,
+    radiusSmall: 12,
+    radiusMedium: 16,
+    controlHeight: 44,
     touchTarget: 48,
     shadow: Color(0x52000000),
     shadowStrong: Color(0x66000000),
@@ -1449,62 +1449,42 @@ void showToast(
   });
 }
 
-// TODO
-// - Remove argument "contentPadding", no need for it, all should look the same.
-// - Remove "required" for argument "content". See simple confirm dialog "delete peer", only title and actions are used. No need to "content: SizedBox.shrink()".
-// - Make dead code alive, transform arguments "onSubmit" and "onCancel" into correspondenting buttons "ConfirmOkButton", "CancelButton".
 class CustomAlertDialog extends StatelessWidget {
   const CustomAlertDialog({
-    Key? key,
+    super.key,
     this.title,
     this.titlePadding,
-    required this.content,
+    this.content = const SizedBox.shrink(),
     this.actions,
-    this.contentPadding,
     this.contentBoxConstraints = const BoxConstraints(maxWidth: 500),
     this.onSubmit,
     this.onCancel,
-  }) : super(key: key);
+  });
 
   final Widget? title;
   final EdgeInsetsGeometry? titlePadding;
   final Widget content;
   final List<Widget>? actions;
-  final double? contentPadding;
   final BoxConstraints contentBoxConstraints;
-  final Function()? onSubmit;
-  final Function()? onCancel;
+  final VoidCallback? onSubmit;
+  final VoidCallback? onCancel;
 
   @override
   Widget build(BuildContext context) {
-    // request focus
-    FocusScopeNode scopeNode = FocusScopeNode();
-    Future.delayed(Duration.zero, () {
-      if (!scopeNode.hasFocus) scopeNode.requestFocus();
-    });
-    bool tabTapped = false;
     if (isAndroid) gFFI.invokeMethod("enable_soft_keyboard", true);
 
-    return FocusScope(
-      node: scopeNode,
+    return Focus(
       autofocus: true,
-      onKey: (node, key) {
-        if (key.logicalKey == LogicalKeyboardKey.escape) {
-          if (key is RawKeyDownEvent) {
-            onCancel?.call();
-          }
+      onKeyEvent: (node, event) {
+        if (event is! KeyDownEvent) return KeyEventResult.ignored;
+        if (event.logicalKey == LogicalKeyboardKey.escape) {
+          onCancel?.call();
           return KeyEventResult.handled; // avoid TextField exception on escape
-        } else if (!tabTapped &&
-            onSubmit != null &&
-            (key.logicalKey == LogicalKeyboardKey.enter ||
-                key.logicalKey == LogicalKeyboardKey.numpadEnter)) {
-          if (key is RawKeyDownEvent) onSubmit?.call();
-          return KeyEventResult.handled;
-        } else if (key.logicalKey == LogicalKeyboardKey.tab) {
-          if (key is RawKeyDownEvent) {
-            scopeNode.nextFocus();
-            tabTapped = true;
-          }
+        }
+        if (onSubmit != null &&
+            (event.logicalKey == LogicalKeyboardKey.enter ||
+                event.logicalKey == LogicalKeyboardKey.numpadEnter)) {
+          onSubmit?.call();
           return KeyEventResult.handled;
         }
         return KeyEventResult.ignored;
@@ -4482,22 +4462,7 @@ Widget loadIcon(double size) {
   );
 }
 
-var imcomingOnlyHomeSize = Size(280, 300);
-Size getIncomingOnlyHomeSize() {
-  final magicWidth = isWindows ? 11.0 : 2.0;
-  final magicHeight = 10.0;
-  return imcomingOnlyHomeSize +
-      Offset(magicWidth, kDesktopRemoteTabBarHeight + magicHeight);
-}
-
-Size getIncomingOnlySettingsSize() {
-  return Size(768, 600);
-}
-
-bool isInHomePage() {
-  final controller = Get.find<DesktopTabController>();
-  return controller.state.value.selected == 0;
-}
+bool isInHomePage() => desktopType == DesktopType.main;
 
 Widget _buildPresetPasswordWarning() {
   if (bind.mainGetBuildinOption(key: kOptionRemovePresetPasswordWarning) !=

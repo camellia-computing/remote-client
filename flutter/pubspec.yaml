@@ -37,9 +37,7 @@ dependencies:
   package_info_plus: ^9.0.1
   url_launcher: ^6.3.1
   url_launcher_ios: ^6.3.2
-  toggle_switch: ^2.1.0
   draggable_float_widget: ^0.1.0
-  settings_ui: ^3.0.1
   flutter_breadcrumb: ^1.0.1
   http: ^1.1.0
   qr_code_scanner_plus: ^2.2.0
@@ -98,7 +96,6 @@ dependencies:
     git:
       url: https://github.com/rustdesk-org/dynamic_layouts.git
       ref: 24cb88413fa5181d949ddacbb30a65d5c459e7d9
-  pull_down_button: ^0.10.2
   device_info_plus: ^12.4.0
   qr_flutter: ^4.1.0
   extended_text: ^15.0.2
@@ -110,33 +107,12 @@ dependencies:
   web: ^1.1.1
 
 dev_dependencies:
-  flutter_launcher_icons: ^0.14.4
   flutter_test:
     sdk: flutter
   build_runner: ^2.15.1
   freezed: ^3.2.5
   flutter_lints: ^6.0.0
   ffigen: ^21.0.0
-
-# rerun: flutter pub run flutter_launcher_icons
-flutter_launcher_icons:
-  image_path: "../res/icon.png"
-  remove_alpha_ios: true
-  android: true
-  adaptive_icon_background: "#F1F4FF"
-  adaptive_icon_foreground: "../res/android-foreground.png"
-  adaptive_icon_monochrome: "../res/android-monochrome.png"
-  ios: true
-  windows:
-    generate: true
-  macos:
-    image_path: "../res/mac-icon.png"
-    # This project uses a direct AppIcon.icns resource; the brand generator
-    # writes it without requiring an asset catalog.
-    generate: false
-  linux: true
-  web:
-    generate: true
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec

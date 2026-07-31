@@ -20,7 +20,8 @@ import 'home_page.dart';
 
 /// Connection page for connecting to a remote peer.
 class ConnectionPage extends StatefulWidget implements PageShape {
-  ConnectionPage({Key? key, required this.appBarActions}) : super(key: key);
+  ConnectionPage({Key? key, required this.appBarActions, this.shareSection})
+    : super(key: key);
 
   @override
   final icon = const Icon(Icons.connected_tv_outlined);
@@ -30,6 +31,7 @@ class ConnectionPage extends StatefulWidget implements PageShape {
 
   @override
   final List<Widget> appBarActions;
+  final Widget? shareSection;
 
   @override
   State<ConnectionPage> createState() => _ConnectionPageState();
@@ -86,7 +88,24 @@ class _ConnectionPageState extends State<ConnectionPage> {
         SliverPadding(
           padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
           sliver: SliverList(
-            delegate: SliverChildListDelegate([_buildRemoteIDTextField()]),
+            delegate: SliverChildListDelegate([
+              _buildRemoteIDTextField(),
+              if (widget.shareSection != null) ...[
+                const SizedBox(height: 12),
+                CamelliaPageHeader(
+                  title: translate('Share screen'),
+                  subtitle: translate('Your Device'),
+                  leading: const AppIconBadge(
+                    icon: Icons.screen_share_rounded,
+                    colors: AppVisual.securityGradient,
+                    size: 36,
+                    iconSize: 19,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                widget.shareSection!,
+              ],
+            ]),
           ),
         ),
         SliverFillRemaining(

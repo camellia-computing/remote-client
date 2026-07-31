@@ -4,24 +4,6 @@ import 'package:camellia_remote_app/common/widgets/brand_shell.dart';
 import 'package:camellia_remote_app/ui/camellia_design.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-const _destinations = <NavigationDestination>[
-  NavigationDestination(
-    icon: Icon(Icons.home_outlined),
-    selectedIcon: Icon(Icons.home_rounded),
-    label: 'Home',
-  ),
-  NavigationDestination(
-    icon: Icon(Icons.devices_outlined),
-    selectedIcon: Icon(Icons.devices_rounded),
-    label: 'Devices',
-  ),
-  NavigationDestination(
-    icon: Icon(Icons.tune_outlined),
-    selectedIcon: Icon(Icons.tune_rounded),
-    label: 'Settings',
-  ),
-];
-
 class _ClientShellFixture extends StatelessWidget {
   const _ClientShellFixture();
 
@@ -29,74 +11,16 @@ class _ClientShellFixture extends StatelessWidget {
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final desktop = constraints.maxWidth >= 800;
         return Scaffold(
           body: CamelliaBackdrop(
-            child: desktop
-                ? Row(
-                    children: [
-                      CamelliaNavigationRail(
-                        destinations: _destinations,
-                        selectedIndex: 0,
-                        onDestinationSelected: (_) {},
-                        extended: constraints.maxWidth >= 1200,
-                      ),
-                      const Expanded(
-                        child: Column(
-                          children: [
-                            _CommandBar(),
-                            Expanded(child: _WorkspaceContent()),
-                          ],
-                        ),
-                      ),
-                    ],
-                  )
-                : Column(
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.fromLTRB(16, 10, 12, 10),
-                        decoration: BoxDecoration(
-                          color: Theme.of(context).colorScheme.surface,
-                          border: Border(
-                            bottom: BorderSide(
-                              color: Theme.of(
-                                context,
-                              ).colorScheme.outlineVariant,
-                            ),
-                          ),
-                        ),
-                        child: const SafeArea(
-                          bottom: false,
-                          child: Row(
-                            children: [
-                              CamelliaWordmark(compact: true),
-                              SizedBox(width: 10),
-                              Expanded(
-                                child: Text(
-                                  'Devices',
-                                  style: TextStyle(fontWeight: FontWeight.w700),
-                                ),
-                              ),
-                              CamelliaAccountButton(
-                                label: 'Mira Chen',
-                                detail: 'mira@example.com',
-                                statusColor: Color(0xFF087A55),
-                                statusIcon: Icons.check_circle_rounded,
-                                compact: true,
-                                onPressed: null,
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                      const Expanded(child: _WorkspaceContent()),
-                      NavigationBar(
-                        selectedIndex: 0,
-                        onDestinationSelected: (_) {},
-                        destinations: _destinations,
-                      ),
-                    ],
-                  ),
+            child: const SafeArea(
+              child: Column(
+                children: [
+                  _CommandBar(),
+                  Expanded(child: _WorkspaceContent()),
+                ],
+              ),
+            ),
           ),
         );
       },
@@ -111,7 +35,7 @@ class _CommandBar extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       height: 68,
-      padding: const EdgeInsets.symmetric(horizontal: 22),
+      padding: const EdgeInsets.symmetric(horizontal: 20),
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surface,
         border: Border(
@@ -120,27 +44,33 @@ class _CommandBar extends StatelessWidget {
           ),
         ),
       ),
-      child: const Row(
+      child: Row(
         children: [
+          const CamelliaAnimatedBrandMark(size: 40),
+          const SizedBox(width: 12),
           Expanded(
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
+              children: const [
                 Text(
                   'Remote workspace',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(fontWeight: FontWeight.w700),
                 ),
-                Text('Connect and manage trusted devices'),
+                Text(
+                  'Connect and manage trusted devices',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
               ],
             ),
           ),
-          CamelliaAccountButton(
-            label: 'Mira Chen',
-            detail: 'mira@example.com',
-            statusColor: Color(0xFF087A55),
-            statusIcon: Icons.check_circle_rounded,
-            onPressed: null,
+          IconButton.filledTonal(
+            tooltip: 'Settings',
+            onPressed: () {},
+            icon: const Icon(Icons.tune_rounded),
           ),
         ],
       ),
