@@ -191,12 +191,34 @@ class ManagedReleaseTests(unittest.TestCase):
                 number=7,
             )
 
+    def test_merged_release_pending_policy_is_typed(self) -> None:
+        with self.assertRaisesRegex(release.ReleaseError, "must be boolean"):
+            release.validate_merged_pr({}, {}, "a" * 40, require_pending=None)  # type: ignore[arg-type]
+
     def test_release_configuration_is_portable(self) -> None:
+        config = release.load_config()
+        self.assertTrue(config["logical_id"].startswith("remote-"))
+        self.assertNotIn("/", config["logical_id"])
+        self.assertEqual(
+            config["allowed_files"],
+            ["CHANGELOG.md", "Cargo.lock", "Cargo.toml", "flutter/pubspec.yaml"],
+        )
+
+    def test_release_configuration_rejects_ignored_paths(self) -> None:
         config = json.loads(
             (Path(__file__).parents[1] / "release-config.json").read_text()
         )
-        self.assertTrue(config["logical_id"].startswith("remote-"))
-        self.assertNotIn("/", config["logical_id"])
+        config["allowed_files"] = ["src/version.rs"]
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "release-config.json"
+            path.write_text(json.dumps(config), encoding="utf-8")
+            ignored = release.subprocess.CompletedProcess([], 0, "", "")
+            with (
+                patch.object(release, "CONFIG_PATH", path),
+                patch.object(release, "run", return_value=ignored),
+                self.assertRaisesRegex(release.ReleaseError, "cannot be committed"),
+            ):
+                release.load_config()
 
     def test_metadata_script_receives_no_repository_tokens(self) -> None:
         process = release.subprocess.CompletedProcess(
