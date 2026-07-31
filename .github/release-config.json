@@ -1,0 +1,16 @@
+{
+  "allowed_files": [
+    "CHANGELOG.md",
+    "Cargo.lock",
+    "Cargo.toml",
+    "flutter/pubspec.yaml",
+    "src/version.rs"
+  ],
+  "container": false,
+  "logical_id": "remote-client",
+  "metadata_script": ".github/scripts/release_metadata.py",
+  "package_name": "camellia-remote",
+  "schema_version": 1,
+  "title": "Camellia Remote Client",
+  "version_kind": "remote-client"
+}

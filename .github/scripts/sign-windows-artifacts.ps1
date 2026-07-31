@@ -26,6 +26,13 @@ if (-not $unsigned) {
             throw "$name is required for Windows signing"
         }
     }
+    if ($env:WINDOWS_DISTRIBUTION_TRUST -notin @(
+        'derive',
+        'private-trust',
+        'public-trust'
+    )) {
+        throw "Unexpected WINDOWS_DISTRIBUTION_TRUST value: $($env:WINDOWS_DISTRIBUTION_TRUST)"
+    }
 }
 
 function Find-SignTool {
@@ -74,6 +81,7 @@ if (-not $unsigned) {
     }
 }
 
+$observedTrust = $null
 foreach ($requestedPath in $Path) {
     $resolved = Resolve-Path -LiteralPath $requestedPath
     $item = Get-Item -LiteralPath $resolved.Path
@@ -115,17 +123,39 @@ foreach ($requestedPath in $Path) {
     if ($null -eq $after.TimeStamperCertificate) {
         throw "RFC 3161 timestamp is missing after signing: $($item.FullName)"
     }
-    if ($env:WINDOWS_DISTRIBUTION_TRUST -eq 'public-trust' -and
-        $after.Status -ne [Management.Automation.SignatureStatus]::Valid) {
-        throw "Public-trust Authenticode validation failed for $($item.FullName): $($after.Status)"
+    $fileTrust = if (
+        $after.Status -eq [Management.Automation.SignatureStatus]::Valid
+    ) {
+        'public-trust'
     }
-    if ($env:WINDOWS_DISTRIBUTION_TRUST -eq 'private-trust' -and
-        $after.Status -notin @(
+    elseif ($after.Status -in @(
             [Management.Automation.SignatureStatus]::Valid,
             [Management.Automation.SignatureStatus]::UnknownError,
             [Management.Automation.SignatureStatus]::NotTrusted
-        )) {
-        throw "Private-trust Authenticode validation failed for $($item.FullName): $($after.Status)"
+        )
+    ) {
+        'private-trust'
+    }
+    else {
+        throw "Authenticode validation failed for $($item.FullName): $($after.Status)"
+    }
+    if ($null -ne $observedTrust -and $observedTrust -ne $fileTrust) {
+        throw 'One credential produced inconsistent Windows trust results'
+    }
+    $observedTrust = $fileTrust
+    if ($env:WINDOWS_DISTRIBUTION_TRUST -ne 'derive' -and
+        $env:WINDOWS_DISTRIBUTION_TRUST -ne $fileTrust) {
+        throw "Windows trust changed from $($env:WINDOWS_DISTRIBUTION_TRUST) to $fileTrust"
     }
     Write-Host "Verified Authenticode signer and timestamp: $($item.FullName)"
+}
+
+if (-not $unsigned -and $env:WINDOWS_DISTRIBUTION_TRUST -eq 'derive') {
+    if ($observedTrust -notin @('private-trust', 'public-trust')) {
+        throw 'Windows trust could not be derived from the signed artifacts'
+    }
+    "WINDOWS_DISTRIBUTION_TRUST=$observedTrust" |
+        Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+    $env:WINDOWS_DISTRIBUTION_TRUST = $observedTrust
+    Write-Host "Windows distribution trust derived as $observedTrust"
 }

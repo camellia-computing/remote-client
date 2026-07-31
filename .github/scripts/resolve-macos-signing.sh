@@ -8,93 +8,164 @@ set -euo pipefail
   exit 2
 }
 
-signing_values=(
+all_values=(
   APPLE_CERTIFICATE
   APPLE_CERTIFICATE_PASSWORD
   APPLE_SIGNING_CERTIFICATE_SHA256
   APPLE_SIGNING_IDENTITY
-  APPLE_SIGNING_TRUST_MODE
+  APPLE_API_ISSUER
+  APPLE_API_KEY
+  APPLE_API_PRIVATE_KEY
+  APPLE_SECONDARY_CERTIFICATE
+  APPLE_SECONDARY_CERTIFICATE_PASSWORD
+  APPLE_SECONDARY_SIGNING_CERTIFICATE_SHA256
+  APPLE_SECONDARY_SIGNING_IDENTITY
+  APPLE_SECONDARY_API_ISSUER
+  APPLE_SECONDARY_API_KEY
+  APPLE_SECONDARY_API_PRIVATE_KEY
 )
-notary_values=(APPLE_API_ISSUER APPLE_API_KEY APPLE_API_PRIVATE_KEY)
-signing_count=0
-notary_count=0
-for name in "${signing_values[@]}"; do
-  [[ -z "${!name:-}" ]] || signing_count=$((signing_count + 1))
-done
-for name in "${notary_values[@]}"; do
-  [[ -z "${!name:-}" ]] || notary_count=$((notary_count + 1))
-done
 
 if [[ "${APPLE_SIGNING_IDENTITY:-}" == - ]]; then
-  [[ "$signing_count" == 1 && "$notary_count" == 0 ]] || {
-    echo 'Ad-hoc signing uses APPLE_SIGNING_IDENTITY=- without certificate, trust-mode, or notarization values' >&2
-    exit 1
-  }
+  for name in "${all_values[@]}"; do
+    [[ "$name" == APPLE_SIGNING_IDENTITY || -z "${!name:-}" ]] || {
+      echo 'Ad-hoc signing cannot be combined with certificate or notarization credentials' >&2
+      exit 1
+    }
+  done
   {
     echo 'MACOS_NATIVE_SIGNING=ad-hoc'
     echo 'MACOS_DISTRIBUTION_TRUST=none'
+    echo 'MACOS_SIGNING_GROUP=ad-hoc'
   } >> "$SIGNING_ENV_FILE"
   echo 'macOS ad-hoc signing enabled'
   exit 0
 fi
 
-[[ "$signing_count" == 0 || "$signing_count" == 5 ]] || {
-  echo 'APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_CERTIFICATE_SHA256, APPLE_SIGNING_IDENTITY and APPLE_SIGNING_TRUST_MODE must be configured together' >&2
+group_count() {
+  local variable count=0
+  for variable in "$@"; do
+    [[ -z "${!variable:-}" ]] || count=$((count + 1))
+  done
+  printf '%s\n' "$count"
+}
+
+primary_signing=(
+  APPLE_CERTIFICATE
+  APPLE_CERTIFICATE_PASSWORD
+  APPLE_SIGNING_CERTIFICATE_SHA256
+  APPLE_SIGNING_IDENTITY
+)
+secondary_signing=(
+  APPLE_SECONDARY_CERTIFICATE
+  APPLE_SECONDARY_CERTIFICATE_PASSWORD
+  APPLE_SECONDARY_SIGNING_CERTIFICATE_SHA256
+  APPLE_SECONDARY_SIGNING_IDENTITY
+)
+primary_notary=(APPLE_API_ISSUER APPLE_API_KEY APPLE_API_PRIVATE_KEY)
+secondary_notary=(
+  APPLE_SECONDARY_API_ISSUER
+  APPLE_SECONDARY_API_KEY
+  APPLE_SECONDARY_API_PRIVATE_KEY
+)
+
+primary_signing_count="$(group_count "${primary_signing[@]}")"
+secondary_signing_count="$(group_count "${secondary_signing[@]}")"
+primary_notary_count="$(group_count "${primary_notary[@]}")"
+secondary_notary_count="$(group_count "${secondary_notary[@]}")"
+for specification in \
+  "primary signing:$primary_signing_count:4" \
+  "secondary signing:$secondary_signing_count:4" \
+  "primary notarization:$primary_notary_count:3" \
+  "secondary notarization:$secondary_notary_count:3"
+do
+  IFS=: read -r label count complete <<< "$specification"
+  [[ "$count" == 0 || "$count" == "$complete" ]] || {
+    echo "The $label credential group is partial" >&2
+    exit 1
+  }
+done
+[[ "$primary_notary_count" == 0 || "$primary_signing_count" == 4 ]] || {
+  echo 'Primary notarization requires the complete primary signing group' >&2
   exit 1
 }
-[[ "$notary_count" == 0 || "$notary_count" == 3 ]] || {
-  echo 'APPLE_API_ISSUER, APPLE_API_KEY and APPLE_API_PRIVATE_KEY must be configured together' >&2
-  exit 1
-}
-[[ "$notary_count" == 0 || "$signing_count" == 5 ]] || {
-  echo 'macOS notarization requires a complete signing configuration' >&2
+[[ "$secondary_notary_count" == 0 || "$secondary_signing_count" == 4 ]] || {
+  echo 'Secondary notarization requires the complete secondary signing group' >&2
   exit 1
 }
 
-if [[ "$signing_count" == 0 ]]; then
+selected_group=none
+selected_notary_count=0
+selected_certificate=
+selected_password=
+selected_sha256=
+selected_identity=
+selected_api_issuer=
+selected_api_key=
+selected_api_private_key=
+if [[ "$primary_signing_count" == 4 ]]; then
+  selected_group=primary
+  selected_certificate="$APPLE_CERTIFICATE"
+  selected_password="$APPLE_CERTIFICATE_PASSWORD"
+  selected_sha256="$APPLE_SIGNING_CERTIFICATE_SHA256"
+  selected_identity="$APPLE_SIGNING_IDENTITY"
+  selected_notary_count="$primary_notary_count"
+  selected_api_issuer="${APPLE_API_ISSUER:-}"
+  selected_api_key="${APPLE_API_KEY:-}"
+  selected_api_private_key="${APPLE_API_PRIVATE_KEY:-}"
+elif [[ "$secondary_signing_count" == 4 ]]; then
+  selected_group=secondary
+  selected_certificate="$APPLE_SECONDARY_CERTIFICATE"
+  selected_password="$APPLE_SECONDARY_CERTIFICATE_PASSWORD"
+  selected_sha256="$APPLE_SECONDARY_SIGNING_CERTIFICATE_SHA256"
+  selected_identity="$APPLE_SECONDARY_SIGNING_IDENTITY"
+  selected_notary_count="$secondary_notary_count"
+  selected_api_issuer="${APPLE_SECONDARY_API_ISSUER:-}"
+  selected_api_key="${APPLE_SECONDARY_API_KEY:-}"
+  selected_api_private_key="${APPLE_SECONDARY_API_PRIVATE_KEY:-}"
+fi
+
+if [[ "$selected_group" == none ]]; then
+  [[ "$primary_notary_count" == 0 && "$secondary_notary_count" == 0 ]] || {
+    echo 'Notarization credentials cannot be used without a signing identity' >&2
+    exit 1
+  }
   {
     echo 'MACOS_NATIVE_SIGNING=ad-hoc'
     echo 'MACOS_DISTRIBUTION_TRUST=none'
+    echo 'MACOS_SIGNING_GROUP=ad-hoc'
   } >> "$SIGNING_ENV_FILE"
   echo 'macOS package will retain the project ad-hoc signature'
   exit 0
 fi
 
-case "$APPLE_SIGNING_TRUST_MODE" in
-  private-trust|public-trust) ;;
-  *)
-    echo 'APPLE_SIGNING_TRUST_MODE must be private-trust or public-trust' >&2
-    exit 1
-    ;;
-esac
-[[ "$APPLE_SIGNING_CERTIFICATE_SHA256" =~ ^[0-9A-F]{64}$ ]] || {
-  echo 'APPLE_SIGNING_CERTIFICATE_SHA256 must be the canonical uppercase 64-hexadecimal certificate fingerprint' >&2
+[[ "$selected_identity" != *$'\n'* && "$selected_identity" != *$'\r'* ]] || {
+  echo 'Apple signing identity must not contain line breaks' >&2
   exit 1
 }
-
-if [[ "$notary_count" == 3 ]]; then
-  [[ "$APPLE_SIGNING_TRUST_MODE" == public-trust ]] || {
-    echo 'Apple notarization is available only with APPLE_SIGNING_TRUST_MODE=public-trust' >&2
+[[ "$selected_sha256" =~ ^[0-9A-F]{64}$ ]] || {
+  echo 'Apple signing certificate SHA-256 must be canonical uppercase hexadecimal' >&2
+  exit 1
+}
+if [[ "$selected_notary_count" == 3 ]]; then
+  [[ "$selected_api_issuer" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] || {
+    echo 'Apple API issuer must be a canonical UUID' >&2
     exit 1
   }
-  [[ "$APPLE_API_ISSUER" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] || {
-    echo 'APPLE_API_ISSUER must be a canonical UUID' >&2
+  [[ "$selected_api_key" =~ ^[A-Z0-9]{10}$ ]] || {
+    echo 'Apple API key must be a 10-character App Store Connect key ID' >&2
     exit 1
   }
-  [[ "$APPLE_API_KEY" =~ ^[A-Z0-9]{10}$ ]] || {
-    echo 'APPLE_API_KEY must be a 10-character App Store Connect key ID' >&2
-    exit 1
-  }
-  [[ "$APPLE_API_PRIVATE_KEY" == *'BEGIN PRIVATE KEY'* && \
-     "$APPLE_API_PRIVATE_KEY" == *'END PRIVATE KEY'* ]] || {
-    echo 'APPLE_API_PRIVATE_KEY is not a PEM private key' >&2
+  [[ "$selected_api_private_key" == *'BEGIN PRIVATE KEY'* &&
+     "$selected_api_private_key" == *'END PRIVATE KEY'* ]] || {
+    echo 'Apple API private key is not a PEM private key' >&2
     exit 1
   }
 fi
 
 certificate_path="$SIGNING_TEMP_DIRECTORY/camellia-remote-macos-signing.p12"
+certificate_pem="$SIGNING_TEMP_DIRECTORY/camellia-remote-macos-certificate.pem"
 umask 077
-if ! printf '%s' "$APPLE_CERTIFICATE" |
+if ! printf '%s' "$selected_certificate" |
   python3 -c '
 import base64
 import sys
@@ -103,31 +174,30 @@ payload = b"".join(sys.stdin.buffer.read().split())
 try:
     decoded = base64.b64decode(payload, validate=True)
 except Exception as error:
-    raise SystemExit(f"APPLE_CERTIFICATE is invalid: {error}")
+    raise SystemExit(f"Apple certificate is invalid: {error}")
 if not decoded:
-    raise SystemExit("APPLE_CERTIFICATE decoded to an empty file")
+    raise SystemExit("Apple certificate decoded to an empty file")
 sys.stdout.buffer.write(decoded)
 ' > "$certificate_path"; then
   rm -f -- "$certificate_path"
   exit 1
 fi
-certificate_pem="$SIGNING_TEMP_DIRECTORY/camellia-remote-macos-certificate.pem"
-if ! openssl pkcs12 \
+APPLE_SELECTED_CERTIFICATE_PASSWORD="$selected_password" openssl pkcs12 \
   -in "$certificate_path" \
   -clcerts \
   -nokeys \
-  -passin env:APPLE_CERTIFICATE_PASSWORD \
-  -out "$certificate_pem" >/dev/null 2>&1; then
-  rm -f -- "$certificate_path" "$certificate_pem"
-  echo 'APPLE_CERTIFICATE is not a valid password-protected PKCS#12 identity' >&2
-  exit 1
-fi
+  -passin env:APPLE_SELECTED_CERTIFICATE_PASSWORD \
+  -out "$certificate_pem" >/dev/null 2>&1 || {
+    rm -f -- "$certificate_path" "$certificate_pem"
+    echo 'Apple certificate is not a valid password-protected PKCS#12 identity' >&2
+    exit 1
+  }
 certificate_count="$(
   grep -c '^-----BEGIN CERTIFICATE-----$' "$certificate_pem" || true
 )"
 [[ "$certificate_count" == 1 ]] || {
   rm -f -- "$certificate_path" "$certificate_pem"
-  echo "APPLE_CERTIFICATE must contain exactly one leaf certificate; found $certificate_count" >&2
+  echo "Apple certificate must contain exactly one leaf; found $certificate_count" >&2
   exit 1
 }
 certificate_sha256="$(
@@ -135,30 +205,45 @@ certificate_sha256="$(
     shasum -a 256 |
     awk '{ print toupper($1) }'
 )"
-rm -f -- "$certificate_pem"
-[[ "$certificate_sha256" == "$APPLE_SIGNING_CERTIFICATE_SHA256" ]] || {
-  rm -f -- "$certificate_path"
-  echo 'The macOS P12 does not match APPLE_SIGNING_CERTIFICATE_SHA256' >&2
+[[ "$certificate_sha256" == "$selected_sha256" ]] || {
+  rm -f -- "$certificate_path" "$certificate_pem"
+  echo 'The selected macOS P12 does not match its reviewed SHA-256 fingerprint' >&2
   exit 1
 }
 
-native_signing=signed
-{
-  echo "MACOS_CERTIFICATE_PATH=$certificate_path"
-  echo "MACOS_SIGNING_CERTIFICATE_SHA256=$certificate_sha256"
-  echo "MACOS_DISTRIBUTION_TRUST=$APPLE_SIGNING_TRUST_MODE"
-  echo "MACOS_SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY"
-} >> "$SIGNING_ENV_FILE"
+distribution_trust=derive
+if command -v security >/dev/null 2>&1; then
+  if security verify-cert -p codeSign -c "$certificate_pem" >/dev/null 2>&1; then
+    distribution_trust=public-trust
+  else
+    distribution_trust=private-trust
+  fi
+fi
+rm -f -- "$certificate_pem"
 
-if [[ "$notary_count" == 3 ]]; then
-  api_key_path="$SIGNING_TEMP_DIRECTORY/AuthKey_$APPLE_API_KEY.p8"
-  printf '%s\n' "$APPLE_API_PRIVATE_KEY" > "$api_key_path"
+native_signing=signed
+if [[ "$selected_notary_count" == 3 ]]; then
+  [[ "$distribution_trust" == public-trust ]] || {
+    rm -f -- "$certificate_path"
+    echo 'Notarization requires a certificate trusted by the native code-signing verifier' >&2
+    exit 1
+  }
+  api_key_path="$SIGNING_TEMP_DIRECTORY/AuthKey_$selected_api_key.p8"
+  printf '%s\n' "$selected_api_private_key" > "$api_key_path"
   {
+    echo "APPLE_API_ISSUER=$selected_api_issuer"
+    echo "APPLE_API_KEY=$selected_api_key"
     echo "APPLE_API_KEY_PATH=$api_key_path"
-    echo "APPLE_API_ISSUER=$APPLE_API_ISSUER"
-    echo "APPLE_API_KEY=$APPLE_API_KEY"
   } >> "$SIGNING_ENV_FILE"
   native_signing=notarized
 fi
-echo "MACOS_NATIVE_SIGNING=$native_signing" >> "$SIGNING_ENV_FILE"
-echo "macOS native signing mode resolved to $native_signing ($APPLE_SIGNING_TRUST_MODE)"
+
+{
+  echo "MACOS_CERTIFICATE_PATH=$certificate_path"
+  echo "MACOS_DISTRIBUTION_TRUST=$distribution_trust"
+  echo "MACOS_NATIVE_SIGNING=$native_signing"
+  echo "MACOS_SIGNING_CERTIFICATE_SHA256=$certificate_sha256"
+  echo "MACOS_SIGNING_GROUP=$selected_group"
+  echo "MACOS_SIGNING_IDENTITY=$selected_identity"
+} >> "$SIGNING_ENV_FILE"
+echo "macOS signing resolved to $native_signing/$distribution_trust with the $selected_group credential group"

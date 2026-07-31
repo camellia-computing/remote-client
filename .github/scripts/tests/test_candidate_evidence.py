@@ -7,7 +7,7 @@ import unittest
 
 
 SCRIPT = Path(__file__).parents[1] / "candidate_evidence.py"
-WORKFLOW = Path(__file__).parents[2] / "workflows" / "release.yml"
+WORKFLOW = Path(__file__).parents[2] / "workflows" / "publish-release.yml"
 SOURCE_COMMIT = "1" * 40
 PROTOCOL_COMMIT = "2" * 40
 FLUTTER_REVISION = "3" * 40
@@ -59,7 +59,7 @@ class CandidateEvidenceTests(unittest.TestCase):
             "--repository",
             "camellia-computing/remote-client",
             "--workflow-ref",
-            "camellia-computing/remote-client/.github/workflows/release.yml@refs/heads/main",
+            "camellia-computing/remote-client/.github/workflows/publish-release.yml@refs/heads/main",
             "--publication-requested",
             "false",
             "--rust-toolchain",

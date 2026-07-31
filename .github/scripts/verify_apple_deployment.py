@@ -152,7 +152,7 @@ def verify_apple_job_toolchain(job: str, source: str) -> None:
     require_job_environment(job, "DEVELOPER_DIR", XCODE_DEVELOPER_DIR, source)
     require_job_command(
         job,
-        'bash .github/scripts/verify-xcode.sh "${{ env.XCODE_VERSION }}"',
+        'bash .github/scripts/verify-xcode.sh "$XCODE_VERSION"',
         source,
     )
 
@@ -557,16 +557,16 @@ def verify() -> tuple[str, str]:
         raise PolicyError("the iOS FFmpeg port must not hard-code a deployment target")
     verify_libvpx_port()
 
-    release = read(".github/workflows/release.yml")
+    release = read(".github/workflows/publish-release.yml")
     if release.count(f'COCOAPODS_VERSION: "{COCOAPODS_VERSION}"') != 1:
         raise PolicyError(
-            ".github/workflows/release.yml must pin CocoaPods exactly once"
+            ".github/workflows/publish-release.yml must pin CocoaPods exactly once"
         )
     release_ios_job = workflow_job(
-        release, "build_ios", ".github/workflows/release.yml"
+        release, "build_ios", ".github/workflows/publish-release.yml"
     )
     release_macos_job = workflow_job(
-        release, "build_macos_universal", ".github/workflows/release.yml"
+        release, "build_macos_universal", ".github/workflows/publish-release.yml"
     )
     require_job_environment(
         release_ios_job,
