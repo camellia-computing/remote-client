@@ -1,112 +1,66 @@
 # Release policy
 
-Camellia Remote publication follows the organization
-[CI/CD baseline](https://github.com/camellia-computing/.github/blob/main/docs/CI_CD_BASELINE.md)
-and
-[artifact-signing policy](https://github.com/camellia-computing/.github/blob/main/docs/ARTIFACT_SIGNING.md).
-The client version, source commit and generated Flutter/Rust bridge are bound to
-one successful full default-branch CI run before any native package starts. The
-accepted run is either the exact `push` CI or a maintainer-dispatched exact
-`workflow_dispatch` CI; the latter deliberately enables every runtime and
-automation/dependency gate. In both cases the Release workflow requires the one unexpired,
-commit-named bridge artifact before packaging.
+Remote Client has one automated stable-release state machine. It follows the
+organization CI/CD, evidence, and artifact-signing policies without embedding
+an organization or physical repository name.
 
-## Candidate and formal modes
+## State machine
 
-`Release` is manually dispatchable so maintainers can validate any commit that
-is reachable from the default branch:
+1. A successful `main` CI starts Release Manager.
+2. The Release App computes the next stable SemVer from conventional commits,
+   updates only the reviewed version/changelog fields, and opens
+   `release/next`.
+3. The exact PR head must pass `CI / Required` and receive a current-head human
+   approval from a writer or administrator. Change requests block promotion.
+4. The App SHA-guards a squash merge, verifies the resulting push CI, and
+   prepares the exact draft Release and lightweight tag.
+5. The tag starts `publish-release.yml`. Manual dispatch only recovers an
+   existing managed tag from trusted `main` control code.
+6. Every formal draft builds the complete support matrix once: Windows x64 and
+   ARM64, macOS universal, Linux x64 and ARM64, Android ARM64, iOS, and Web.
+   Formal builds disable mutable Flutter, package-manager, vcpkg, and Rust
+   caches; ordinary CI retains reviewed caches for throughput.
+7. One job rejects missing, duplicate, nested, symlinked, empty, cross-attempt,
+   or unclaimed artifacts; aggregates native-signing status; creates SPDX SBOM,
+   provenance, organization `release-evidence.json`, and final checksums; and
+   freezes the candidate for seven days.
+8. The protected `release` environment is reached only after all builds and
+   evidence succeed. Publication reauthorizes the exact Release PR and CI,
+   signs every raw Release asset with keyless Sigstore, uploads through the App,
+   downloads every byte, verifies checksums/evidence/signatures, and requires
+   immutable state.
+9. Completion and `latest` are reconciled to the highest completed stable
+   version. A successful client release then opens or verifies a Management PR
+   that changes only `web-client.lock`; Management CI and human review still
+   control that merge.
 
-- `publish=false` is a non-publishing candidate. It never receives native
-  signing or Release App secrets, creates no tag or Release, and uploads only
-  short-lived Actions artifacts plus their keyless GitHub/Sigstore
-  attestations.
-- `publish=true` is accepted only from the default-branch workflow definition.
-  It validates the Release App identity, repository merge policy and immutable
-  Releases, then waits for a non-self reviewer in the protected `release`
-  environment.
+The first formal release is `v1.0.0`. Version, source, platform selection, and
+publication mode are not operator inputs. A rerun may resume only the same
+App-authored draft or read-only verify an immutable Release. Fixes always use a
+new version.
 
-Every selected platform builds once on its owning runner. Internal artifact
-names bind every package to one workflow run attempt, so a partial rerun cannot
-silently mix old and new outputs. After all selected builds succeed, the
-workflow:
+## Evidence and native trust
 
-1. rejects missing, unexpected, nested, symlinked, empty, or duplicate platform
-   artifact inputs;
-2. verifies that every native asset is claimed by exactly one platform signing
-   record;
-3. aggregates `versions.json` and `NATIVE-SIGNING.md`;
-4. generates an SPDX JSON SBOM with the commit-pinned Anchore action and pinned
-   Syft version;
-5. computes `SHA256SUMS`, attests that exact inventory with GitHub/Sigstore,
-   preserves the provenance bundle, recomputes the final checksum inventory,
-   and verifies every byte; and
-6. uploads one
-   `candidate-assets-<version>-<commit>-run-<run-id>-<attempt>` artifact for
-   seven days.
+`release-evidence.json` identifies every distributable file, checksum, size,
+platform/architecture, SBOM, provenance, and explicit native-signing category.
+Trust priority is:
 
-The consolidated artifact is produced for both candidate and formal modes.
-Use it—not individual platform artifacts—for review, native testing, signing
-status inspection, SBOM review, and Go/No-Go evidence. If any build job must be
-rerun, rerun all jobs so every selected platform belongs to the same attempt.
+1. verified public-trust platform identity;
+2. verified private-trust or platform-key identity;
+3. verified OpenPGP/private distribution identity;
+4. ad-hoc or unsigned restricted output;
+5. unsigned Android/iOS re-signing input.
 
-Formal publication downloads and reverifies that same consolidated candidate;
-it does not reassemble platform outputs. The Release App then creates a draft
-for the exact commit. Automation downloads every draft asset, compares it
-byte-for-byte with the candidate, verifies `SHA256SUMS`, publishes the draft,
-waits for immutable state, downloads the public asset set again and repeats
-verification. An incompatible draft, tag, asset, author, commit, signer, or
-non-convergent API state fails closed.
+The workflow never labels missing credentials as signed. Web signing is
+explicitly not applicable. Every mode still receives immutable checksums,
+provenance, and workflow-bound Sigstore bundles. See
+[release signing modes](release-signing.md) for credential groups and rotation.
 
-## Update distribution
+## GitHub App and review contract
 
-The application contains no version-service endpoint, background update
-scheduler, release downloader, or service-triggered elevation path. Operators
-and end users obtain a published immutable Release through a trusted repository
-entry point, verify the selected asset against the published `SHA256SUMS` and
-available platform/Sigstore evidence, then invoke the platform installer
-locally. That installer may request the normal operating-system privileges
-needed to replace an installed application. The executable's `--update`
-handling is an installer-internal local replacement mode; it does not select or
-download a release and must never be used with an unverified file.
-
-An automated updater is a future security design, not a dormant switch. It may
-return only with a bounded signed manifest that binds stable product and
-artifact IDs, SemVer and anti-rollback state, exact size and digest, immutable
-release identity, platform signing requirements and key rotation. Downloads
-must use an exclusive private staging location, stream under a hard size limit,
-verify before and immediately at the elevation boundary, preserve active
-session checks, and expose explicit privacy/administrative policy. A URL
-allow-list or transport TLS alone is insufficient.
-
-## GitHub App contract
-
-Formal publication requires:
-
-| Resource | Value |
-| --- | --- |
-| variable | `RELEASE_APP_CLIENT_ID` |
-| variable | `RELEASE_APP_LOGIN=<app-slug>[bot]` |
-| secret | `RELEASE_APP_PRIVATE_KEY` |
-| App installation | selected access to `remote-client` |
-| App permissions | Administration read, Contents read/write, Metadata read; the existing organization App may retain Pull requests/Issues read/write for Nexus release management |
-
-Do not give the App Actions or Workflows permission. The publication token is
-minted only in trusted default-branch code and scoped to this repository.
-Candidate jobs never receive it.
-
-## Review and recovery
-
-- Default-branch changes require the protected PR checks and current-head
-  review.
-- Formal publication requires a second protected-environment approval.
-- Publication is serialized by one repository-wide concurrency group and is
-  never cancelled in progress.
-- A failed run may resume only an App-authored compatible draft. Unexpected
-  state remains for investigation instead of being silently deleted.
-- Published tags and assets are immutable. Fixes require a new version.
-
-The current non-secret certificate/key fingerprints and rotation status are in
-the organization
-[signing identity registry](https://github.com/camellia-computing/.github/blob/main/docs/SIGNING_IDENTITY_REGISTRY.md).
-Private material is supplied only through the scoped secret groups documented
-in [release signing modes](release-signing.md).
+Hosted configuration provides the Release App client ID/login/private key, the
+protected `release` environment, and the complete logical
+`REMOTE_REPOSITORY_MAP`. The App is installed on the client repository and, for
+the post-release lock PR, the mapped Management repository. It receives only
+the per-job Contents, Pull requests, Issues, Metadata, and Administration
+permissions declared by the workflows—never Actions or Workflows write access.

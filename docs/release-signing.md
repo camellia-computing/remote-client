@@ -2,43 +2,51 @@
 
 Camellia Remote treats supply-chain evidence and operating-system publisher
 signing as separate controls. Every formal release receives SHA-256 checksums,
-an immutable source/version manifest, and GitHub/Sigstore attestations.
-Platform-native certificates are optional while the product is pre-launch.
+an immutable source/version manifest, organization release evidence, and
+GitHub/Sigstore attestations. Platform-native certificates are optional where
+the documented output is explicitly restricted or a re-signing input.
 
-The release workflow records every selected platform in `versions.json` and
-publishes `NATIVE-SIGNING.md`. A partial signing group fails before packaging.
-Candidate runs (`publish=false`) never receive repository signing secrets,
-regardless of which values are configured.
+The release workflow always builds the complete supported platform matrix,
+records it in `versions.json`, publishes `NATIVE-SIGNING.md`, and emits the
+effective category for every file in `release-evidence.json`. A partial
+credential group fails before packaging.
+
+Credential selection is deterministic: a complete verified public-trust group
+has the highest distribution trust, followed by a complete private-trust or
+platform-key group. Linux OpenPGP is recorded as private distribution trust.
+When no complete group exists, the workflow does not guess: macOS is ad-hoc,
+desktop/Linux output is restricted unsigned, and Android/iOS output is an
+explicit re-signing input. Web native signing is not applicable.
 
 ## Canonical configuration source
 
 Do not hand-transcribe certificate fingerprints, base64 payloads, or password
-values from an old release ticket. The organization-owned signing tools generate
-a protected local `github-actions/` bundle with the exact variable and Secret
-names consumed below. Its `metadata.json` is public review material,
-`variables.env` is directly copyable, and `secrets/` is uploaded without being
-printed by its `upload.sh` or PowerShell 7 `Upload.ps1` helper.
+values from an old release ticket. Organization-owned signing tools generate a
+protected local `github-actions/` bundle with the exact variable and Secret
+names consumed below. Its `metadata.json` is review material, `variables.env`
+contains non-secret configuration, and `secrets/` is uploaded without printing
+payloads.
 
-Use the relevant generator or Apple preparation command from the
-[organization signing baseline](https://github.com/camellia-computing/.github/blob/main/docs/ARTIFACT_SIGNING.md),
+Use the relevant generator or Apple preparation command from the organization
+artifact-signing baseline,
 then deliberately apply it only to this repository:
 
 The `scripts/...` commands later in this document are run from a checked-out
-`camellia-computing/.github` repository, not from this client repository.
+organization policy repository, not from this client repository.
 
 ```bash
-./github-actions/upload.sh --apply --repo camellia-computing/remote-client
+./github-actions/upload.sh --apply --repo <owner>/<remote-client-repository>
 ```
 
 ```powershell
 pwsh -NoProfile -File .\github-actions\Upload.ps1 -Apply `
-  -Repository camellia-computing/remote-client
+  -Repository <owner>/<remote-client-repository>
 ```
 
 The generated configuration is not an approval or registration event. Update
-the public registry through review, then run a non-publishing candidate before
-any formal promotion. Never commit the generated directory or paste a Secret
-payload into chat.
+the public registry through review, then validate the configuration on a
+protected release branch before promotion. Never commit the generated
+directory or paste a Secret payload into chat.
 
 ## Result when no native credentials are configured
 
@@ -56,7 +64,14 @@ provision them through the selected store or managed-distribution channel.
 
 ## Windows Authenticode
 
-Configure the complete group in `camellia-computing/remote-client`:
+Configure one complete group in the mapped client repository. The workflow
+validates both groups, rejects any partial group, and selects the first complete
+group in this fixed order:
+
+1. primary: `WINDOWS_CODESIGN_*`;
+2. secondary: the corresponding `WINDOWS_SECONDARY_CODESIGN_*` names.
+
+The primary group contains:
 
 - variable `WINDOWS_CODESIGN_CERTIFICATE_SHA256`: the canonical uppercase
   64-hexadecimal SHA-256 leaf fingerprint recorded in the organization signing
@@ -66,14 +81,16 @@ Configure the complete group in `camellia-computing/remote-client`:
   registry;
 - secret `WINDOWS_CODESIGN_PFX_BASE64`;
 - secret `WINDOWS_CODESIGN_PFX_PASSWORD`;
-- variable `WINDOWS_SIGNING_TRUST_MODE`, exactly `private-trust` or
-  `public-trust`;
 - optional variable `WINDOWS_TIMESTAMP_URL` (the workflow defaults to
   `http://timestamp.digicert.com`).
 
+The secondary group replaces `WINDOWS_` with `WINDOWS_SECONDARY_` for the
+certificate variables and PFX secrets. It is a rotation/fallback group, not a
+second signer.
+
 For a managed-device private hierarchy, run the organization Windows generator
 with PowerShell 7.6 or later. It writes the public certificate information and
-the exact three Variables plus two Secret payloads into `github-actions/`:
+the exact two Variables plus two Secret payloads into `github-actions/`:
 
 ```powershell
 pwsh -NoProfile -File .\scripts\New-CamelliaWindowsPrivateCodeSigningCertificate.ps1 `
@@ -82,45 +99,50 @@ pwsh -NoProfile -File .\scripts\New-CamelliaWindowsPrivateCodeSigningCertificate
 
 Review `camellia-private-code-signing-identity.json` and
 `github-actions\variables.env`, then use the generated upload helper from the
-canonical configuration section. A privately generated chain is always
-`private-trust`; a public certificate requires independently reviewed
-`public-trust` values and must never be relabelled as private output.
+canonical configuration section. A privately generated chain is expected to
+resolve as `private-trust`; a publicly trusted certificate must resolve as
+`public-trust` through native Authenticode verification.
 
 The PFX must contain exactly one current certificate with a private key and the
 code-signing extended key usage. Its derived canonical SHA-256 fingerprint and
 Windows-native SHA-1 thumbprint must equal both reviewed variables, so a secret
-rotation cannot silently publish under an unreviewed identity. The workflow signs the Camellia
-application, owned native library, portable wrapper, and MSI before creating
-the ZIP. It requires that exact thumbprint and an RFC 3161 timestamp on every
-signed file. `public-trust` additionally requires normal Windows trust
-validation; `private-trust` permits an otherwise-valid chain whose root is not
-installed on the ephemeral runner.
+rotation cannot silently publish under an unreviewed identity. The workflow
+signs the Camellia application, owned native library, portable wrapper, and MSI
+before creating the ZIP. It requires that exact thumbprint and an RFC 3161
+timestamp on every signed file. It then derives `public-trust` from a valid
+native chain or `private-trust` from an otherwise intact signature whose root
+is not trusted by the clean runner. No configured label can promote a
+certificate.
 
 Install only the public private-CA root on managed test endpoints. A private
 root does not establish SmartScreen reputation or public trust.
 
 ## macOS signing and notarization
 
-Certificate signing requires the complete group:
+Certificate signing uses the same ordered-group rule as Windows: a complete
+primary group wins, otherwise the complete secondary group is used; any partial
+group fails the release. The primary signing group is:
 
 - secret `APPLE_CERTIFICATE`: one-line base64 of the P12;
 - secret `APPLE_CERTIFICATE_PASSWORD`;
 - variable `APPLE_SIGNING_CERTIFICATE_SHA256`: canonical uppercase
   64-hexadecimal leaf fingerprint;
-- variable `APPLE_SIGNING_IDENTITY`: the exact code-signing identity;
-- variable `APPLE_SIGNING_TRUST_MODE`: `private-trust` or `public-trust`.
+- variable `APPLE_SIGNING_IDENTITY`: the exact code-signing identity.
 
-Notarization additionally requires:
+Its optional notarization extension additionally requires:
 
 - variable `APPLE_API_ISSUER`;
 - variable `APPLE_API_KEY`;
 - secret `APPLE_API_PRIVATE_KEY`.
 
-The notarization group is accepted only with `public-trust`. The workflow
-imports the P12 into an ephemeral keychain, signs the app and DMG, verifies the
-exact identity, and removes the P12/keychain in an always-run cleanup step.
-When notarization is configured, it submits and staples the app and final DMG
-and runs Gatekeeper assessment.
+The secondary group uses the corresponding `APPLE_SECONDARY_*` names, including
+its own optional notarization extension. The workflow records the selected
+group, derives trust with the native code-signing verifier, imports the P12 into
+an ephemeral keychain, signs the app and DMG, verifies the exact final leaf,
+and removes the P12/keychain in an always-run cleanup step. Notarization is
+accepted only when the selected certificate resolves to `public-trust`; the
+workflow then submits and staples the app and final DMG and runs Gatekeeper
+assessment.
 
 A private CA is valid for controlled devices that trust its public root, but it
 cannot obtain Apple notarization. Public downloads should use a current
@@ -147,7 +169,7 @@ To request intentional ad-hoc mode explicitly, set only:
 
 ```bash
 gh variable set APPLE_SIGNING_IDENTITY \
-  --repo camellia-computing/remote-client \
+  --repo <owner>/<remote-client-repository> \
   --body '-'
 ```
 
@@ -210,10 +232,9 @@ bash scripts/new-camellia-android-release-keystore.sh \
 The new-key generator is not a substitute for the historical update key. If
 the package has ever been installed under an existing signing certificate,
 retrieve and re-upload that original reviewed keystore instead. GitHub cannot
-reveal the legacy XavierAlpha/RustDesk Secret values, so do not generate a
-replacement and claim update continuity. For this pre-launch product, choose a
-new identity only after explicitly confirming that no update lineage needs the
-old key.
+reveal legacy source-fork Secret values, so do not generate a replacement and
+claim update continuity. For this pre-launch product, choose a new identity
+only after explicitly confirming that no update lineage needs the old key.
 
 When the original controlled keystore is available, use the organization
 preparation command to validate it and create the exact GitHub Actions group
@@ -228,7 +249,7 @@ bash scripts/prepare-camellia-android-release-keystore.sh \
 
 Review the resulting public identity JSON, `github-actions/metadata.json`, and
 `github-actions/variables.env`, then use its PowerShell 7 or Bash uploader with
-the single repository scope `camellia-computing/remote-client`. The prepared
+the single mapped client-repository scope. The prepared
 bundle supports historical JKS and PKCS#12 stores, including distinct JKS store
 and key passwords; its SHA-256 value is the one the release workflow and the
 organization registry must both verify. Preserve the original offline backup

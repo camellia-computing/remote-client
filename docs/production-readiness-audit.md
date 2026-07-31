@@ -1,12 +1,16 @@
 # Camellia Remote production-readiness audit
 
-Audit date: 2026-07-30
+Audit date: 2026-07-31
 Scope: logical repositories `remote-client`, `remote-protocol`, `remote-server`, and `remote-management`
 Baseline policy: fresh repositories and current product/data identities only
 
 ## Decision
 
-The source baseline is suitable for protected pre-release integration. No reviewed P0 source defect remains open. A production release is conditional on exact-commit hosted CI, every selected native package test, production secret/TLS configuration, signed artifact readback, and a timed recovery exercise.
+The source and automation baseline is suitable for a protected production
+release. No reviewed P0 source defect remains open. Promotion remains
+conditional on exact-commit hosted CI, the complete native/Web build matrix,
+production secret/TLS configuration, signed immutable readback, and a timed
+recovery exercise.
 
 ## Architecture and authority review
 
@@ -186,17 +190,33 @@ an explicit privacy/administrative policy.
 
 ## Verification evidence
 
-- Shared protocol: the client pins commit `6fb11a4ee8cb446edb847d528c905a8038efff0b`; the paired server update is a merge-order prerequisite. Format, Clippy with warnings denied, 103 current-format unit tests, dependency audit, and the Apple-specific hosted compile gate are required.
-- Identity/relay server: Rust check/format and protocol (98), identity (33), relay (21), utilities (2), and recursion (1) tests passed. The production image built successfully, runs as `10001:10001` with a read-only root, exposes canonical OCI labels, and returns successful help/version output before configuration startup.
-- Client: the Linux Flutter-feature suite contains 92 client tests and 103 shared-protocol tests, including fail-closed signed-session and local 2FA storage contracts. Vendored input implementations are compiled on hosted Windows x64/arm64 and macOS. The required Xcode 26.2 gate links the iOS Rust library, compiles the complete unsigned iOS application, and must revalidate the exact locked Apple dependency graph before merge. Flutter analysis and widget/unit tests remain required hosted gates. Rust dependency warnings are bounded by an owner/expiry/exit-condition register; every vulnerability, warning increase, or expired exception fails CI. Portable generation is deterministic and rejects unsafe inputs.
-- Web client: protobuf codecs were regenerated from the pinned protocol, the TypeScript bridge lint/build and CSP/provenance synchronization check passed, and npm reported no vulnerabilities at the configured threshold.
-- Management: Ruff format/check, Django migration drift, 48 ordinary tests (2 environment-specific skips), the real PostgreSQL test/deployment path, Compose expansion through Docker Desktop, release metadata, and systemd hardening analysis passed.
-- All 22 repository workflow files passed Actionlint 1.7.12; the vendored setup script also passed ShellCheck and resolved Flutter 3.44.5 manifests for Linux, Windows, Intel macOS, and Apple Silicon macOS. Final management-image/Web provenance, every target-platform package, and platform-native acceptance remain mandatory hosted gates even where an equivalent local runner is unavailable.
+- Shared protocol commits are pinned by both consumers and recorded in formal
+  release evidence. Format, Clippy with warnings denied, unit tests, dependency
+  audit, and Apple-specific hosted compilation are required.
+- Identity/relay and Management images are built once as frozen OCI layouts,
+  scanned, runtime-tested on every declared architecture, and published by
+  digest with SBOM, provenance, signatures, and public readback.
+- Client CI validates Rust, Flutter, Web, vendored platform input
+  implementations, deterministic portable packaging, dependency exceptions,
+  and release automation. Formal publication additionally requires the fixed
+  Windows/macOS/Linux/Android/iOS/Web matrix and explicit signing status for
+  every file.
+- Management CI builds the exact locked Web revision; formal publication also
+  proves that revision belongs to a completed immutable Client release.
+- All repository workflows must pass the pinned Actionlint release and all
+  shell automation must pass ShellCheck. Hosted target-platform acceptance
+  remains mandatory where the WSL/Docker Desktop development host cannot
+  provide an equivalent runner.
 
 ## Residual risks and mandatory gates
 
-1. Run the exact commits through required GitHub checks after the fresh roots are pushed. Cross-repository Web provenance cannot be accepted before the client commit exists on `main`.
-2. Build and test every selected Windows/macOS/Linux/Android/iOS/Web artifact on its owning runner. Execute a Windows 11 installation, upgrade-free clean install, uninstall, multi-monitor, clipboard/file, privilege, sleep/wake, and network-transition acceptance pass.
+1. Run the exact commits through required GitHub checks after push and merge
+   only the reviewed heads. Cross-repository Web provenance is accepted only
+   after the Client release is completed.
+2. Build every supported Windows/macOS/Linux/Android/iOS/Web artifact on its
+   owning runner. Execute a Windows 11 clean install, uninstall, multi-monitor,
+   clipboard/file, privilege, sleep/wake, and network-transition acceptance
+   pass.
 3. Register release environments and trusted signing identities. Private/internal native signatures are acceptable for controlled distribution; public distribution should use recognized platform identities. Sigstore/attestation and checksum gates are mandatory in either mode.
 4. Configure production TLS, origins, proxy overwrite rules, rate limits, PostgreSQL credentials, server keys, device-verification token, OIDC values, and monitoring without committing secrets.
 5. Restore the latest identity state and PostgreSQL backup into an isolated environment, exercise registration, rendezvous, direct and relayed sessions, management login, and audit, and record measured RPO/RTO.
