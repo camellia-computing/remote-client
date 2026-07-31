@@ -14,40 +14,61 @@ if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP) -or
     throw 'RUNNER_TEMP must identify an existing directory'
 }
 
-$values = @(
-    $env:WINDOWS_CODESIGN_CERTIFICATE_SHA256,
-    $env:WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT,
-    $env:WINDOWS_CODESIGN_PFX_BASE64,
-    $env:WINDOWS_CODESIGN_PFX_PASSWORD,
-    $env:WINDOWS_SIGNING_TRUST_MODE
+$groups = @(
+    [ordered]@{
+        Name = 'primary'
+        CertificateSha256 = $env:WINDOWS_CODESIGN_CERTIFICATE_SHA256
+        CertificateThumbprint = $env:WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT
+        PfxBase64 = $env:WINDOWS_CODESIGN_PFX_BASE64
+        PfxPassword = $env:WINDOWS_CODESIGN_PFX_PASSWORD
+    },
+    [ordered]@{
+        Name = 'secondary'
+        CertificateSha256 = $env:WINDOWS_SECONDARY_CODESIGN_CERTIFICATE_SHA256
+        CertificateThumbprint = $env:WINDOWS_SECONDARY_CODESIGN_CERTIFICATE_THUMBPRINT
+        PfxBase64 = $env:WINDOWS_SECONDARY_CODESIGN_PFX_BASE64
+        PfxPassword = $env:WINDOWS_SECONDARY_CODESIGN_PFX_PASSWORD
+    }
 )
-$configured = @($values | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
-if ($configured -ne 0 -and $configured -ne $values.Count) {
-    throw 'WINDOWS_CODESIGN_CERTIFICATE_SHA256, WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT, WINDOWS_CODESIGN_PFX_BASE64, WINDOWS_CODESIGN_PFX_PASSWORD and WINDOWS_SIGNING_TRUST_MODE must be configured together'
+$selected = $null
+foreach ($group in $groups) {
+    $values = @(
+        $group.CertificateSha256,
+        $group.CertificateThumbprint,
+        $group.PfxBase64,
+        $group.PfxPassword
+    )
+    $configured = @(
+        $values | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    ).Count
+    if ($configured -ne 0 -and $configured -ne $values.Count) {
+        throw "The $($group.Name) Windows signing credential group is partial"
+    }
+    if ($null -eq $selected -and $configured -eq $values.Count) {
+        $selected = $group
+    }
 }
 
-if ($configured -eq 0) {
+if ($null -eq $selected) {
     @(
         'WINDOWS_NATIVE_SIGNING=unsigned',
-        'WINDOWS_DISTRIBUTION_TRUST=none'
+        'WINDOWS_DISTRIBUTION_TRUST=none',
+        'WINDOWS_SIGNING_GROUP=none'
     ) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
     Write-Host 'Windows artifacts will remain unsigned'
     exit 0
 }
 
-if ($env:WINDOWS_SIGNING_TRUST_MODE -notin @('private-trust', 'public-trust')) {
-    throw 'WINDOWS_SIGNING_TRUST_MODE must be private-trust or public-trust'
-}
-$expectedSha256 = $env:WINDOWS_CODESIGN_CERTIFICATE_SHA256
+$expectedSha256 = $selected.CertificateSha256
 if ($expectedSha256 -cnotmatch '^[0-9A-F]{64}$') {
     throw 'WINDOWS_CODESIGN_CERTIFICATE_SHA256 must be the canonical uppercase 64-hexadecimal leaf fingerprint'
 }
-$expectedThumbprint = $env:WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT
+$expectedThumbprint = $selected.CertificateThumbprint
 if ($expectedThumbprint -cnotmatch '^[0-9A-F]{40}$') {
     throw 'WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT must be the canonical uppercase 40-hexadecimal leaf thumbprint'
 }
 
-$base64 = $env:WINDOWS_CODESIGN_PFX_BASE64 -replace '\s', ''
+$base64 = $selected.PfxBase64 -replace '\s', ''
 try {
     $pfxBytes = [Convert]::FromBase64String($base64)
 }
@@ -64,7 +85,7 @@ try {
     $collection = [Security.Cryptography.X509Certificates.X509Certificate2Collection]::new()
     $collection.Import(
         $pfxBytes,
-        $env:WINDOWS_CODESIGN_PFX_PASSWORD,
+        $selected.PfxPassword,
         [Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet
     )
     $now = [DateTimeOffset]::UtcNow
@@ -100,9 +121,10 @@ catch {
 
 @(
     'WINDOWS_NATIVE_SIGNING=signed',
-    "WINDOWS_DISTRIBUTION_TRUST=$($env:WINDOWS_SIGNING_TRUST_MODE)",
+    'WINDOWS_DISTRIBUTION_TRUST=derive',
     "WINDOWS_SIGNING_CERTIFICATE_SHA256=$sha256",
+    "WINDOWS_SIGNING_GROUP=$($selected.Name)",
     "WINDOWS_SIGNING_IDENTITY=$thumbprint",
     "WINDOWS_SIGNING_PFX_PATH=$pfxPath"
 ) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-Write-Host "Windows Authenticode signing enabled with certificate $thumbprint"
+Write-Host "Windows Authenticode signing enabled with the $($selected.Name) credential group"

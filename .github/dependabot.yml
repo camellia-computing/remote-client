@@ -8,6 +8,8 @@ updates:
       day: monday
       time: "01:00"
       timezone: Asia/Singapore
+    cooldown:
+      default-days: 7
     groups:
       rust-dependencies:
         patterns:
@@ -26,6 +28,8 @@ updates:
       day: monday
       time: "01:30"
       timezone: Asia/Singapore
+    cooldown:
+      default-days: 7
     groups:
       flutter-dependencies:
         patterns:
@@ -44,6 +48,8 @@ updates:
       day: monday
       time: "02:00"
       timezone: Asia/Singapore
+    cooldown:
+      default-days: 7
     groups:
       web-dependencies:
         patterns:
@@ -62,6 +68,8 @@ updates:
       day: monday
       time: "02:30"
       timezone: Asia/Singapore
+    cooldown:
+      default-days: 7
     groups:
       workflow-actions:
         patterns:
@@ -80,6 +88,8 @@ updates:
       day: monday
       time: "03:00"
       timezone: Asia/Singapore
+    cooldown:
+      default-days: 7
     groups:
       git-submodules:
         patterns:

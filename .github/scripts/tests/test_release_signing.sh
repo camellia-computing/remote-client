@@ -115,12 +115,23 @@ APPLE_CERTIFICATE="$macos_certificate" \
 APPLE_CERTIFICATE_PASSWORD="$macos_password" \
 APPLE_SIGNING_CERTIFICATE_SHA256="$macos_sha256" \
 APPLE_SIGNING_IDENTITY='Camellia Remote macOS Test' \
-APPLE_SIGNING_TRUST_MODE=private-trust \
 SIGNING_ENV_FILE="$macos_env" \
 SIGNING_TEMP_DIRECTORY="$test_root" \
   bash "$repository/.github/scripts/resolve-macos-signing.sh" >/dev/null
 grep -Fqx 'MACOS_NATIVE_SIGNING=signed' "$macos_env"
+grep -Fqx 'MACOS_DISTRIBUTION_TRUST=derive' "$macos_env"
+grep -Fqx 'MACOS_SIGNING_GROUP=primary' "$macos_env"
 grep -Fqx "MACOS_SIGNING_CERTIFICATE_SHA256=$macos_sha256" "$macos_env"
+
+: > "$macos_env"
+APPLE_SECONDARY_CERTIFICATE="$macos_certificate" \
+APPLE_SECONDARY_CERTIFICATE_PASSWORD="$macos_password" \
+APPLE_SECONDARY_SIGNING_CERTIFICATE_SHA256="$macos_sha256" \
+APPLE_SECONDARY_SIGNING_IDENTITY='Camellia Remote macOS Test' \
+SIGNING_ENV_FILE="$macos_env" \
+SIGNING_TEMP_DIRECTORY="$test_root" \
+  bash "$repository/.github/scripts/resolve-macos-signing.sh" >/dev/null
+grep -Fqx 'MACOS_SIGNING_GROUP=secondary' "$macos_env"
 
 ios_env="$test_root/ios.env"
 SIGNING_ENV_FILE="$ios_env" SIGNING_TEMP_DIRECTORY="$test_root" \

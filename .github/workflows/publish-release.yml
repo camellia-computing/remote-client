@@ -1,65 +1,22 @@
 name: Release
 
 on:
+  push:
+    tags:
+      - "v*"
   workflow_dispatch:
     inputs:
-      source_ref:
-        description: "Commit or ref reachable from the default branch; blank uses the default branch"
-        required: false
+      tag:
+        description: Existing managed release tag to recover
+        required: true
         type: string
-        default: ""
-      publish:
-        description: "Publish the version tag and release assets after all builds succeed"
-        required: true
-        default: false
-        type: boolean
-      build_windows_x64:
-        description: "Build Windows x64 package"
-        required: true
-        default: true
-        type: boolean
-      build_windows_arm64:
-        description: "Build Windows arm64 package"
-        required: true
-        default: true
-        type: boolean
-      build_macos_universal:
-        description: "Build macOS universal package"
-        required: true
-        default: true
-        type: boolean
-      build_linux_x64:
-        description: "Build Linux x64 package"
-        required: true
-        default: true
-        type: boolean
-      build_linux_arm64:
-        description: "Build Linux arm64 package"
-        required: true
-        default: true
-        type: boolean
-      build_android_arm64:
-        description: "Build Android arm64 APK/AAB"
-        required: true
-        default: true
-        type: boolean
-      build_ios:
-        description: "Build iOS archive"
-        required: true
-        default: false
-        type: boolean
-      build_web:
-        description: "Build web bundle"
-        required: true
-        default: true
-        type: boolean
 
 permissions:
   contents: read
-  actions: read
+  actions: read # Bind publication to exact CI and frozen candidate artifacts.
 
 concurrency:
-  group: client-release
+  group: release
   cancel-in-progress: false
 
 env:
@@ -75,68 +32,89 @@ env:
   ANDROID_NDK_VERSION: "28.2.13676358"
   IOS_BUNDLE_ID: com.camellia.remote
   DEPENDENCY_MODE: locked
+  VCPKG_BINARY_SOURCES: clear
   RS_PUB_KEY: ${{ secrets.RS_PUB_KEY }}
   RENDEZVOUS_SERVERS: ${{ vars.RENDEZVOUS_SERVERS || secrets.RENDEZVOUS_SERVERS }}
   API_SERVER: ${{ vars.API_SERVER || secrets.API_SERVER }}
 
 jobs:
   prepare:
-    name: Validate release source
+    name: Authorize release source
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
+    permissions:
+      actions: read # Bind authorization to the exact successful validation run.
+      contents: read
+      pull-requests: read # Revalidate the managed Release PR and exact head.
     outputs:
-      commit: ${{ steps.meta.outputs.commit }}
-      ci_run_id: ${{ steps.meta.outputs.ci_run_id }}
-      bridge_artifact: ${{ steps.meta.outputs.bridge_artifact }}
-      camellia_remote_protocol: ${{ steps.meta.outputs.camellia_remote_protocol }}
-      source_date_epoch: ${{ steps.meta.outputs.source_date_epoch }}
+      bridge_artifact: ${{ steps.ci.outputs.bridge-artifact }}
+      camellia_remote_protocol: ${{ steps.source.outputs.protocol }}
+      ci_run_id: ${{ steps.release.outputs.validation-run-id }}
+      commit: ${{ steps.source.outputs.sha }}
+      release_complete: ${{ steps.release.outputs.release-complete }}
+      release_digest: ${{ steps.release.outputs.release-digest }}
+      release_draft: ${{ steps.release.outputs.release-draft }}
+      release_id: ${{ steps.release.outputs.release-id }}
+      release_pr_number: ${{ steps.release.outputs.release-pr-number }}
+      signing_identity: ${{ steps.source.outputs.signing-identity }}
+      source_date_epoch: ${{ steps.source.outputs.source-date-epoch }}
       version: ${{ steps.version.outputs.version }}
       app_version: ${{ steps.version.outputs.app_version }}
       build_number: ${{ steps.version.outputs.build_number }}
       release_tag: ${{ steps.version.outputs.tag }}
     steps:
-      - name: Validate selected release outputs
-        shell: bash
-        env:
-          WINDOWS_X64: ${{ inputs.build_windows_x64 }}
-          WINDOWS_ARM64: ${{ inputs.build_windows_arm64 }}
-          MACOS: ${{ inputs.build_macos_universal }}
-          LINUX_X64: ${{ inputs.build_linux_x64 }}
-          LINUX_ARM64: ${{ inputs.build_linux_arm64 }}
-          ANDROID: ${{ inputs.build_android_arm64 }}
-          IOS: ${{ inputs.build_ios }}
-          WEB: ${{ inputs.build_web }}
-        run: |
-          if [[ "$WINDOWS_X64" != "true" && "$WINDOWS_ARM64" != "true" \
-            && "$MACOS" != "true" && "$LINUX_X64" != "true" \
-            && "$LINUX_ARM64" != "true" && "$ANDROID" != "true" \
-            && "$IOS" != "true" && "$WEB" != "true" ]]; then
-            echo "select at least one release output" >&2
-            exit 1
-          fi
-
-      - name: Require the trusted publication workflow
-        if: inputs.publish
-        shell: bash
-        env:
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          WORKFLOW_REF: ${{ github.workflow_ref }}
-        run: |
-          expected="$GITHUB_REPOSITORY/.github/workflows/release.yml@refs/heads/$DEFAULT_BRANCH"
-          [[ "$WORKFLOW_REF" == "$expected" ]] || {
-            echo "Formal publication must run the default-branch workflow: $expected" >&2
-            exit 1
-          }
-
-      - name: Checkout trusted release policy
-        if: inputs.publish
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          fetch-depth: 0
+          fetch-tags: true
           persist-credentials: false
-
-      - name: Release policy token
-        if: inputs.publish
+          submodules: recursive
+      - name: Validate version
+        id: version
+        run: python3 .github/scripts/release_metadata.py --github-output
+      - name: Validate source and workflow identity
+        id: source
+        env:
+          EXPECTED_TAG: ${{ steps.version.outputs.tag }}
+          REQUESTED_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          TRIGGER_REF: ${{ github.ref }}
+          TRIGGER_SHA: ${{ github.sha }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="$REQUESTED_TAG"
+          [[ "$tag" == "$EXPECTED_TAG" ]]
+          identity="https://github.com/$WORKFLOW_REF"
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            [[ "$TRIGGER_REF" == refs/heads/main ]]
+            git merge-base --is-ancestor "$WORKFLOW_SHA" origin/main
+            expected="https://github.com/$GITHUB_REPOSITORY/.github/workflows/publish-release.yml@refs/heads/main"
+          else
+            [[ "$GITHUB_REF_TYPE" == tag && "$TRIGGER_REF" == "refs/tags/$tag" ]]
+            expected="https://github.com/$GITHUB_REPOSITORY/.github/workflows/publish-release.yml@refs/tags/$tag"
+          fi
+          [[ "$identity" == "$expected" ]]
+          sha="$(git rev-list -n 1 "$tag")"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ && "$(git rev-parse HEAD)" == "$sha" ]]
+          if [[ "$GITHUB_EVENT_NAME" != workflow_dispatch ]]; then
+            [[ "$TRIGGER_SHA" == "$sha" ]]
+          fi
+          git merge-base --is-ancestor "$sha" origin/main
+          protocol="$(
+            git ls-tree "$sha" -- libs/camellia_remote_protocol |
+              awk '$2 == "commit" {print $3}'
+          )"
+          [[ "$protocol" =~ ^[0-9a-f]{40}$ ]]
+          {
+            echo "protocol=$protocol"
+            echo "sha=$sha"
+            echo "signing-identity=$identity"
+            echo "source-date-epoch=$(git show -s --format=%ct "$sha")"
+          } >> "$GITHUB_OUTPUT"
+      - name: Release authorization token
         id: policy-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
@@ -145,73 +123,56 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
           permission-administration: read
+          # GitHub exposes full merge policy and draft Releases only to push-capable callers.
+          # Trusted authorization controls use this token for read operations only.
           permission-contents: write
           permission-metadata: read
-
+          permission-pull-requests: read
+      - name: Trusted authorization control
+        shell: bash
+        run: |
+          set -euo pipefail
+          for script in \
+            manage-release.py \
+            validate-github-release-policy.sh
+          do
+            git show "$GITHUB_WORKFLOW_SHA:.github/scripts/$script" \
+              > "$RUNNER_TEMP/$script"
+            chmod 700 "$RUNNER_TEMP/$script"
+          done
       - name: Validate hosted release policy
-        if: inputs.publish
         env:
           GH_TOKEN: ${{ steps.policy-token.outputs.token }}
           RELEASE_APP_LOGIN: ${{ vars.RELEASE_APP_LOGIN }}
           RELEASE_APP_SLUG: ${{ steps.policy-token.outputs.app-slug }}
-        run: bash .github/scripts/validate-github-release-policy.sh
-
-      - name: Checkout source metadata
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ inputs.source_ref || github.event.repository.default_branch }}
-          fetch-depth: 0
-          fetch-tags: true
-          persist-credentials: false
-
-      - name: Test and validate component version
-        id: version
-        run: |
-          python3 -m unittest discover -s .github/scripts/tests -v
-          python3 .github/scripts/release_metadata.py --github-output
-
-      - name: Resolve verified release source
-        id: meta
-        shell: bash
+        run: bash "$RUNNER_TEMP/validate-github-release-policy.sh"
+      - name: Managed release
+        id: release
         env:
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          GH_TOKEN: ${{ github.token }}
-          PUBLISH: ${{ inputs.publish }}
+          ACTIONS_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.policy-token.outputs.token }}
+          RELEASE_APP_LOGIN: ${{ vars.RELEASE_APP_LOGIN }}
+          RELEASE_SHA: ${{ steps.source.outputs.sha }}
           RELEASE_TAG: ${{ steps.version.outputs.tag }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          commit="$(git rev-parse HEAD)"
-          git fetch --no-tags origin "$DEFAULT_BRANCH"
-          if ! git merge-base --is-ancestor "$commit" "origin/$DEFAULT_BRANCH"; then
-            echo "release source $commit is not reachable from $DEFAULT_BRANCH" >&2
-            exit 1
-          fi
-
-          if [[ "$PUBLISH" == "true" ]]; then
-            for candidate_tag in "$RELEASE_TAG" "$VERSION"; do
-              if git ls-remote --exit-code --tags origin "refs/tags/$candidate_tag" >/dev/null 2>&1; then
-                echo "release version already has a tag: $candidate_tag" >&2
-                exit 1
-              fi
-            done
-          fi
-
-          runs_json="$(
-            gh api -X GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
-              -f head_sha="$commit" \
-              -f status=success \
-              -f per_page=100
-          )"
-          ci_run_id="$(
-            printf '%s' "$runs_json" |
-              python3 .github/scripts/select_release_ci_run.py \
-                --commit "$commit" \
-                --default-branch "$DEFAULT_BRANCH"
-          )"
-
-          bridge_artifact="bridge-generated-$commit"
+          python3 "$RUNNER_TEMP/manage-release.py" authorize \
+            --version "$VERSION" \
+            --sha "$RELEASE_SHA" \
+            --tag "$RELEASE_TAG"
+      - name: Validate exact CI bridge artifact
+        id: ci
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ steps.source.outputs.sha }}
+          VALIDATION_RUN_ID: ${{ steps.release.outputs.validation-run-id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bridge_artifact="bridge-generated-$RELEASE_SHA"
           artifacts_json="$(
-            gh api -X GET "repos/$GITHUB_REPOSITORY/actions/runs/$ci_run_id/artifacts" \
+            gh api -X GET \
+              "repos/$GITHUB_REPOSITORY/actions/runs/$VALIDATION_RUN_ID/artifacts" \
               -f per_page=100
           )"
           artifact_count="$(
@@ -220,64 +181,35 @@ jobs:
               <<< "$artifacts_json"
           )"
           if [[ "$artifact_count" != "1" ]]; then
-            echo "CI run $ci_run_id must contain one unexpired $bridge_artifact artifact" >&2
+            echo "CI run $VALIDATION_RUN_ID must contain one unexpired $bridge_artifact artifact" >&2
             exit 1
           fi
-
-          source_date_epoch="$(git show -s --format=%ct "$commit")"
-          camellia_remote_protocol="$(git ls-tree "$commit" -- libs/camellia_remote_protocol | awk '$2 == "commit" { print $3 }')"
-          if [[ ! "$camellia_remote_protocol" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "release source does not pin one full camellia_remote_protocol commit" >&2
-            exit 1
-          fi
-          {
-            echo "bridge_artifact=$bridge_artifact"
-            echo "ci_run_id=$ci_run_id"
-            echo "commit=$commit"
-            echo "camellia_remote_protocol=$camellia_remote_protocol"
-            echo "source_date_epoch=$source_date_epoch"
-          } >> "$GITHUB_OUTPUT"
-
+          echo "bridge-artifact=$bridge_artifact" >> "$GITHUB_OUTPUT"
       - name: Validate release configuration
         run: python3 .github/scripts/validate_build_config.py
-
       - name: Summarize release candidate
         env:
           APP_VERSION: ${{ steps.version.outputs.app_version }}
-          CI_RUN_ID: ${{ steps.meta.outputs.ci_run_id }}
-          RELEASE_COMMIT: ${{ steps.meta.outputs.commit }}
+          CI_RUN_ID: ${{ steps.release.outputs.validation-run-id }}
+          RELEASE_COMMIT: ${{ steps.source.outputs.sha }}
           RELEASE_TAG: ${{ steps.version.outputs.tag }}
-          HBB_COMMON_COMMIT: ${{ steps.meta.outputs.camellia_remote_protocol }}
-          PUBLISH: ${{ inputs.publish }}
+          PROTOCOL_COMMIT: ${{ steps.source.outputs.protocol }}
+          RELEASE_DRAFT: ${{ steps.release.outputs.release-draft }}
         run: |
           {
             echo "### Client release candidate"
             echo
             echo "- Version: \`$APP_VERSION\` (\`$RELEASE_TAG\`)"
             echo "- Commit: \`$RELEASE_COMMIT\`"
-            echo "- camellia_remote_protocol: \`$HBB_COMMON_COMMIT\`"
+            echo "- Remote Protocol: \`$PROTOCOL_COMMIT\`"
             echo "- Reused CI run: \`$CI_RUN_ID\`"
-            echo "- Publish: \`$PUBLISH\`"
+            echo "- Draft requires frozen build: \`$RELEASE_DRAFT\`"
           } >> "$GITHUB_STEP_SUMMARY"
-
-  approval:
-    name: Approve production release
-    if: inputs.publish
-    needs: prepare
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    environment: release
-    steps:
-      - name: Record approval gate
-        run: echo "Production release approved for ${{ needs.prepare.outputs.release_tag }}"
 
   build_windows_x64:
     name: Windows x64
-    needs: [prepare, approval]
-    if: >-
-      always() && needs.prepare.result == 'success' &&
-      (needs.approval.result == 'success' || needs.approval.result == 'skipped') &&
-      inputs.build_windows_x64
+    needs: prepare
+    if: ${{ needs.prepare.outputs.release_draft == 'true' }}
     runs-on: windows-2022
     timeout-minutes: 90
     steps:
@@ -292,7 +224,7 @@ jobs:
           path: .
           github-token: ${{ github.token }}
           run-id: ${{ needs.prepare.outputs.ci_run_id }}
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # zizmor: ignore[superfluous-actions] The pinned action installs the exact Windows x64 target consistently.
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: x86_64-pc-windows-msvc
@@ -300,25 +232,29 @@ jobs:
         with:
           channel: ${{ env.FLUTTER_CHANNEL }}
           flutter-version: ${{ env.FLUTTER_VERSION }}
-          cache: true
+          cache: false
       - uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.6
         with:
+          doNotCache: true
           vcpkgDirectory: C:\vcpkg
       - uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3.0.0
       - name: Resolve Windows signing mode
         shell: pwsh
         env:
-          WINDOWS_CODESIGN_CERTIFICATE_SHA256: ${{ inputs.publish && vars.WINDOWS_CODESIGN_CERTIFICATE_SHA256 || '' }}
-          WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT: ${{ inputs.publish && vars.WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT || '' }}
-          WINDOWS_CODESIGN_PFX_BASE64: ${{ inputs.publish && secrets.WINDOWS_CODESIGN_PFX_BASE64 || '' }}
-          WINDOWS_CODESIGN_PFX_PASSWORD: ${{ inputs.publish && secrets.WINDOWS_CODESIGN_PFX_PASSWORD || '' }}
-          WINDOWS_SIGNING_TRUST_MODE: ${{ inputs.publish && vars.WINDOWS_SIGNING_TRUST_MODE || '' }}
+          WINDOWS_CODESIGN_CERTIFICATE_SHA256: ${{ vars.WINDOWS_CODESIGN_CERTIFICATE_SHA256 || '' }}
+          WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT: ${{ vars.WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT || '' }}
+          WINDOWS_CODESIGN_PFX_BASE64: ${{ secrets.WINDOWS_CODESIGN_PFX_BASE64 || '' }}
+          WINDOWS_CODESIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_PFX_PASSWORD || '' }}
+          WINDOWS_SECONDARY_CODESIGN_CERTIFICATE_SHA256: ${{ vars.WINDOWS_SECONDARY_CODESIGN_CERTIFICATE_SHA256 || '' }}
+          WINDOWS_SECONDARY_CODESIGN_CERTIFICATE_THUMBPRINT: ${{ vars.WINDOWS_SECONDARY_CODESIGN_CERTIFICATE_THUMBPRINT || '' }}
+          WINDOWS_SECONDARY_CODESIGN_PFX_BASE64: ${{ secrets.WINDOWS_SECONDARY_CODESIGN_PFX_BASE64 || '' }}
+          WINDOWS_SECONDARY_CODESIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_SECONDARY_CODESIGN_PFX_PASSWORD || '' }}
         run: ./.github/scripts/resolve-windows-signing.ps1
       - name: Build
         shell: bash
         env:
           VCPKG_DEFAULT_TRIPLET: x64-windows-static
-        run: |
+        run: | # zizmor: ignore[template-injection] Prepare emits canonical numeric build metadata from the exact managed tag.
           bash .github/scripts/sync-version.sh \
             "${{ needs.prepare.outputs.version }}" \
             "${{ needs.prepare.outputs.build_number }}" \
@@ -332,7 +268,7 @@ jobs:
       - name: Sign and verify Windows application payload
         shell: pwsh
         env:
-          WINDOWS_CODESIGN_PFX_PASSWORD: ${{ inputs.publish && secrets.WINDOWS_CODESIGN_PFX_PASSWORD || '' }}
+          WINDOWS_CODESIGN_PFX_PASSWORD: ${{ env.WINDOWS_SIGNING_GROUP == 'primary' && secrets.WINDOWS_CODESIGN_PFX_PASSWORD || env.WINDOWS_SIGNING_GROUP == 'secondary' && secrets.WINDOWS_SECONDARY_CODESIGN_PFX_PASSWORD || '' }}
           WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL || 'http://timestamp.digicert.com' }}
         run: |
           $applicationDirectory = 'flutter/build/windows/x64/runner/Release'
@@ -347,7 +283,7 @@ jobs:
           ./.github/scripts/sign-windows-artifacts.ps1 -Path $ownedFiles
       - name: Build Windows installers
         shell: pwsh
-        run: |
+        run: | # zizmor: ignore[template-injection] Artifact names use the canonical SemVer validated by prepare.
           python -m pip install -r libs/portable/requirements.txt
           python libs/portable/generate.py `
             -f flutter/build/windows/x64/runner/Release `
@@ -368,9 +304,9 @@ jobs:
       - name: Sign and verify Windows artifacts
         shell: pwsh
         env:
-          WINDOWS_CODESIGN_PFX_PASSWORD: ${{ inputs.publish && secrets.WINDOWS_CODESIGN_PFX_PASSWORD || '' }}
+          WINDOWS_CODESIGN_PFX_PASSWORD: ${{ env.WINDOWS_SIGNING_GROUP == 'primary' && secrets.WINDOWS_CODESIGN_PFX_PASSWORD || env.WINDOWS_SIGNING_GROUP == 'secondary' && secrets.WINDOWS_SECONDARY_CODESIGN_PFX_PASSWORD || '' }}
           WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL || 'http://timestamp.digicert.com' }}
-        run: |
+        run: | # zizmor: ignore[template-injection] Artifact names use the canonical SemVer validated by prepare.
           $ownedFiles = @(
             'artifacts/camellia-remote-${{ needs.prepare.outputs.version }}-windows-x64-portable.exe',
             'artifacts/camellia-remote-${{ needs.prepare.outputs.version }}-windows-x64.msi'
@@ -378,7 +314,7 @@ jobs:
           ./.github/scripts/sign-windows-artifacts.ps1 -Path $ownedFiles
       - name: Package Windows artifacts and signing metadata
         shell: pwsh
-        run: |
+        run: | # zizmor: ignore[template-injection] Artifact names use the canonical SemVer validated by prepare.
           Compress-Archive `
             -Path 'flutter/build/windows/x64/runner/Release/*' `
             -DestinationPath 'artifacts/camellia-remote-${{ needs.prepare.outputs.version }}-windows-x64.zip' `
@@ -414,11 +350,8 @@ jobs:
 
   build_windows_arm64:
     name: Windows arm64
-    needs: [prepare, approval]
-    if: >-
-      always() && needs.prepare.result == 'success' &&
-      (needs.approval.result == 'success' || needs.approval.result == 'skipped') &&
-      inputs.build_windows_arm64
+    needs: prepare
+    if: ${{ needs.prepare.outputs.release_draft == 'true' }}
     runs-on: windows-11-arm
     timeout-minutes: 90
     steps:
@@ -433,7 +366,7 @@ jobs:
           path: .
           github-token: ${{ github.token }}
           run-id: ${{ needs.prepare.outputs.ci_run_id }}
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # zizmor: ignore[superfluous-actions] The pinned action installs the exact Windows ARM64 target consistently.
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: aarch64-pc-windows-msvc
@@ -452,22 +385,26 @@ jobs:
         run: flutter.bat precache --windows
       - uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.6
         with:
+          doNotCache: true
           vcpkgDirectory: C:\vcpkg
       - uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3.0.0
       - name: Resolve Windows signing mode
         shell: pwsh
         env:
-          WINDOWS_CODESIGN_CERTIFICATE_SHA256: ${{ inputs.publish && vars.WINDOWS_CODESIGN_CERTIFICATE_SHA256 || '' }}
-          WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT: ${{ inputs.publish && vars.WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT || '' }}
-          WINDOWS_CODESIGN_PFX_BASE64: ${{ inputs.publish && secrets.WINDOWS_CODESIGN_PFX_BASE64 || '' }}
-          WINDOWS_CODESIGN_PFX_PASSWORD: ${{ inputs.publish && secrets.WINDOWS_CODESIGN_PFX_PASSWORD || '' }}
-          WINDOWS_SIGNING_TRUST_MODE: ${{ inputs.publish && vars.WINDOWS_SIGNING_TRUST_MODE || '' }}
+          WINDOWS_CODESIGN_CERTIFICATE_SHA256: ${{ vars.WINDOWS_CODESIGN_CERTIFICATE_SHA256 || '' }}
+          WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT: ${{ vars.WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT || '' }}
+          WINDOWS_CODESIGN_PFX_BASE64: ${{ secrets.WINDOWS_CODESIGN_PFX_BASE64 || '' }}
+          WINDOWS_CODESIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_PFX_PASSWORD || '' }}
+          WINDOWS_SECONDARY_CODESIGN_CERTIFICATE_SHA256: ${{ vars.WINDOWS_SECONDARY_CODESIGN_CERTIFICATE_SHA256 || '' }}
+          WINDOWS_SECONDARY_CODESIGN_CERTIFICATE_THUMBPRINT: ${{ vars.WINDOWS_SECONDARY_CODESIGN_CERTIFICATE_THUMBPRINT || '' }}
+          WINDOWS_SECONDARY_CODESIGN_PFX_BASE64: ${{ secrets.WINDOWS_SECONDARY_CODESIGN_PFX_BASE64 || '' }}
+          WINDOWS_SECONDARY_CODESIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_SECONDARY_CODESIGN_PFX_PASSWORD || '' }}
         run: ./.github/scripts/resolve-windows-signing.ps1
       - name: Build
         shell: bash
         env:
           VCPKG_DEFAULT_TRIPLET: arm64-windows-static
-        run: |
+        run: | # zizmor: ignore[template-injection] Prepare emits canonical numeric build metadata from the exact managed tag.
           bash .github/scripts/sync-version.sh \
             "${{ needs.prepare.outputs.version }}" \
             "${{ needs.prepare.outputs.build_number }}" \
@@ -483,7 +420,7 @@ jobs:
       - name: Sign and verify Windows application payload
         shell: pwsh
         env:
-          WINDOWS_CODESIGN_PFX_PASSWORD: ${{ inputs.publish && secrets.WINDOWS_CODESIGN_PFX_PASSWORD || '' }}
+          WINDOWS_CODESIGN_PFX_PASSWORD: ${{ env.WINDOWS_SIGNING_GROUP == 'primary' && secrets.WINDOWS_CODESIGN_PFX_PASSWORD || env.WINDOWS_SIGNING_GROUP == 'secondary' && secrets.WINDOWS_SECONDARY_CODESIGN_PFX_PASSWORD || '' }}
           WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL || 'http://timestamp.digicert.com' }}
         run: |
           $applicationDirectory = 'flutter/build/windows/arm64/runner/Release'
@@ -498,7 +435,7 @@ jobs:
           ./.github/scripts/sign-windows-artifacts.ps1 -Path $ownedFiles
       - name: Build Windows installers
         shell: pwsh
-        run: |
+        run: | # zizmor: ignore[template-injection] Artifact names use the canonical SemVer validated by prepare.
           python -m pip install -r libs/portable/requirements.txt
           python libs/portable/generate.py `
             -f flutter/build/windows/arm64/runner/Release `
@@ -519,9 +456,9 @@ jobs:
       - name: Sign and verify Windows artifacts
         shell: pwsh
         env:
-          WINDOWS_CODESIGN_PFX_PASSWORD: ${{ inputs.publish && secrets.WINDOWS_CODESIGN_PFX_PASSWORD || '' }}
+          WINDOWS_CODESIGN_PFX_PASSWORD: ${{ env.WINDOWS_SIGNING_GROUP == 'primary' && secrets.WINDOWS_CODESIGN_PFX_PASSWORD || env.WINDOWS_SIGNING_GROUP == 'secondary' && secrets.WINDOWS_SECONDARY_CODESIGN_PFX_PASSWORD || '' }}
           WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL || 'http://timestamp.digicert.com' }}
-        run: |
+        run: | # zizmor: ignore[template-injection] Artifact names use the canonical SemVer validated by prepare.
           $ownedFiles = @(
             'artifacts/camellia-remote-${{ needs.prepare.outputs.version }}-windows-arm64-portable.exe',
             'artifacts/camellia-remote-${{ needs.prepare.outputs.version }}-windows-arm64.msi'
@@ -529,7 +466,7 @@ jobs:
           ./.github/scripts/sign-windows-artifacts.ps1 -Path $ownedFiles
       - name: Package Windows artifacts and signing metadata
         shell: pwsh
-        run: |
+        run: | # zizmor: ignore[template-injection] Artifact names use the canonical SemVer validated by prepare.
           Compress-Archive `
             -Path 'flutter/build/windows/arm64/runner/Release/*' `
             -DestinationPath 'artifacts/camellia-remote-${{ needs.prepare.outputs.version }}-windows-arm64.zip' `
@@ -565,11 +502,8 @@ jobs:
 
   build_macos_universal:
     name: macOS universal
-    needs: [prepare, approval]
-    if: >-
-      always() && needs.prepare.result == 'success' &&
-      (needs.approval.result == 'success' || needs.approval.result == 'skipped') &&
-      inputs.build_macos_universal
+    needs: prepare
+    if: ${{ needs.prepare.outputs.release_draft == 'true' }}
     runs-on: macos-26
     timeout-minutes: 90
     env:
@@ -583,14 +517,14 @@ jobs:
           persist-credentials: false
           submodules: recursive
       - name: Verify Xcode toolchain
-        run: bash .github/scripts/verify-xcode.sh "${{ env.XCODE_VERSION }}"
+        run: bash .github/scripts/verify-xcode.sh "$XCODE_VERSION"
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ needs.prepare.outputs.bridge_artifact }}
           path: .
           github-token: ${{ github.token }}
           run-id: ${{ needs.prepare.outputs.ci_run_id }}
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # zizmor: ignore[superfluous-actions] The pinned action installs both exact macOS targets consistently.
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: aarch64-apple-darwin,x86_64-apple-darwin
@@ -598,18 +532,24 @@ jobs:
         with:
           channel: ${{ env.FLUTTER_CHANNEL }}
           flutter-version: ${{ env.FLUTTER_VERSION }}
-          cache: true
+          cache: false
       - name: Resolve macOS signing mode
         shell: bash
         env:
-          APPLE_API_ISSUER: ${{ inputs.publish && vars.APPLE_API_ISSUER || '' }}
-          APPLE_API_KEY: ${{ inputs.publish && vars.APPLE_API_KEY || '' }}
-          APPLE_API_PRIVATE_KEY: ${{ inputs.publish && secrets.APPLE_API_PRIVATE_KEY || '' }}
-          APPLE_CERTIFICATE: ${{ inputs.publish && secrets.APPLE_CERTIFICATE || '' }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ inputs.publish && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
-          APPLE_SIGNING_CERTIFICATE_SHA256: ${{ inputs.publish && vars.APPLE_SIGNING_CERTIFICATE_SHA256 || '' }}
-          APPLE_SIGNING_IDENTITY: ${{ inputs.publish && vars.APPLE_SIGNING_IDENTITY || '' }}
-          APPLE_SIGNING_TRUST_MODE: ${{ inputs.publish && vars.APPLE_SIGNING_TRUST_MODE || '' }}
+          APPLE_API_ISSUER: ${{ vars.APPLE_API_ISSUER || '' }}
+          APPLE_API_KEY: ${{ vars.APPLE_API_KEY || '' }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY || '' }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_CERTIFICATE_SHA256: ${{ vars.APPLE_SIGNING_CERTIFICATE_SHA256 || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_SECONDARY_API_ISSUER: ${{ vars.APPLE_SECONDARY_API_ISSUER || '' }}
+          APPLE_SECONDARY_API_KEY: ${{ vars.APPLE_SECONDARY_API_KEY || '' }}
+          APPLE_SECONDARY_API_PRIVATE_KEY: ${{ secrets.APPLE_SECONDARY_API_PRIVATE_KEY || '' }}
+          APPLE_SECONDARY_CERTIFICATE: ${{ secrets.APPLE_SECONDARY_CERTIFICATE || '' }}
+          APPLE_SECONDARY_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_SECONDARY_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SECONDARY_SIGNING_CERTIFICATE_SHA256: ${{ vars.APPLE_SECONDARY_SIGNING_CERTIFICATE_SHA256 || '' }}
+          APPLE_SECONDARY_SIGNING_IDENTITY: ${{ vars.APPLE_SECONDARY_SIGNING_IDENTITY || '' }}
         run: |
           SIGNING_ENV_FILE="$GITHUB_ENV" SIGNING_TEMP_DIRECTORY="$RUNNER_TEMP" \
             bash .github/scripts/resolve-macos-signing.sh
@@ -617,7 +557,7 @@ jobs:
         if: env.MACOS_NATIVE_SIGNING == 'signed' || env.MACOS_NATIVE_SIGNING == 'notarized'
         shell: bash
         env:
-          APPLE_CERTIFICATE_PASSWORD: ${{ inputs.publish && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ env.MACOS_SIGNING_GROUP == 'primary' && secrets.APPLE_CERTIFICATE_PASSWORD || env.MACOS_SIGNING_GROUP == 'secondary' && secrets.APPLE_SECONDARY_CERTIFICATE_PASSWORD || '' }}
         run: |
           SIGNING_ENV_FILE="$GITHUB_ENV" SIGNING_TEMP_DIRECTORY="$RUNNER_TEMP" \
             bash .github/scripts/prepare-macos-signing.sh
@@ -625,10 +565,11 @@ jobs:
         run: bash .github/scripts/install-apple-prerequisites.sh
       - uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.6
         with:
+          doNotCache: true
           vcpkgDirectory: ${{ runner.temp }}/vcpkg
       - name: Build
         shell: bash
-        run: |
+        run: | # zizmor: ignore[template-injection] Release metadata is canonicalized by prepare and matrix values are fixed in this trusted workflow.
           bash .github/scripts/sync-version.sh \
             "${{ needs.prepare.outputs.version }}" \
             "${{ needs.prepare.outputs.build_number }}" \
@@ -686,11 +627,8 @@ jobs:
 
   build_linux:
     name: Linux ${{ matrix.arch }}
-    needs: [prepare, approval]
-    if: >-
-      always() && needs.prepare.result == 'success' &&
-      (needs.approval.result == 'success' || needs.approval.result == 'skipped') &&
-      (inputs.build_linux_x64 || inputs.build_linux_arm64)
+    needs: prepare
+    if: ${{ needs.prepare.outputs.release_draft == 'true' }}
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -702,42 +640,33 @@ jobs:
             vcpkg_triplet: x64-linux
             deb_arch: amd64
             appimage_arch: x86_64
-            enabled: ${{ inputs.build_linux_x64 }}
           - arch: arm64
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             vcpkg_triplet: arm64-linux
             deb_arch: arm64
             appimage_arch: aarch64
-            enabled: ${{ inputs.build_linux_arm64 }}
     runs-on: ${{ matrix.runner }}
     steps:
-      - name: Skip disabled matrix entry
-        if: ${{ !matrix.enabled }}
-        run: echo "disabled"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: ${{ matrix.enabled }}
         with:
           ref: ${{ needs.prepare.outputs.commit }}
           persist-credentials: false
           submodules: recursive
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        if: ${{ matrix.enabled }}
         with:
           name: ${{ needs.prepare.outputs.bridge_artifact }}
           path: .
           github-token: ${{ github.token }}
           run-id: ${{ needs.prepare.outputs.ci_run_id }}
       - name: Resolve Linux artifact-signing mode
-        if: ${{ matrix.enabled }}
         shell: bash
         env:
-          LINUX_GPG_FINGERPRINT: ${{ inputs.publish && vars.LINUX_GPG_FINGERPRINT || '' }}
-          LINUX_GPG_PRIVATE_KEY: ${{ inputs.publish && secrets.LINUX_GPG_PRIVATE_KEY || '' }}
-          LINUX_GPG_PASSPHRASE: ${{ inputs.publish && secrets.LINUX_GPG_PASSPHRASE || '' }}
+          LINUX_GPG_FINGERPRINT: ${{ vars.LINUX_GPG_FINGERPRINT || '' }}
+          LINUX_GPG_PRIVATE_KEY: ${{ secrets.LINUX_GPG_PRIVATE_KEY || '' }}
+          LINUX_GPG_PASSPHRASE: ${{ secrets.LINUX_GPG_PASSPHRASE || '' }}
         run: SIGNING_ENV_FILE="$GITHUB_ENV" bash .github/scripts/resolve-linux-signing.sh
       - name: Install prerequisites
-        if: ${{ matrix.enabled }}
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -745,19 +674,18 @@ jobs:
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgtk-3-dev libaom-dev libopus-dev \
             libpam0g-dev libpulse-dev libva-dev libx11-dev libxi-dev libxtst-dev libxcb-randr0-dev libxcb-shape0-dev \
             libxcb-xfixes0-dev libxdo-dev libxfixes-dev libvpx-dev libyuv-dev gnupg nasm ninja-build pkg-config unzip wget
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-        if: ${{ matrix.enabled }}
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # zizmor: ignore[superfluous-actions] The pinned action installs the fixed Linux matrix target consistently.
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: ${{ matrix.target }}
       - uses: ./.github/actions/setup-flutter
-        if: ${{ matrix.enabled && matrix.arch != 'arm64' }}
+        if: ${{ matrix.arch != 'arm64' }}
         with:
           channel: ${{ env.FLUTTER_CHANNEL }}
           flutter-version: ${{ env.FLUTTER_VERSION }}
-          cache: true
+          cache: false
       - name: Install Flutter stable from source
-        if: ${{ matrix.enabled && matrix.arch == 'arm64' }}
+        if: ${{ matrix.arch == 'arm64' }}
         shell: bash
         run: |
           git clone --depth 1 --branch "$FLUTTER_VERSION" https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter"
@@ -770,17 +698,16 @@ jobs:
           echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
           echo "$HOME/.pub-cache/bin" >> "$GITHUB_PATH"
       - name: Precache Flutter Linux
-        if: ${{ matrix.enabled && matrix.arch == 'arm64' }}
+        if: ${{ matrix.arch == 'arm64' }}
         shell: bash
         run: flutter precache --linux
       - uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.6
-        if: ${{ matrix.enabled }}
         with:
+          doNotCache: true
           vcpkgDirectory: ${{ runner.temp }}/vcpkg
       - name: Build
-        if: ${{ matrix.enabled }}
         shell: bash
-        run: |
+        run: | # zizmor: ignore[template-injection] Prepare metadata is canonical and the Linux matrix is a fixed in-repository allowlist.
           bash .github/scripts/sync-version.sh \
             "${{ needs.prepare.outputs.version }}" \
             "${{ needs.prepare.outputs.build_number }}" \
@@ -801,12 +728,12 @@ jobs:
             "${{ matrix.deb_arch }}" \
             "${{ matrix.appimage_arch }}"
       - name: Sign and verify Linux artifacts
-        if: ${{ matrix.enabled && env.ARTIFACT_SIGNING == 'openpgp-detached' }}
+        if: ${{ env.ARTIFACT_SIGNING == 'openpgp-detached' }}
         shell: bash
         env:
-          LINUX_GPG_PRIVATE_KEY: ${{ inputs.publish && secrets.LINUX_GPG_PRIVATE_KEY || '' }}
-          LINUX_GPG_PASSPHRASE: ${{ inputs.publish && secrets.LINUX_GPG_PASSPHRASE || '' }}
-        run: |
+          LINUX_GPG_PRIVATE_KEY: ${{ secrets.LINUX_GPG_PRIVATE_KEY || '' }}
+          LINUX_GPG_PASSPHRASE: ${{ secrets.LINUX_GPG_PASSPHRASE || '' }}
+        run: | # zizmor: ignore[template-injection] Artifact names use canonical SemVer and a fixed matrix architecture.
           name="camellia-remote-${{ needs.prepare.outputs.version }}-linux-${{ matrix.arch }}"
           public_key="artifacts/$name.signing-key.asc"
           artifacts=(
@@ -819,9 +746,8 @@ jobs:
           LINUX_GPG_PUBLIC_KEY="$public_key" \
             bash .github/scripts/linux-openpgp-verify.sh "${artifacts[@]}"
       - name: Record Linux signing metadata
-        if: ${{ matrix.enabled }}
         shell: bash
-        run: |
+        run: | # zizmor: ignore[template-injection] Signing metadata uses a fixed matrix architecture.
           metadata=(
             write
             --output "artifacts/native-signing-linux-${{ matrix.arch }}.json"
@@ -838,7 +764,6 @@ jobs:
           fi
           python3 .github/scripts/signing_metadata.py "${metadata[@]}"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: ${{ matrix.enabled }}
         with:
           name: camellia-remote-${{ needs.prepare.outputs.version }}-linux-${{ matrix.arch }}-run-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -852,11 +777,8 @@ jobs:
 
   build_android_arm64:
     name: Android arm64
-    needs: [prepare, approval]
-    if: >-
-      always() && needs.prepare.result == 'success' &&
-      (needs.approval.result == 'success' || needs.approval.result == 'skipped') &&
-      inputs.build_android_arm64
+    needs: prepare
+    if: ${{ needs.prepare.outputs.release_draft == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -889,16 +811,16 @@ jobs:
       - name: Resolve Android signing mode
         shell: bash
         env:
-          ANDROID_SIGNING_KEY: ${{ inputs.publish && secrets.ANDROID_SIGNING_KEY || '' }}
-          ANDROID_KEY_STORE_PASSWORD: ${{ inputs.publish && secrets.ANDROID_KEY_STORE_PASSWORD || '' }}
-          ANDROID_KEY_PASSWORD: ${{ inputs.publish && secrets.ANDROID_KEY_PASSWORD || '' }}
-          ANDROID_ALIAS: ${{ inputs.publish && secrets.ANDROID_ALIAS || '' }}
-          ANDROID_SIGNING_CERTIFICATE_SHA256: ${{ inputs.publish && vars.ANDROID_SIGNING_CERTIFICATE_SHA256 || '' }}
+          ANDROID_SIGNING_KEY: ${{ secrets.ANDROID_SIGNING_KEY || '' }}
+          ANDROID_KEY_STORE_PASSWORD: ${{ secrets.ANDROID_KEY_STORE_PASSWORD || '' }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD || '' }}
+          ANDROID_ALIAS: ${{ secrets.ANDROID_ALIAS || '' }}
+          ANDROID_SIGNING_CERTIFICATE_SHA256: ${{ vars.ANDROID_SIGNING_CERTIFICATE_SHA256 || '' }}
         run: |
           SIGNING_ENV_FILE="$GITHUB_ENV" SIGNING_TEMP_DIRECTORY="$RUNNER_TEMP" \
             bash .github/scripts/resolve-android-signing.sh
       - uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # zizmor: ignore[superfluous-actions] The pinned action installs the exact Android target consistently.
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: aarch64-linux-android
@@ -906,9 +828,10 @@ jobs:
         with:
           channel: ${{ env.FLUTTER_CHANNEL }}
           flutter-version: ${{ env.FLUTTER_VERSION }}
-          cache: true
+          cache: false
       - uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.6
         with:
+          doNotCache: true
           vcpkgDirectory: ${{ runner.temp }}/vcpkg
       - name: Install host build prerequisites
         run: |
@@ -923,10 +846,10 @@ jobs:
       - name: Build
         shell: bash
         env:
-          ANDROID_KEY_STORE_PASSWORD: ${{ inputs.publish && secrets.ANDROID_KEY_STORE_PASSWORD || '' }}
-          ANDROID_KEY_PASSWORD: ${{ inputs.publish && secrets.ANDROID_KEY_PASSWORD || '' }}
+          ANDROID_KEY_STORE_PASSWORD: ${{ secrets.ANDROID_KEY_STORE_PASSWORD || '' }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD || '' }}
           CAMELLIA_FORMAL_RELEASE: "true"
-        run: |
+        run: | # zizmor: ignore[template-injection] Prepare emits canonical numeric build metadata from the exact managed tag.
           bash .github/scripts/sync-version.sh \
             "${{ needs.prepare.outputs.version }}" \
             "${{ needs.prepare.outputs.build_number }}" \
@@ -1062,11 +985,8 @@ jobs:
 
   build_ios:
     name: iOS
-    needs: [prepare, approval]
-    if: >-
-      always() && needs.prepare.result == 'success' &&
-      (needs.approval.result == 'success' || needs.approval.result == 'skipped') &&
-      inputs.build_ios
+    needs: prepare
+    if: ${{ needs.prepare.outputs.release_draft == 'true' }}
     runs-on: macos-26
     timeout-minutes: 90
     env:
@@ -1080,7 +1000,7 @@ jobs:
           persist-credentials: false
           submodules: recursive
       - name: Verify Xcode toolchain
-        run: bash .github/scripts/verify-xcode.sh "${{ env.XCODE_VERSION }}"
+        run: bash .github/scripts/verify-xcode.sh "$XCODE_VERSION"
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ needs.prepare.outputs.bridge_artifact }}
@@ -1090,17 +1010,17 @@ jobs:
       - name: Resolve iOS signing mode
         shell: bash
         env:
-          IOS_CERTIFICATE_BASE64: ${{ inputs.publish && secrets.IOS_CERTIFICATE_BASE64 || '' }}
-          IOS_CERTIFICATE_PASSWORD: ${{ inputs.publish && secrets.IOS_CERTIFICATE_PASSWORD || '' }}
-          IOS_PROVISIONING_PROFILE_BASE64: ${{ inputs.publish && secrets.IOS_PROVISIONING_PROFILE_BASE64 || '' }}
-          IOS_SIGNING_CERTIFICATE_SHA256: ${{ inputs.publish && vars.IOS_SIGNING_CERTIFICATE_SHA256 || '' }}
-          IOS_SIGNING_IDENTITY: ${{ inputs.publish && vars.IOS_SIGNING_IDENTITY || '' }}
-          IOS_TEAM_ID: ${{ inputs.publish && vars.IOS_TEAM_ID || '' }}
-          IOS_EXPORT_METHOD: ${{ inputs.publish && vars.IOS_EXPORT_METHOD || '' }}
+          IOS_CERTIFICATE_BASE64: ${{ secrets.IOS_CERTIFICATE_BASE64 || '' }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD || '' }}
+          IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 || '' }}
+          IOS_SIGNING_CERTIFICATE_SHA256: ${{ vars.IOS_SIGNING_CERTIFICATE_SHA256 || '' }}
+          IOS_SIGNING_IDENTITY: ${{ vars.IOS_SIGNING_IDENTITY || '' }}
+          IOS_TEAM_ID: ${{ vars.IOS_TEAM_ID || '' }}
+          IOS_EXPORT_METHOD: ${{ vars.IOS_EXPORT_METHOD || '' }}
         run: |
           SIGNING_ENV_FILE="$GITHUB_ENV" SIGNING_TEMP_DIRECTORY="$RUNNER_TEMP" \
             bash .github/scripts/resolve-ios-signing.sh
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # zizmor: ignore[superfluous-actions] The pinned action installs the exact iOS target consistently.
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: aarch64-apple-ios
@@ -1108,21 +1028,22 @@ jobs:
         with:
           channel: ${{ env.FLUTTER_CHANNEL }}
           flutter-version: ${{ env.FLUTTER_VERSION }}
-          cache: true
+          cache: false
       - name: Install iOS prerequisites
         run: bash .github/scripts/install-apple-prerequisites.sh
       - uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.6
         with:
+          doNotCache: true
           vcpkgDirectory: ${{ runner.temp }}/vcpkg
       - name: Prepare iOS signing identity and profile
         if: env.IOS_NATIVE_SIGNING == 'signed'
         shell: bash
         env:
-          IOS_CERTIFICATE_PASSWORD: ${{ inputs.publish && secrets.IOS_CERTIFICATE_PASSWORD || '' }}
-          IOS_SIGNING_CERTIFICATE_SHA256: ${{ inputs.publish && vars.IOS_SIGNING_CERTIFICATE_SHA256 || '' }}
-          IOS_SIGNING_IDENTITY: ${{ inputs.publish && vars.IOS_SIGNING_IDENTITY || '' }}
-          IOS_TEAM_ID: ${{ inputs.publish && vars.IOS_TEAM_ID || '' }}
-          IOS_EXPORT_METHOD: ${{ inputs.publish && vars.IOS_EXPORT_METHOD || '' }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD || '' }}
+          IOS_SIGNING_CERTIFICATE_SHA256: ${{ vars.IOS_SIGNING_CERTIFICATE_SHA256 || '' }}
+          IOS_SIGNING_IDENTITY: ${{ vars.IOS_SIGNING_IDENTITY || '' }}
+          IOS_TEAM_ID: ${{ vars.IOS_TEAM_ID || '' }}
+          IOS_EXPORT_METHOD: ${{ vars.IOS_EXPORT_METHOD || '' }}
           IOS_SIGNING_XCCONFIG_PATH: ${{ github.workspace }}/flutter/ios/Flutter/Signing.xcconfig
         run: |
           SIGNING_ENV_FILE="$GITHUB_ENV" SIGNING_TEMP_DIRECTORY="$RUNNER_TEMP" \
@@ -1130,10 +1051,10 @@ jobs:
       - name: Build
         shell: bash
         env:
-          IOS_SIGNING_IDENTITY: ${{ inputs.publish && vars.IOS_SIGNING_IDENTITY || '' }}
-          IOS_TEAM_ID: ${{ inputs.publish && vars.IOS_TEAM_ID || '' }}
-          IOS_EXPORT_METHOD: ${{ inputs.publish && vars.IOS_EXPORT_METHOD || '' }}
-        run: |
+          IOS_SIGNING_IDENTITY: ${{ vars.IOS_SIGNING_IDENTITY || '' }}
+          IOS_TEAM_ID: ${{ vars.IOS_TEAM_ID || '' }}
+          IOS_EXPORT_METHOD: ${{ vars.IOS_EXPORT_METHOD || '' }}
+        run: | # zizmor: ignore[template-injection] Prepare emits canonical numeric build metadata from the exact managed tag.
           bash .github/scripts/sync-version.sh \
             "${{ needs.prepare.outputs.version }}" \
             "${{ needs.prepare.outputs.build_number }}" \
@@ -1148,7 +1069,7 @@ jobs:
         run: bash .github/scripts/verify-clean-source.sh
       - name: Stage and verify iOS artifacts
         shell: bash
-        run: >-
+        run: >- # zizmor: ignore[template-injection] The stage name uses canonical SemVer validated by prepare.
           bash .github/scripts/stage-ios-release.sh
           "${{ needs.prepare.outputs.version }}"
       - name: Record iOS signing metadata
@@ -1185,11 +1106,8 @@ jobs:
 
   build_web:
     name: Web
-    needs: [prepare, approval]
-    if: >-
-      always() && needs.prepare.result == 'success' &&
-      (needs.approval.result == 'success' || needs.approval.result == 'skipped') &&
-      inputs.build_web
+    needs: prepare
+    if: ${{ needs.prepare.outputs.release_draft == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -1202,31 +1120,31 @@ jobs:
         with:
           channel: ${{ env.FLUTTER_CHANNEL }}
           flutter-version: ${{ env.FLUTTER_VERSION }}
-          cache: true
+          cache: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-          cache-dependency-path: flutter/web/js/package-lock.json
+          package-manager-cache: false
       - name: Build
         shell: bash
         env:
           APP_VERSION: ${{ needs.prepare.outputs.app_version }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
           SOURCE_DATE_EPOCH: ${{ needs.prepare.outputs.source_date_epoch }}
         run: |
           chmod +x flutter/web/tools/build_web.sh
           ./flutter/web/tools/build_web.sh --mode release
           mkdir -p artifacts
-          tar -C flutter/build -czf artifacts/camellia-remote-${{ needs.prepare.outputs.version }}-web.tar.gz web
-          (cd flutter/build && zip -qry "$GITHUB_WORKSPACE/artifacts/camellia-remote-${{ needs.prepare.outputs.version }}-web.zip" web)
+          tar -C flutter/build -czf "artifacts/camellia-remote-${RELEASE_VERSION}-web.tar.gz" web
+          (cd flutter/build && zip -qry "$GITHUB_WORKSPACE/artifacts/camellia-remote-${RELEASE_VERSION}-web.zip" web)
       - name: Record Web artifact metadata
         shell: bash
         run: |
           python3 .github/scripts/signing_metadata.py write \
-            --output artifacts/native-signing-web-any.json \
+            --output artifacts/native-signing-web-universal.json \
             --artifact-directory artifacts \
             --platform web \
-            --architecture any \
+            --architecture universal \
             --native-signing not-applicable \
             --distribution-trust not-applicable \
             --delivery deployment-artifact
@@ -1241,7 +1159,6 @@ jobs:
     name: Candidate evidence
     needs:
       - prepare
-      - approval
       - build_windows_x64
       - build_windows_arm64
       - build_macos_universal
@@ -1251,21 +1168,21 @@ jobs:
       - build_web
     if: >-
       always() && needs.prepare.result == 'success' &&
-      (needs.approval.result == 'success' || needs.approval.result == 'skipped') &&
-      (!inputs.build_windows_x64 || needs.build_windows_x64.result == 'success') &&
-      (!inputs.build_windows_arm64 || needs.build_windows_arm64.result == 'success') &&
-      (!inputs.build_macos_universal || needs.build_macos_universal.result == 'success') &&
-      (!(inputs.build_linux_x64 || inputs.build_linux_arm64) || needs.build_linux.result == 'success') &&
-      (!inputs.build_android_arm64 || needs.build_android_arm64.result == 'success') &&
-      (!inputs.build_ios || needs.build_ios.result == 'success') &&
-      (!inputs.build_web || needs.build_web.result == 'success')
+      needs.prepare.outputs.release_draft == 'true' &&
+      needs.build_windows_x64.result == 'success' &&
+      needs.build_windows_arm64.result == 'success' &&
+      needs.build_macos_universal.result == 'success' &&
+      needs.build_linux.result == 'success' &&
+      needs.build_android_arm64.result == 'success' &&
+      needs.build_ios.result == 'success' &&
+      needs.build_web.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
-      actions: read
-      attestations: write
+      actions: read # Download only exact-attempt platform artifacts and CI evidence.
+      attestations: write # Record provenance for the frozen cross-platform inventory.
       contents: read
-      id-token: write
+      id-token: write # Mint the short-lived identity used by GitHub attestations.
     steps:
       - name: Checkout immutable candidate source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1283,23 +1200,14 @@ jobs:
       - name: Assemble exact candidate inventory
         shell: bash
         env:
-          ANDROID: ${{ inputs.build_android_arm64 }}
           APP_VERSION: ${{ needs.prepare.outputs.app_version }}
           BUILD_NUMBER: ${{ needs.prepare.outputs.build_number }}
           CI_RUN_ID: ${{ needs.prepare.outputs.ci_run_id }}
-          HBB_COMMON_COMMIT: ${{ needs.prepare.outputs.camellia_remote_protocol }}
-          IOS: ${{ inputs.build_ios }}
-          LINUX_ARM64: ${{ inputs.build_linux_arm64 }}
-          LINUX_X64: ${{ inputs.build_linux_x64 }}
-          MACOS: ${{ inputs.build_macos_universal }}
-          PUBLISH: ${{ inputs.publish }}
+          PROTOCOL_COMMIT: ${{ needs.prepare.outputs.camellia_remote_protocol }}
           RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
           RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
           SOURCE_DATE_EPOCH: ${{ needs.prepare.outputs.source_date_epoch }}
-          WEB: ${{ inputs.build_web }}
-          WINDOWS_ARM64: ${{ inputs.build_windows_arm64 }}
-          WINDOWS_X64: ${{ inputs.build_windows_x64 }}
         run: |
           args=(
             assemble
@@ -1310,28 +1218,30 @@ jobs:
             --build-number "$BUILD_NUMBER"
             --tag "$RELEASE_TAG"
             --source-commit "$RELEASE_COMMIT"
-            --protocol-commit "$HBB_COMMON_COMMIT"
+            --protocol-commit "$PROTOCOL_COMMIT"
             --verified-ci-run-id "$CI_RUN_ID"
             --source-date-epoch "$SOURCE_DATE_EPOCH"
             --candidate-run-id "$GITHUB_RUN_ID"
             --candidate-run-attempt "$GITHUB_RUN_ATTEMPT"
             --repository "$GITHUB_REPOSITORY"
             --workflow-ref "$GITHUB_WORKFLOW_REF"
-            --publication-requested "$PUBLISH"
+            --publication-requested true
             --rust-toolchain "$RUST_TOOLCHAIN"
             --flutter-version "$FLUTTER_VERSION"
             --flutter-revision "$FLUTTER_REVISION"
             --node-version "$NODE_VERSION"
             --android-ndk-version "$ANDROID_NDK_VERSION"
           )
-          if [[ "$WINDOWS_X64" == "true" ]]; then args+=(--selected-platform windows-x64); fi
-          if [[ "$WINDOWS_ARM64" == "true" ]]; then args+=(--selected-platform windows-arm64); fi
-          if [[ "$MACOS" == "true" ]]; then args+=(--selected-platform macos-universal); fi
-          if [[ "$LINUX_X64" == "true" ]]; then args+=(--selected-platform linux-x64); fi
-          if [[ "$LINUX_ARM64" == "true" ]]; then args+=(--selected-platform linux-arm64); fi
-          if [[ "$ANDROID" == "true" ]]; then args+=(--selected-platform android-arm64); fi
-          if [[ "$IOS" == "true" ]]; then args+=(--selected-platform ios); fi
-          if [[ "$WEB" == "true" ]]; then args+=(--selected-platform web); fi
+          args+=(
+            --selected-platform android-arm64
+            --selected-platform ios
+            --selected-platform linux-arm64
+            --selected-platform linux-x64
+            --selected-platform macos-universal
+            --selected-platform web
+            --selected-platform windows-arm64
+            --selected-platform windows-x64
+          )
           python3 .github/scripts/candidate_evidence.py "${args[@]}"
 
       - name: Aggregate native signing evidence
@@ -1370,7 +1280,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PROVENANCE_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
-          SIGNER_WORKFLOW: ${{ github.repository }}/.github/workflows/release.yml
+          SIGNER_WORKFLOW: ${{ github.repository }}/.github/workflows/publish-release.yml
         run: |
           [[ -f "$PROVENANCE_BUNDLE" ]] || {
             echo "attestation action did not produce a provenance bundle" >&2
@@ -1385,7 +1295,7 @@ jobs:
               --signer-workflow "$SIGNER_WORKFLOW" >/dev/null
           done < "$RUNNER_TEMP/release-assets/SHA256SUMS"
 
-      - name: Preserve provenance bundle and finalize checksums
+      - name: Preserve provenance bundle
         shell: bash
         env:
           PROVENANCE_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
@@ -1397,15 +1307,34 @@ jobs:
           }
           cp -- "$PROVENANCE_BUNDLE" \
             "$RUNNER_TEMP/release-assets/camellia-remote-${RELEASE_VERSION}.provenance.intoto.jsonl"
+      - name: Build organization release evidence
+        env:
+          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          VALIDATION_RUN_ID: ${{ needs.prepare.outputs.ci_run_id }}
+        run: |
+          python3 .github/scripts/build-client-release-evidence.py \
+            --asset-directory "$RUNNER_TEMP/release-assets" \
+            --version "$RELEASE_VERSION" \
+            --commit "$RELEASE_COMMIT" \
+            --validation-run-id "$VALIDATION_RUN_ID" \
+            --output "$RUNNER_TEMP/release-assets/release-evidence.json"
+          python3 .github/scripts/validate-release-evidence.py \
+            "$RUNNER_TEMP/release-assets/release-evidence.json"
+      - name: Finalize checksum inventory
+        run: |
           python3 .github/scripts/candidate_evidence.py checksums \
             --asset-directory "$RUNNER_TEMP/release-assets"
 
       - name: Verify final candidate evidence
-        run: >-
-          python3 .github/scripts/candidate_evidence.py verify
-          --asset-directory "$RUNNER_TEMP/release-assets"
-          --version '${{ needs.prepare.outputs.version }}'
-          --source-commit '${{ needs.prepare.outputs.commit }}'
+        env:
+          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          python3 .github/scripts/candidate_evidence.py verify \
+            --asset-directory "$RUNNER_TEMP/release-assets" \
+            --version "$RELEASE_VERSION" \
+            --source-commit "$RELEASE_COMMIT"
 
       - name: Upload consolidated candidate evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -1432,32 +1361,26 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-  publish_release:
-    name: Publish Release Assets
-    needs:
-      - prepare
-      - approval
-      - finalize_candidate
+  publish:
+    name: Publish
+    needs: [prepare, finalize_candidate]
     if: >-
-      always() && inputs.publish &&
+      always() &&
       needs.prepare.result == 'success' &&
-      needs.approval.result == 'success' &&
-      needs.finalize_candidate.result == 'success'
+      (
+        needs.prepare.outputs.release_draft == 'false' ||
+        needs.finalize_candidate.result == 'success'
+      )
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    environment: release
+    timeout-minutes: 30
     permissions:
-      actions: read
+      actions: read # Download only the exact frozen release candidate.
       contents: read
+      id-token: write # Mint the short-lived keyless Sigstore publication identity.
     steps:
-      - name: Checkout immutable release metadata
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-          ref: ${{ needs.prepare.outputs.commit }}
-
-      - name: Release publication token
-        id: release-token
+      - name: Release App token
+        id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
@@ -1466,42 +1389,182 @@ jobs:
           repositories: ${{ github.event.repository.name }}
           permission-administration: read
           permission-contents: write
+          permission-issues: write
           permission-metadata: read
-
-      - name: Recheck release tag immutability
+          permission-pull-requests: read
+      - name: Checkout immutable release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+          ref: ${{ needs.prepare.outputs.commit }}
+      - name: Trusted publication control
         shell: bash
+        run: |
+          set -euo pipefail
+          for script in \
+            candidate_evidence.py \
+            manage-release.py \
+            publish-client-release.sh \
+            validate-release-evidence.py
+          do
+            git show "$GITHUB_WORKFLOW_SHA:.github/scripts/$script" \
+              > "$RUNNER_TEMP/$script"
+            chmod 700 "$RUNNER_TEMP/$script"
+          done
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: Reauthorize
+        id: release
         env:
+          ACTIONS_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RELEASE_APP_LOGIN: ${{ vars.RELEASE_APP_LOGIN }}
+          RELEASE_SHA: ${{ needs.prepare.outputs.commit }}
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          for candidate_tag in "$RELEASE_TAG" "$VERSION"; do
-            if git ls-remote --exit-code --tags origin "refs/tags/$candidate_tag" >/dev/null 2>&1; then
-              echo "release version already has a tag: $candidate_tag" >&2
-              exit 1
-            fi
-          done
-
+          python3 "$RUNNER_TEMP/manage-release.py" authorize \
+            --version "$VERSION" \
+            --sha "$RELEASE_SHA" \
+            --tag "$RELEASE_TAG"
       - name: Download consolidated candidate evidence
+        if: ${{ needs.prepare.outputs.release_draft == 'true' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: candidate-assets-${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.commit }}-run-${{ github.run_id }}-${{ github.run_attempt }}
           path: release-assets
-
       - name: Reverify candidate before publication
-        run: >-
-          python3 .github/scripts/candidate_evidence.py verify
-          --asset-directory release-assets
-          --version '${{ needs.prepare.outputs.version }}'
-          --source-commit '${{ needs.prepare.outputs.commit }}'
-
-      - name: Create, read back, and publish immutable Release
+        if: ${{ needs.prepare.outputs.release_draft == 'true' }}
         env:
-          GH_TOKEN: ${{ steps.release-token.outputs.token }}
+          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          python3 "$RUNNER_TEMP/candidate_evidence.py" verify \
+            --asset-directory release-assets \
+            --version "$RELEASE_VERSION" \
+            --source-commit "$RELEASE_COMMIT"
+      - name: Validate organization evidence
+        if: ${{ needs.prepare.outputs.release_draft == 'true' }}
+        run: >-
+          python3 "$RUNNER_TEMP/validate-release-evidence.py"
+          release-assets/release-evidence.json
+      - name: Publish or verify exact release
+        env:
+          ACTIONS_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           RELEASE_APP_LOGIN: ${{ vars.RELEASE_APP_LOGIN }}
           RELEASE_ASSET_DIRECTORY: ${{ github.workspace }}/release-assets
-          RELEASE_CHECKSUM_FILE: ${{ github.workspace }}/release-assets/SHA256SUMS
           RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
-          RELEASE_NOTES_FILE: ${{ github.workspace }}/release-assets/NATIVE-SIGNING.md
+          RELEASE_ID: ${{ steps.release.outputs.release-id }}
+          RELEASE_PR_NUMBER: ${{ steps.release.outputs.release-pr-number }}
+          RELEASE_SIGNING_IDENTITY: ${{ needs.prepare.outputs.signing_identity }}
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
-          RELEASE_TITLE: Camellia Remote Client ${{ needs.prepare.outputs.app_version }}
-        run: bash .github/scripts/publish-verified-release.sh
+          RELEASE_TITLE: Camellia Remote Client
+          VERIFY_PUBLISHED_ONLY: ${{ needs.prepare.outputs.release_draft == 'false' }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: bash "$RUNNER_TEMP/publish-client-release.sh"
+      - name: Complete publication
+        env:
+          ACTIONS_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RELEASE_APP_LOGIN: ${{ vars.RELEASE_APP_LOGIN }}
+          RELEASE_SHA: ${{ needs.prepare.outputs.commit }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          python3 "$RUNNER_TEMP/manage-release.py" complete \
+            --version "$VERSION" \
+            --sha "$RELEASE_SHA" \
+            --tag "$RELEASE_TAG"
+      - name: Reconcile highest completed stable release
+        env:
+          ACTIONS_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RELEASE_APP_LOGIN: ${{ vars.RELEASE_APP_LOGIN }}
+          RELEASE_SHA: ${{ needs.prepare.outputs.commit }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          python3 "$RUNNER_TEMP/manage-release.py" reconcile-latest \
+            --version "$VERSION" \
+            --sha "$RELEASE_SHA" \
+            --tag "$RELEASE_TAG"
+
+  propose_management_lock:
+    name: Propose Management Web lock
+    needs: [prepare, publish]
+    if: ${{ needs.publish.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ needs.prepare.outputs.commit }}
+      - name: Resolve reviewed repository map
+        id: repositories
+        env:
+          REMOTE_REPOSITORY_MAP: ${{ vars.REMOTE_REPOSITORY_MAP }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -e '
+            type == "object" and
+            keys == [
+              "remote-client",
+              "remote-management",
+              "remote-protocol",
+              "remote-server"
+            ] and
+            all(.[];
+              type == "string" and
+              length >= 1 and length <= 100 and
+              test("^[A-Za-z0-9._-]+$")
+            )
+          ' <<< "$REMOTE_REPOSITORY_MAP" >/dev/null
+          current="$(jq -r '."remote-client"' <<< "$REMOTE_REPOSITORY_MAP")"
+          management="$(jq -r '."remote-management"' <<< "$REMOTE_REPOSITORY_MAP")"
+          current_repository="${GITHUB_REPOSITORY#*/}"
+          [[ "${current,,}" == "${current_repository,,}" ]]
+          [[ "${management,,}" != "${current,,}" ]]
+          echo "management=$management" >> "$GITHUB_OUTPUT"
+      - name: Cross-repository App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            ${{ github.event.repository.name }}
+            ${{ steps.repositories.outputs.management }}
+          permission-contents: write
+          permission-metadata: read
+          permission-pull-requests: write
+      - name: Trusted lock proposal control
+        shell: bash
+        run: |
+          git show \
+            "$GITHUB_WORKFLOW_SHA:.github/scripts/propose-management-web-lock.py" \
+            > "$RUNNER_TEMP/propose-management-web-lock.py"
+          chmod 700 "$RUNNER_TEMP/propose-management-web-lock.py"
+      - name: Open or verify lock update PR
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RELEASE_APP_LOGIN: ${{ vars.RELEASE_APP_LOGIN }}
+          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          REMOTE_REPOSITORY_MAP: ${{ vars.REMOTE_REPOSITORY_MAP }}
+        run: |
+          python3 "$RUNNER_TEMP/propose-management-web-lock.py" \
+            --repository-map "$REMOTE_REPOSITORY_MAP" \
+            --current-repository "$GITHUB_REPOSITORY" \
+            --release-app-login "$RELEASE_APP_LOGIN" \
+            --version "$RELEASE_VERSION" \
+            --tag "$RELEASE_TAG" \
+            --commit "$RELEASE_COMMIT"
