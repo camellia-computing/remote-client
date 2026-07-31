@@ -15,18 +15,23 @@ import tempfile
 from pathlib import Path
 from typing import Any, NoReturn
 
-
-ROOT = Path(
-    os.environ.get(
-        "RELEASE_REPOSITORY_ROOT",
-        str(Path(__file__).resolve().parents[2]),
-    )
-).resolve()
+ROOT = Path.cwd().resolve()
 CONFIG_PATH = ROOT / ".github" / "release-config.json"
 SEMVER = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 TAG = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 SHA = re.compile(r"^[0-9a-f]{40}$")
+REPOSITORY_COMPONENT = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,99})$")
+RELEASE_APP_LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,99})\[bot\]$")
+REPOSITORY_ENDPOINT = "repos/{owner}/{repo}"
+RUNNER_OUTPUT_ROOT = "/home/runner/work/_temp/_runner_file_commands"
+TRUSTED_EXECUTABLES = {
+    "bash": "/usr/bin/bash",
+    "gh": "/usr/bin/gh",
+    "git": "/usr/bin/git",
+    sys.executable: sys.executable,
+}
 RELEASE_BRANCH = "release/next"
+VALIDATION_BASE_REF = "refs/camellia-release/validation-base"
 PENDING_LABEL = "release:pending"
 LOCK_LABEL = "release:version-locked"
 CI_WORKFLOW = ".github/workflows/ci.yml"
@@ -48,16 +53,20 @@ def run(
     input_text: str | None = None,
     check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
+    if not arguments or arguments[0] not in TRUSTED_EXECUTABLES:
+        fail("release automation requested an untrusted executable")
+    command = [TRUSTED_EXECUTABLES[arguments[0]], *arguments[1:]]
     merged_env = os.environ.copy()
     if env:
         merged_env.update(env)
     process = subprocess.run(
-        arguments,
+        command,
         cwd=cwd,
         env=merged_env,
         input=input_text,
         text=True,
         capture_output=True,
+        check=False,
     )
     if check and process.returncode != 0:
         detail = process.stderr.strip() or process.stdout.strip()
@@ -90,7 +99,6 @@ def gh_api(
     command = ["gh", "api", "-X", method]
     if paginate:
         command.extend(["--paginate", "--slurp"])
-    command.append(endpoint)
     for key, value in (fields or {}).items():
         option = "-F" if isinstance(value, int) else "-f"
         command.extend([option, f"{key}={value}"])
@@ -98,6 +106,7 @@ def gh_api(
     if payload is not None:
         command.extend(["--input", "-"])
         input_text = json.dumps(payload, separators=(",", ":"))
+    command.extend(["--", endpoint])
     environment = {"GH_TOKEN": token or require_env("GH_TOKEN")}
     output = run(command, env=environment, input_text=input_text).stdout
     try:
@@ -122,22 +131,35 @@ def require_env(name: str) -> str:
 
 def github_repository() -> str:
     value = require_env("GITHUB_REPOSITORY")
-    if value.count("/") != 1:
+    components = value.split("/")
+    if len(components) != 2 or any(
+        component in {".", ".."} or REPOSITORY_COMPONENT.fullmatch(component) is None
+        for component in components
+    ):
         fail("GITHUB_REPOSITORY must identify owner/repository")
+    return f"{components[0]}/{components[1]}"
+
+
+def release_app_login() -> str:
+    value = require_env("RELEASE_APP_LOGIN")
+    if RELEASE_APP_LOGIN.fullmatch(value) is None:
+        fail("RELEASE_APP_LOGIN must identify a GitHub App bot")
     return value
 
 
 def github_server_url() -> str:
     value = os.environ.get("GITHUB_SERVER_URL", "https://github.com").rstrip("/")
-    if not value.startswith("https://"):
-        fail("GITHUB_SERVER_URL must use HTTPS")
-    return value
+    if value != "https://github.com":
+        fail("GITHUB_SERVER_URL must identify the reviewed GitHub.com host")
+    return "https://github.com"
 
 
 def append_output(name: str, value: str | int | bool) -> None:
-    output = Path(require_env("GITHUB_OUTPUT"))
+    output = os.path.realpath(require_env("GITHUB_OUTPUT"))
+    if not output.startswith(RUNNER_OUTPUT_ROOT + os.sep):
+        fail("GITHUB_OUTPUT is outside the hosted runner command directory")
     rendered = str(value).lower() if isinstance(value, bool) else str(value)
-    with output.open("a", encoding="utf-8") as stream:
+    with open(output, "a", encoding="utf-8") as stream:
         stream.write(f"{name}={rendered}\n")
 
 
@@ -194,6 +216,15 @@ def parse_version(value: str) -> tuple[int, int, int]:
     return parts
 
 
+def canonical_sha(value: str, label: str = "commit") -> str:
+    if not isinstance(value, str) or SHA.fullmatch(value) is None:
+        fail(f"{label} must be a full lowercase commit SHA")
+    canonical = f"{int(value, 16):040x}"
+    if canonical != value:
+        fail(f"{label} is not canonical")
+    return canonical
+
+
 def version_text(value: tuple[int, int, int]) -> str:
     return ".".join(str(item) for item in value)
 
@@ -224,9 +255,7 @@ def replace_exact(
     path.write_text(updated, encoding="utf-8")
 
 
-def rewrite_cargo_version(
-    root: Path, config: dict[str, Any], version: str
-) -> None:
+def rewrite_cargo_version(root: Path, config: dict[str, Any], version: str) -> None:
     manifest = root / "Cargo.toml"
     package = re.escape(config["package_name"])
     replace_exact(
@@ -241,17 +270,13 @@ def rewrite_cargo_version(
     lock = root / "Cargo.lock"
     replace_exact(
         lock,
-        re.compile(
-            rf'(\[\[package\]\]\nname = "{package}"\nversion = ")[^"]+(")'
-        ),
+        re.compile(rf'(\[\[package\]\]\nname = "{package}"\nversion = ")[^"]+(")'),
         rf"\g<1>{version}\g<2>",
         "Cargo.lock",
     )
 
 
-def rewrite_python_version(
-    root: Path, config: dict[str, Any], version: str
-) -> None:
+def rewrite_python_version(root: Path, config: dict[str, Any], version: str) -> None:
     package = re.escape(config["package_name"])
     replace_exact(
         root / "pyproject.toml",
@@ -344,9 +369,7 @@ def release_commits(base_sha: str, baseline: str | None) -> list[dict[str, str]]
     return commits
 
 
-def render_changelog(
-    root: Path, version: str, base_sha: str
-) -> None:
+def render_changelog(root: Path, version: str, base_sha: str) -> None:
     path = root / "CHANGELOG.md"
     existing = path.read_text(encoding="utf-8") if path.exists() else "# Changelog\n"
     if not existing.startswith("# Changelog\n"):
@@ -379,7 +402,7 @@ def render_changelog(
         categories[category].append(f"- {subject} (`{commit['sha'][:12]}`)")
     release_date = dt.datetime.fromtimestamp(
         int(git("show", "-s", "--format=%ct", base_sha)),
-        dt.timezone.utc,
+        dt.UTC,
     ).date()
     section = [f"## [{version}] - {release_date.isoformat()}"]
     for heading, entries in categories.items():
@@ -405,20 +428,28 @@ def validate_generated_tree(
 ) -> None:
     with tempfile.TemporaryDirectory(prefix="release-validate.") as temporary:
         expected = Path(temporary)
-        archive = subprocess.Popen(
-            ["git", "archive", base_sha],
-            cwd=ROOT,
-            stdout=subprocess.PIPE,
+        run(
+            ["git", "update-ref", "--stdin"],
+            input_text=f"update {VALIDATION_BASE_REF} {base_sha}\n",
         )
-        extract = subprocess.run(
-            ["tar", "-x", "-C", str(expected)],
-            stdin=archive.stdout,
-            capture_output=True,
-            text=False,
-        )
-        if archive.stdout:
-            archive.stdout.close()
-        archive_status = archive.wait()
+        try:
+            archive = subprocess.Popen(
+                ["/usr/bin/git", "archive", VALIDATION_BASE_REF],
+                cwd=ROOT,
+                stdout=subprocess.PIPE,
+            )
+            extract = subprocess.run(
+                ["/usr/bin/tar", "-x", "-C", str(expected)],
+                stdin=archive.stdout,
+                capture_output=True,
+                text=False,
+                check=False,
+            )
+            if archive.stdout:
+                archive.stdout.close()
+            archive_status = archive.wait()
+        finally:
+            run(["git", "update-ref", "-d", VALIDATION_BASE_REF], check=False)
         if archive_status != 0 or extract.returncode != 0:
             fail("unable to construct exact release proposal baseline")
         generate_release_tree(expected, config, version, base_sha)
@@ -444,7 +475,7 @@ def flatten_pages(value: Any) -> list[dict[str, Any]]:
 def releases() -> list[dict[str, Any]]:
     return flatten_pages(
         gh_api(
-            f"repos/{github_repository()}/releases?per_page=100",
+            f"{REPOSITORY_ENDPOINT}/releases?per_page=100",
             paginate=True,
         )
     )
@@ -499,9 +530,7 @@ def automatic_version(base_sha: str) -> str | None:
         or re.search(r"^BREAKING[ -]CHANGE:", item["body"], re.MULTILINE)
         for item in log
     )
-    feature = any(
-        re.match(r"^feat(?:\([^)]*\))?:", item["subject"]) for item in log
-    )
+    feature = any(re.match(r"^feat(?:\([^)]*\))?:", item["subject"]) for item in log)
     major, minor, patch = previous
     if breaking:
         return version_text((major + 1, 0, 0))
@@ -512,7 +541,7 @@ def automatic_version(base_sha: str) -> str | None:
 
 def validation_run(run_id: int, expected_sha: str, *, event: str) -> dict[str, Any]:
     value = gh_api(
-        f"repos/{github_repository()}/actions/runs/{run_id}",
+        f"{REPOSITORY_ENDPOINT}/actions/runs/{run_id}",
         token=require_env("ACTIONS_TOKEN"),
     )
     if (
@@ -531,11 +560,11 @@ def validation_run(run_id: int, expected_sha: str, *, event: str) -> dict[str, A
 
 
 def repository_main_sha() -> str:
-    value = gh_api(f"repos/{github_repository()}/git/ref/heads/main")
+    value = gh_api(f"{REPOSITORY_ENDPOINT}/git/ref/heads/main")
     sha = value.get("object", {}).get("sha") if isinstance(value, dict) else None
-    if not isinstance(sha, str) or not SHA.fullmatch(sha):
+    if not isinstance(sha, str):
         fail("unable to resolve the exact main SHA")
-    return sha
+    return canonical_sha(sha, "hosted main SHA")
 
 
 def label_names(pr: dict[str, Any]) -> set[str]:
@@ -550,38 +579,45 @@ def label_names(pr: dict[str, Any]) -> set[str]:
 
 
 def parse_provenance(body: str) -> tuple[str, int]:
-    base_matches = re.findall(r"^<!-- release-base:([0-9a-f]{40}) -->$", body, re.M)
+    base_matches = re.findall(
+        r"^<!-- release-base:([0-9a-f]{40}) -->$", body, re.MULTILINE
+    )
     run_matches = re.findall(
-        r"^<!-- release-validation-run:([1-9][0-9]*) -->$", body, re.M
+        r"^<!-- release-validation-run:([1-9][0-9]*) -->$", body, re.MULTILINE
     )
     if len(base_matches) != 1 or len(run_matches) != 1:
         fail("Release PR must contain one exact base and validation-run marker")
-    if body.count("<!-- release-base:") != 1 or body.count(
-        "<!-- release-validation-run:"
-    ) != 1:
+    if (
+        body.count("<!-- release-base:") != 1
+        or body.count("<!-- release-validation-run:") != 1
+    ):
         fail("Release PR contains malformed release provenance")
-    return base_matches[0], int(run_matches[0])
+    return canonical_sha(base_matches[0], "release base"), int(run_matches[0])
 
 
 def release_prs(state: str = "open") -> list[dict[str, Any]]:
-    owner = github_repository().split("/", 1)[0]
     pages = gh_api(
-        f"repos/{github_repository()}/pulls",
+        f"{REPOSITORY_ENDPOINT}/pulls",
         paginate=True,
         fields={
             "state": state,
             "base": "main",
-            "head": f"{owner}:{RELEASE_BRANCH}",
             "per_page": 100,
         },
     )
-    return flatten_pages(pages)
+    repository = github_repository()
+    return [
+        pull
+        for pull in flatten_pages(pages)
+        if pull.get("head", {}).get("ref") == RELEASE_BRANCH
+        and pull.get("head", {}).get("repo", {}).get("full_name") == repository
+    ]
 
 
 def ensure_labels() -> None:
     existing = flatten_pages(
         gh_api(
-            f"repos/{github_repository()}/labels?per_page=100",
+            f"{REPOSITORY_ENDPOINT}/labels?per_page=100",
             paginate=True,
         )
     )
@@ -600,29 +636,44 @@ def ensure_labels() -> None:
     ):
         if name not in names:
             gh_api(
-                f"repos/{github_repository()}/labels",
+                f"{REPOSITORY_ENDPOINT}/labels",
                 method="POST",
                 payload={"name": name, "color": color, "description": description},
             )
 
 
 def configure_app_git() -> None:
-    login = require_env("RELEASE_APP_LOGIN")
-    user = gh_api(f"users/{login}")
-    identifier = user.get("id") if isinstance(user, dict) else None
-    if not isinstance(identifier, int) or isinstance(identifier, bool) or identifier < 1:
+    login = release_app_login()
+    response = gh_api(
+        "graphql",
+        method="POST",
+        payload={
+            "query": ("query($login:String!){user(login:$login){databaseId login}}"),
+            "variables": {"login": login},
+        },
+    )
+    user = response.get("data", {}).get("user") if isinstance(response, dict) else None
+    identifier = user.get("databaseId") if isinstance(user, dict) else None
+    if (
+        not isinstance(identifier, int)
+        or isinstance(identifier, bool)
+        or identifier < 1
+    ):
         fail("unable to resolve the Release App bot identity")
-    git("config", "user.name", login)
-    git(
-        "config",
-        "user.email",
-        f"{identifier}+{login}@users.noreply.github.com",
+    if user.get("login") != login:
+        fail("resolved Release App bot identity differs from policy")
+    email = f"{identifier}+{login}@users.noreply.github.com"
+    os.environ.update(
+        {
+            "GIT_AUTHOR_EMAIL": email,
+            "GIT_AUTHOR_NAME": login,
+            "GIT_COMMITTER_EMAIL": email,
+            "GIT_COMMITTER_NAME": login,
+        }
     )
 
 
-def prepare_candidate_tree(
-    config: dict[str, Any], base_sha: str, version: str
-) -> None:
+def prepare_candidate_tree(config: dict[str, Any], base_sha: str, version: str) -> None:
     git("checkout", "-B", RELEASE_BRANCH, base_sha)
     generate_release_tree(ROOT, config, version, base_sha)
     changed = sorted(
@@ -642,10 +693,10 @@ def close_stale_pr(pr: dict[str, Any]) -> None:
     number = pr.get("number")
     if not isinstance(number, int):
         fail("open Release PR has no number")
-    if pr.get("user", {}).get("login") != require_env("RELEASE_APP_LOGIN"):
+    if pr.get("user", {}).get("login") != release_app_login():
         fail("release/next is occupied by a pull request outside the Release App")
     gh_api(
-        f"repos/{github_repository()}/pulls/{number}",
+        f"{REPOSITORY_ENDPOINT}/pulls/{number}",
         method="PATCH",
         payload={"state": "closed"},
     )
@@ -655,7 +706,7 @@ def close_stale_pr(pr: dict[str, Any]) -> None:
             "api",
             "-X",
             "DELETE",
-            f"repos/{github_repository()}/git/refs/heads/{RELEASE_BRANCH}",
+            f"{REPOSITORY_ENDPOINT}/git/refs/heads/{RELEASE_BRANCH}",
         ],
         env={"GH_TOKEN": require_env("GH_TOKEN")},
         check=False,
@@ -671,9 +722,7 @@ def close_stale_pr(pr: dict[str, Any]) -> None:
 
 
 def propose(args: argparse.Namespace, config: dict[str, Any]) -> None:
-    sha = args.validated_sha
-    if not SHA.fullmatch(sha):
-        fail("validated SHA must be a full lowercase commit")
+    sha = canonical_sha(args.validated_sha, "validated SHA")
     validation_run(args.validation_run_id, sha, event="push")
     if repository_main_sha() != sha:
         print("Validated main was superseded; no release mutation")
@@ -766,7 +815,7 @@ def propose(args: argparse.Namespace, config: dict[str, Any]) -> None:
         f"<!-- release-validation-run:{args.validation_run_id} -->\n"
     )
     created = gh_api(
-        f"repos/{github_repository()}/pulls",
+        f"{REPOSITORY_ENDPOINT}/pulls",
         method="POST",
         payload={
             "title": f"chore(release): v{target}",
@@ -783,17 +832,17 @@ def propose(args: argparse.Namespace, config: dict[str, Any]) -> None:
         fail("created Release PR does not use the pushed candidate SHA")
     labels = [PENDING_LABEL] + ([LOCK_LABEL] if locked else [])
     gh_api(
-        f"repos/{github_repository()}/issues/{number}/labels",
+        f"{REPOSITORY_ENDPOINT}/issues/{number}/labels",
         method="POST",
         payload={"labels": labels},
     )
-    gh_cli("pr", "ready", str(number), "--repo", github_repository())
+    gh_cli("pr", "ready", str(number))
     print(f"Created review-ready Release PR #{number} for v{target}")
 
 
 def exact_pr_ci_run(head_sha: str) -> int | None:
     value = gh_api(
-        f"repos/{github_repository()}/actions/workflows/ci.yml/runs",
+        f"{REPOSITORY_ENDPOINT}/actions/workflows/ci.yml/runs",
         token=require_env("ACTIONS_TOKEN"),
         fields={
             "head_sha": head_sha,
@@ -832,7 +881,7 @@ def exact_pr_ci_run(head_sha: str) -> int | None:
 
 def exact_push_ci_run(head_sha: str) -> int:
     value = gh_api(
-        f"repos/{github_repository()}/actions/workflows/ci.yml/runs",
+        f"{REPOSITORY_ENDPOINT}/actions/workflows/ci.yml/runs",
         token=require_env("ACTIONS_TOKEN"),
         fields={
             "head_sha": head_sha,
@@ -877,7 +926,7 @@ def exact_push_ci_run(head_sha: str) -> int:
 def authorized_review_state(number: int, head_sha: str) -> tuple[bool, bool]:
     reviews = flatten_pages(
         gh_api(
-            f"repos/{github_repository()}/pulls/{number}/reviews?per_page=100",
+            f"{REPOSITORY_ENDPOINT}/pulls/{number}/reviews?per_page=100",
             token=require_env("ACTIONS_TOKEN"),
             paginate=True,
         )
@@ -897,17 +946,19 @@ def authorized_review_state(number: int, head_sha: str) -> tuple[bool, bool]:
         previous = latest.get(login)
         ordering = (str(review.get("submitted_at", "")), int(review.get("id", 0)))
         previous_ordering = (
-            str(previous.get("submitted_at", "")),
-            int(previous.get("id", 0)),
-        ) if previous else ("", 0)
+            (
+                str(previous.get("submitted_at", "")),
+                int(previous.get("id", 0)),
+            )
+            if previous
+            else ("", 0)
+        )
         if previous is None or ordering > previous_ordering:
             latest[login] = review
     approved = False
     blocked = False
     for login, review in latest.items():
-        permission = gh_api(
-            f"repos/{github_repository()}/collaborators/{login}/permission"
-        )
+        permission = gh_api(f"{REPOSITORY_ENDPOINT}/collaborators/{login}/permission")
         level = permission.get("permission") if isinstance(permission, dict) else None
         if level not in {"write", "admin"}:
             continue
@@ -934,7 +985,7 @@ def fetch_candidate(head_sha: str) -> None:
 
 def validate_open_pr(
     config: dict[str, Any], pr: dict[str, Any]
-) -> tuple[int, str, str, int]:
+) -> tuple[int, str, str, str, int]:
     number = pr.get("number")
     title = pr.get("title")
     head_sha = pr.get("head", {}).get("sha")
@@ -943,11 +994,10 @@ def validate_open_pr(
         not isinstance(number, int)
         or pr.get("state") != "open"
         or pr.get("draft") is not False
-        or pr.get("user", {}).get("login") != require_env("RELEASE_APP_LOGIN")
+        or pr.get("user", {}).get("login") != release_app_login()
         or pr.get("base", {}).get("ref") != "main"
         or pr.get("head", {}).get("ref") != RELEASE_BRANCH
-        or pr.get("head", {}).get("repo", {}).get("full_name")
-        != github_repository()
+        or pr.get("head", {}).get("repo", {}).get("full_name") != github_repository()
         or not isinstance(head_sha, str)
         or not SHA.fullmatch(head_sha)
         or not isinstance(base_sha, str)
@@ -956,8 +1006,11 @@ def validate_open_pr(
         or not (match := re.fullmatch(r"chore\(release\): v(.+)", title))
     ):
         fail("managed Release PR envelope is invalid")
-    version = match.group(1)
-    parse_version(version)
+    head_sha = canonical_sha(head_sha, "Release PR head")
+    base_sha = canonical_sha(base_sha, "Release PR base")
+    version = version_text(parse_version(match.group(1)))
+    if match.group(1) != version:
+        fail("Release PR version is not canonical")
     body = pr.get("body")
     provenance_base, validation_id = parse_provenance(
         body if isinstance(body, str) else ""
@@ -967,7 +1020,7 @@ def validate_open_pr(
     if PENDING_LABEL not in label_names(pr):
         fail("Release PR lost its managed pending label")
     validation_run(validation_id, base_sha, event="push")
-    commits = gh_api(f"repos/{github_repository()}/pulls/{number}/commits")
+    commits = gh_api(f"{REPOSITORY_ENDPOINT}/pulls/{number}/commits")
     if not isinstance(commits, list) or len(commits) != 1:
         fail("Release PR must contain exactly one generated commit")
     commit = commits[0]
@@ -979,14 +1032,13 @@ def validate_open_pr(
         or not isinstance(parents[0], dict)
         or parents[0].get("sha") != base_sha
         or commit.get("commit", {}).get("message") != title
-        or commit.get("author", {}).get("login") != require_env("RELEASE_APP_LOGIN")
-        or commit.get("committer", {}).get("login")
-        != require_env("RELEASE_APP_LOGIN")
+        or commit.get("author", {}).get("login") != release_app_login()
+        or commit.get("committer", {}).get("login") != release_app_login()
     ):
         fail("Release PR commit identity, topology, or message is invalid")
     files = flatten_pages(
         gh_api(
-            f"repos/{github_repository()}/pulls/{number}/files?per_page=100",
+            f"{REPOSITORY_ENDPOINT}/pulls/{number}/files?per_page=100",
             paginate=True,
         )
     )
@@ -995,7 +1047,7 @@ def validate_open_pr(
     )
     if names != config["allowed_files"]:
         fail("Release PR changed files outside the generated version contract")
-    return number, version, head_sha, validation_id
+    return number, version, head_sha, base_sha, validation_id
 
 
 def merge_release(config: dict[str, Any]) -> None:
@@ -1005,8 +1057,8 @@ def merge_release(config: dict[str, Any]) -> None:
         return
     if len(open_prs) != 1:
         fail("multiple open managed Release PRs exist")
-    pr = gh_api(f"repos/{github_repository()}/pulls/{open_prs[0]['number']}")
-    number, version, head_sha, _ = validate_open_pr(config, pr)
+    pr = gh_api(f"{REPOSITORY_ENDPOINT}/pulls/{open_prs[0]['number']}")
+    number, version, head_sha, base_sha, _ = validate_open_pr(config, pr)
     focused_run = exact_pr_ci_run(head_sha)
     approved, blocked = authorized_review_state(number, head_sha)
     if blocked:
@@ -1019,20 +1071,20 @@ def merge_release(config: dict[str, Any]) -> None:
         print(f"Release PR #{number} is waiting for exact-head approval")
         return
     fetch_candidate(head_sha)
-    validate_generated_tree(config, version, pr["base"]["sha"], ROOT)
-    reread = gh_api(f"repos/{github_repository()}/pulls/{number}")
+    validate_generated_tree(config, version, base_sha, ROOT)
+    reread = gh_api(f"{REPOSITORY_ENDPOINT}/pulls/{number}")
     if (
         reread.get("state") != "open"
         or reread.get("draft") is not False
         or reread.get("head", {}).get("sha") != head_sha
-        or reread.get("base", {}).get("sha") != pr["base"]["sha"]
+        or reread.get("base", {}).get("sha") != base_sha
     ):
         fail("Release PR changed immediately before merge")
     approved, blocked = authorized_review_state(number, head_sha)
     if blocked or not approved or exact_pr_ci_run(head_sha) != focused_run:
         fail("Release approval or exact-head CI changed before merge")
     result = gh_api(
-        f"repos/{github_repository()}/pulls/{number}/merge",
+        f"{REPOSITORY_ENDPOINT}/pulls/{number}/merge",
         method="PUT",
         payload={
             "sha": head_sha,
@@ -1041,7 +1093,9 @@ def merge_release(config: dict[str, Any]) -> None:
             "commit_message": "",
         },
     )
-    if result.get("merged") is not True or not SHA.fullmatch(str(result.get("sha", ""))):
+    if result.get("merged") is not True or not SHA.fullmatch(
+        str(result.get("sha", ""))
+    ):
         fail("GitHub did not perform the approved SHA-guarded squash merge")
     print(f"Merged approved Release PR #{number} as {result['sha']}")
 
@@ -1054,7 +1108,7 @@ def merged_release_pr(sha: str) -> dict[str, Any]:
     ]
     if len(matches) != 1:
         fail("release commit must resolve to exactly one managed merged PR")
-    return gh_api(f"repos/{github_repository()}/pulls/{matches[0]['number']}")
+    return gh_api(f"{REPOSITORY_ENDPOINT}/pulls/{matches[0]['number']}")
 
 
 def validate_merged_pr(
@@ -1069,8 +1123,8 @@ def validate_merged_pr(
         or pr.get("state") != "closed"
         or pr.get("merged") is not True
         or pr.get("merge_commit_sha") != sha
-        or pr.get("merged_by", {}).get("login") != require_env("RELEASE_APP_LOGIN")
-        or pr.get("user", {}).get("login") != require_env("RELEASE_APP_LOGIN")
+        or pr.get("merged_by", {}).get("login") != release_app_login()
+        or pr.get("user", {}).get("login") != release_app_login()
         or not isinstance(title, str)
         or not (match := re.fullmatch(r"chore\(release\): v(.+)", title))
         or not isinstance(base_sha, str)
@@ -1079,8 +1133,11 @@ def validate_merged_pr(
         or not SHA.fullmatch(head_sha)
     ):
         fail("merged Release PR envelope is invalid")
-    version = match.group(1)
-    parse_version(version)
+    base_sha = canonical_sha(base_sha, "merged Release PR base")
+    head_sha = canonical_sha(head_sha, "merged Release PR head")
+    version = version_text(parse_version(match.group(1)))
+    if match.group(1) != version:
+        fail("merged Release PR version is not canonical")
     provenance_base, validation_id = parse_provenance(str(pr.get("body", "")))
     if provenance_base != base_sha or PENDING_LABEL not in label_names(pr):
         fail("merged Release PR provenance or lifecycle state is invalid")
@@ -1110,8 +1167,11 @@ def release_by_tag(tag: str) -> dict[str, Any] | None:
 
 
 def tag_sha(tag: str) -> str | None:
+    if TAG.fullmatch(tag) is None:
+        fail("managed tag must use canonical stable SemVer")
+    tag = f"v{version_text(parse_version(tag.removeprefix('v')))}"
     process = run(
-        ["gh", "api", f"repos/{github_repository()}/git/ref/tags/{tag}"],
+        ["gh", "api", f"{REPOSITORY_ENDPOINT}/git/ref/tags/{tag}"],
         env={"GH_TOKEN": require_env("GH_TOKEN")},
         check=False,
     )
@@ -1123,9 +1183,9 @@ def tag_sha(tag: str) -> str | None:
     if value.get("object", {}).get("type") != "commit":
         fail(f"managed tag {tag} must be a lightweight commit ref")
     sha = value.get("object", {}).get("sha")
-    if not isinstance(sha, str) or not SHA.fullmatch(sha):
+    if not isinstance(sha, str):
         fail(f"managed tag {tag} has an invalid target")
-    return sha
+    return canonical_sha(sha, f"managed tag {tag} target")
 
 
 def managed_release_body(
@@ -1163,7 +1223,7 @@ def validate_release_record(
         release.get("tag_name") != tag
         or release.get("target_commitish") != sha
         or release.get("name") != f"{config['title']} {version}"
-        or release.get("author", {}).get("login") != require_env("RELEASE_APP_LOGIN")
+        or release.get("author", {}).get("login") != release_app_login()
         or not isinstance(release.get("id"), int)
     ):
         fail(f"managed Release {tag} metadata is invalid")
@@ -1181,7 +1241,9 @@ def validate_release_record(
     if body.splitlines().count(f"<!-- release-commit:{sha} -->") != 1:
         fail(f"managed Release {tag} has invalid commit metadata")
     digest_matches = re.findall(
-        r"^<!-- container-digest:(sha256:[0-9a-f]{64}) -->$", body, re.M
+        r"^<!-- container-digest:(sha256:[0-9a-f]{64}) -->$",
+        body,
+        re.MULTILINE,
     )
     if body.count("<!-- container-digest:") != len(digest_matches):
         fail(f"managed Release {tag} has malformed container metadata")
@@ -1217,7 +1279,7 @@ def prepare_merged_release(config: dict[str, Any], sha: str) -> None:
         )
     if release is None:
         release = gh_api(
-            f"repos/{github_repository()}/releases",
+            f"{REPOSITORY_ENDPOINT}/releases",
             method="POST",
             payload={
                 "tag_name": tag,
@@ -1234,7 +1296,7 @@ def prepare_merged_release(config: dict[str, Any], sha: str) -> None:
         )
     if existing_tag is None:
         gh_api(
-            f"repos/{github_repository()}/git/refs",
+            f"{REPOSITORY_ENDPOINT}/git/refs",
             method="POST",
             payload={"ref": f"refs/tags/{tag}", "sha": sha},
         )
@@ -1248,19 +1310,24 @@ def prepare_merged_release(config: dict[str, Any], sha: str) -> None:
 
 
 def authorize(args: argparse.Namespace, config: dict[str, Any]) -> None:
-    version = args.version
-    sha = args.sha
-    tag = args.tag
-    parse_version(version)
-    if tag != f"v{version}" or not SHA.fullmatch(sha):
+    version = version_text(parse_version(args.version))
+    sha = canonical_sha(args.sha, "publication SHA")
+    tag = f"v{version}"
+    if args.version != version or args.tag != tag:
         fail("publication version, tag, and SHA are inconsistent")
+    args.version = version
+    args.sha = sha
+    args.tag = tag
     git("fetch", "--force", "origin", "main", "--tags", authenticated=True)
     if git("rev-list", "-n", "1", tag) != sha or git("rev-parse", "HEAD") != sha:
         fail("publication checkout and tag do not identify the exact source")
-    if run(
-        ["git", "merge-base", "--is-ancestor", sha, "origin/main"],
-        check=False,
-    ).returncode != 0:
+    if (
+        run(
+            ["git", "merge-base", "--is-ancestor", "HEAD", "origin/main"],
+            check=False,
+        ).returncode
+        != 0
+    ):
         fail("publication commit is not on main")
     if current_metadata(config)["version"] != version:
         fail("publication source version differs from its tag")
@@ -1290,7 +1357,11 @@ def complete_release(args: argparse.Namespace, config: dict[str, Any]) -> None:
     if release is None:
         fail("managed Release disappeared before completion")
     number = int(
-        re.search(r"^<!-- release-pr:([1-9][0-9]*) -->$", release["body"], re.M).group(1)
+        re.search(
+            r"^<!-- release-pr:([1-9][0-9]*) -->$",
+            release["body"],
+            re.MULTILINE,
+        ).group(1)
     )
     draft, _, complete = validate_release_record(
         config,
@@ -1304,7 +1375,7 @@ def complete_release(args: argparse.Namespace, config: dict[str, Any]) -> None:
     if not complete:
         body = release["body"].rstrip() + f"\n\n<!-- release-complete:{args.sha} -->\n"
         gh_api(
-            f"repos/{github_repository()}/releases/{release['id']}",
+            f"{REPOSITORY_ENDPOINT}/releases/{release['id']}",
             method="PATCH",
             payload={"body": body},
         )
@@ -1326,7 +1397,7 @@ def complete_release(args: argparse.Namespace, config: dict[str, Any]) -> None:
             "api",
             "-X",
             "DELETE",
-            f"repos/{github_repository()}/issues/{number}/labels/release%3Apending",
+            f"{REPOSITORY_ENDPOINT}/issues/{number}/labels/release%3Apending",
         ],
         env={"GH_TOKEN": require_env("GH_TOKEN")},
         check=False,
@@ -1337,11 +1408,21 @@ def complete_release(args: argparse.Namespace, config: dict[str, Any]) -> None:
 
 
 def reconcile_latest(args: argparse.Namespace, config: dict[str, Any]) -> None:
+    version = version_text(parse_version(args.version))
+    sha = canonical_sha(args.sha, "publication SHA")
+    tag = f"v{version}"
+    if args.version != version or args.tag != tag:
+        fail("publication version, tag, and SHA are inconsistent")
+    args.version = version
+    args.sha = sha
+    args.tag = tag
     release = release_by_tag(args.tag)
     if release is None:
         fail("current managed Release is unavailable")
     pr_match = re.search(
-        r"^<!-- release-pr:([1-9][0-9]*) -->$", str(release.get("body", "")), re.M
+        r"^<!-- release-pr:([1-9][0-9]*) -->$",
+        str(release.get("body", "")),
+        re.MULTILINE,
     )
     if not pr_match:
         fail("current managed Release has no PR identity")
@@ -1359,14 +1440,14 @@ def reconcile_latest(args: argparse.Namespace, config: dict[str, Any]) -> None:
         fail("no completed stable Release is eligible for latest")
     version_tuple, highest = eligible[-1]
     highest_tag = f"v{version_text(version_tuple)}"
-    gh_cli("release", "edit", highest_tag, "--repo", github_repository(), "--latest")
-    latest = gh_api(f"repos/{github_repository()}/releases/latest")
+    gh_cli("release", "edit", highest_tag, "--latest")
+    latest = gh_api(f"{REPOSITORY_ENDPOINT}/releases/latest")
     if latest.get("tag_name") != highest_tag:
         fail("GitHub latest readback differs from the selected stable Release")
     digest_matches = re.findall(
         r"^<!-- container-digest:(sha256:[0-9a-f]{64}) -->$",
         str(highest.get("body", "")),
-        re.M,
+        re.MULTILINE,
     )
     digest = digest_matches[0] if len(digest_matches) == 1 else ""
     if config["container"] and not digest:
@@ -1399,12 +1480,14 @@ def main() -> int:
         require_env("GH_TOKEN")
         require_env("ACTIONS_TOKEN")
         require_env("GITHUB_REPOSITORY")
-        require_env("RELEASE_APP_LOGIN")
+        release_app_login()
         config = load_config()
         args = parser().parse_args()
         if args.command == "manage":
             if args.requested_version:
-                parse_version(args.requested_version)
+                args.requested_version = version_text(
+                    parse_version(args.requested_version)
+                )
             propose(args, config)
         elif args.command == "merge":
             merge_release(config)

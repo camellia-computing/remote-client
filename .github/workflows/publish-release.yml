@@ -150,7 +150,6 @@ jobs:
           ACTIONS_TOKEN: ${{ github.token }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           RELEASE_APP_LOGIN: ${{ vars.RELEASE_APP_LOGIN }}
-          RELEASE_REPOSITORY_ROOT: ${{ github.workspace }}
           RELEASE_SHA: ${{ steps.source.outputs.sha }}
           RELEASE_TAG: ${{ steps.version.outputs.tag }}
           VERSION: ${{ steps.version.outputs.version }}
@@ -1419,7 +1418,6 @@ jobs:
           ACTIONS_TOKEN: ${{ github.token }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           RELEASE_APP_LOGIN: ${{ vars.RELEASE_APP_LOGIN }}
-          RELEASE_REPOSITORY_ROOT: ${{ github.workspace }}
           RELEASE_SHA: ${{ needs.prepare.outputs.commit }}
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
           VERSION: ${{ needs.prepare.outputs.version }}
@@ -1458,7 +1456,6 @@ jobs:
           RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
           RELEASE_ID: ${{ steps.release.outputs.release-id }}
           RELEASE_PR_NUMBER: ${{ steps.release.outputs.release-pr-number }}
-          RELEASE_REPOSITORY_ROOT: ${{ github.workspace }}
           RELEASE_SIGNING_IDENTITY: ${{ needs.prepare.outputs.signing_identity }}
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
           RELEASE_TITLE: Camellia Remote Client
@@ -1470,7 +1467,6 @@ jobs:
           ACTIONS_TOKEN: ${{ github.token }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           RELEASE_APP_LOGIN: ${{ vars.RELEASE_APP_LOGIN }}
-          RELEASE_REPOSITORY_ROOT: ${{ github.workspace }}
           RELEASE_SHA: ${{ needs.prepare.outputs.commit }}
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
           VERSION: ${{ needs.prepare.outputs.version }}
@@ -1484,7 +1480,6 @@ jobs:
           ACTIONS_TOKEN: ${{ github.token }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           RELEASE_APP_LOGIN: ${{ vars.RELEASE_APP_LOGIN }}
-          RELEASE_REPOSITORY_ROOT: ${{ github.workspace }}
           RELEASE_SHA: ${{ needs.prepare.outputs.commit }}
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
           VERSION: ${{ needs.prepare.outputs.version }}

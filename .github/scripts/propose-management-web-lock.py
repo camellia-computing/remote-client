@@ -8,20 +8,31 @@ import base64
 import json
 import os
 import re
-import subprocess
 from typing import Any
+from urllib.error import HTTPError
 from urllib.parse import quote
-
+from urllib.request import Request, urlopen
 
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 NAME = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
+LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,99})\[bot\]$")
 SEMVER = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
+API_ENDPOINT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._~/%?=&:+-]*$")
+API_ROOT = "https://api.github.com/"
 LOGICAL_IDS = (
     "remote-client",
     "remote-management",
     "remote-protocol",
     "remote-server",
 )
+
+
+class GitHubApiError(RuntimeError):
+    """A bounded GitHub REST failure with an inspectable HTTP status."""
+
+    def __init__(self, status: int, detail: str) -> None:
+        super().__init__(f"GitHub API returned HTTP {status}: {detail}")
+        self.status = status
 
 
 def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -46,24 +57,38 @@ def gh_json(
     method: str = "GET",
     payload: dict[str, Any] | None = None,
 ) -> Any:
-    arguments = ["gh", "api", endpoint]
-    if method != "GET":
-        arguments[2:2] = ["-X", method]
+    path = endpoint.partition("?")[0]
+    if (
+        method not in {"GET", "POST", "PUT"}
+        or API_ENDPOINT.fullmatch(endpoint) is None
+        or any(component in {"", ".", ".."} for component in path.split("/"))
+    ):
+        raise ValueError("GitHub API request is outside the reviewed REST surface")
+    data = None
     if payload is not None:
-        arguments[2:2] = ["--input", "-"]
-    process = subprocess.run(
-        arguments,
-        input=(json.dumps(payload) if payload is not None else None),
-        check=True,
-        capture_output=True,
-        text=True,
-        env={**os.environ, "GH_TOKEN": os.environ["GH_TOKEN"]},
+        data = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    request = Request(
+        API_ROOT + endpoint,
+        data=data,
+        method=method,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+            "Content-Type": "application/json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
     )
-    return parse_json(process.stdout, "GitHub API response")
+    try:
+        with urlopen(request, timeout=30) as response:
+            return parse_json(response.read(), "GitHub API response")
+    except HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")[:1000]
+        raise GitHubApiError(error.code, detail) from error
 
 
 def repository_map(value: str, current_repository: str) -> dict[str, str]:
     parsed = parse_json(value, "REMOTE_REPOSITORY_MAP")
+    current_parts = current_repository.split("/")
     if (
         not isinstance(parsed, dict)
         or tuple(sorted(parsed)) != LOGICAL_IDS
@@ -77,15 +102,15 @@ def repository_map(value: str, current_repository: str) -> dict[str, str]:
         raise ValueError(
             "REMOTE_REPOSITORY_MAP must be the complete reviewed logical map"
         )
-    current_name = current_repository.split("/", 1)[-1]
+    if len(current_parts) != 2 or any(
+        part in {".", ".."} or NAME.fullmatch(part) is None for part in current_parts
+    ):
+        raise ValueError("current repository must be a canonical owner/name")
+    current_name = current_parts[1]
     if parsed["remote-client"].casefold() != current_name.casefold():
-        raise ValueError(
-            "logical repository map does not match the current repository"
-        )
+        raise ValueError("logical repository map does not match the current repository")
     if parsed["remote-management"].casefold() == current_name.casefold():
-        raise ValueError(
-            "Remote Client and Management repository names must differ"
-        )
+        raise ValueError("Remote Client and Management repository names must differ")
     return parsed
 
 
@@ -113,8 +138,7 @@ def validate_completed_release(
         or [
             item.get("name")
             for item in assets
-            if isinstance(item, dict)
-            and item.get("name") == "release-evidence.json"
+            if isinstance(item, dict) and item.get("name") == "release-evidence.json"
         ]
         != ["release-evidence.json"]
     ):
@@ -139,8 +163,22 @@ def ensure_lock_pr(args: argparse.Namespace) -> str:
     mapping = repository_map(args.repository_map, args.current_repository)
     if not COMMIT.fullmatch(args.commit):
         raise ValueError("release commit must be a full lowercase SHA")
-    if not SEMVER.fullmatch(args.version) or args.tag != f"v{args.version}":
+    commit = f"{int(args.commit, 16):040x}"
+    version_match = SEMVER.fullmatch(args.version)
+    if version_match is None:
         raise ValueError("release version and tag are inconsistent")
+    version = ".".join(str(int(item)) for item in version_match.groups())
+    tag = f"v{version}"
+    if (
+        commit != args.commit
+        or version != args.version
+        or args.tag != tag
+        or LOGIN.fullmatch(args.release_app_login) is None
+    ):
+        raise ValueError("release version and tag are inconsistent")
+    args.commit = commit
+    args.version = version
+    args.tag = tag
     owner = args.current_repository.split("/", 1)[0]
     client_repository = f"{owner}/{mapping['remote-client']}"
     management_repository = f"{owner}/{mapping['remote-management']}"
@@ -177,7 +215,7 @@ def ensure_lock_pr(args: argparse.Namespace) -> str:
         f"&base={encoded_default_branch}"
     )
     if not isinstance(pulls, list):
-        raise ValueError("Management pull request response is invalid")
+        raise TypeError("Management pull request response is invalid")
     if len(pulls) > 1:
         raise ValueError("multiple open lock update pull requests use this branch")
 
@@ -192,8 +230,8 @@ def ensure_lock_pr(args: argparse.Namespace) -> str:
         branch_ref = gh_json(
             f"repos/{management_repository}/git/ref/heads/{encoded_branch}"
         )
-    except subprocess.CalledProcessError as error:
-        if "HTTP 404" not in error.stderr:
+    except GitHubApiError as error:
+        if error.status != 404:
             raise
         branch_ref = None
     if branch_ref is None:
@@ -219,18 +257,11 @@ def ensure_lock_pr(args: argparse.Namespace) -> str:
         raise ValueError("Management lock update branch ref is invalid")
 
     branch_lock = gh_json(
-        f"repos/{management_repository}/contents/web-client.lock"
-        f"?ref={encoded_branch}"
+        f"repos/{management_repository}/contents/web-client.lock?ref={encoded_branch}"
     )
-    branch_lock_sha = (
-        branch_lock.get("sha") if isinstance(branch_lock, dict) else None
-    )
-    branch_content = decoded_content(
-        branch_lock, "branch web-client.lock"
-    ).strip()
-    if not isinstance(branch_lock_sha, str) or not COMMIT.fullmatch(
-        branch_lock_sha
-    ):
+    branch_lock_sha = branch_lock.get("sha") if isinstance(branch_lock, dict) else None
+    branch_content = decoded_content(branch_lock, "branch web-client.lock").strip()
+    if not isinstance(branch_lock_sha, str) or not COMMIT.fullmatch(branch_lock_sha):
         raise ValueError("branch web-client.lock blob SHA is invalid")
     if branch_content != args.commit:
         if branch_sha != base_sha or branch_content != current or pulls:
@@ -242,9 +273,7 @@ def ensure_lock_pr(args: argparse.Namespace) -> str:
             method="PUT",
             payload={
                 "message": f"chore(deps): bundle Remote Client v{args.version}",
-                "content": base64.b64encode(
-                    f"{args.commit}\n".encode()
-                ).decode(),
+                "content": base64.b64encode(f"{args.commit}\n".encode()).decode(),
                 "sha": branch_lock_sha,
                 "branch": branch,
             },
@@ -261,9 +290,7 @@ def ensure_lock_pr(args: argparse.Namespace) -> str:
             f"repos/{management_repository}/pulls",
             method="POST",
             payload={
-                "title": (
-                    f"chore(deps): bundle Remote Client v{args.version}"
-                ),
+                "title": (f"chore(deps): bundle Remote Client v{args.version}"),
                 "head": branch,
                 "base": default_branch,
                 "body": (
@@ -294,9 +321,7 @@ def ensure_lock_pr(args: argparse.Namespace) -> str:
         or pull.get("base", {}).get("ref") != default_branch
     ):
         raise ValueError("Management lock update PR has no valid number")
-    files = gh_json(
-        f"repos/{management_repository}/pulls/{number}/files?per_page=100"
-    )
+    files = gh_json(f"repos/{management_repository}/pulls/{number}/files?per_page=100")
     if (
         not isinstance(files, list)
         or len(files) != 1

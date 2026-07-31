@@ -11,7 +11,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-
 SCRIPT = Path(__file__).parents[1] / "propose-management-web-lock.py"
 SPEC = importlib.util.spec_from_file_location("propose_web_lock", SCRIPT)
 if SPEC is None or SPEC.loader is None:
@@ -56,6 +55,27 @@ class ProposeManagementWebLockTests(unittest.TestCase):
                 "example/desktop",
             )
 
+    def test_rejects_noncanonical_repository_owner(self) -> None:
+        with self.assertRaisesRegex(ValueError, "canonical owner/name"):
+            proposal.repository_map(
+                json.dumps(
+                    {
+                        "remote-client": "desktop",
+                        "remote-management": "service",
+                        "remote-protocol": "protocol",
+                        "remote-server": "relay",
+                    }
+                ),
+                "../desktop",
+            )
+
+    def test_rest_client_rejects_an_external_endpoint(self) -> None:
+        with (
+            patch.dict(proposal.os.environ, {"GH_TOKEN": "test"}, clear=True),
+            self.assertRaisesRegex(ValueError, "reviewed REST surface"),
+        ):
+            proposal.gh_json("https://example.test/repos/owner/repository")
+
     def test_recovers_branch_created_before_lock_commit(self) -> None:
         old_commit = "a" * 40
         new_commit = "b" * 40
@@ -67,9 +87,7 @@ class ProposeManagementWebLockTests(unittest.TestCase):
         def content(value: str) -> dict[str, str]:
             return {
                 "encoding": "base64",
-                "content": base64.b64encode(
-                    f"{value}\n".encode()
-                ).decode(),
+                "content": base64.b64encode(f"{value}\n".encode()).decode(),
                 "sha": lock_blob,
             }
 
