@@ -861,10 +861,8 @@ pub fn get_async_job_status() -> String {
 #[inline]
 pub fn get_langs() -> String {
     use serde_json::json;
-    let hide_cjk = crate::lang::cjk_ui_unavailable();
     let mut x: Vec<(&str, String)> = crate::lang::LANGS
         .iter()
-        .filter(|a| !hide_cjk || !crate::lang::is_cjk_lang(a.0))
         .map(|a| (a.0, format!("{} ({})", a.1, a.0)))
         .collect();
     x.sort_by(|a, b| a.0.cmp(b.0));
@@ -1687,7 +1685,17 @@ pub fn is_remote_modify_enabled_by_control_permissions() -> Option<bool> {
 
 #[cfg(test)]
 mod tests {
-    use super::{trim_video_save_directory, validate_windows_service_video_save_directory};
+    use super::{
+        get_langs, trim_video_save_directory, validate_windows_service_video_save_directory,
+    };
+
+    #[test]
+    fn language_catalog_exposes_every_bundled_ui_family() {
+        let languages: Vec<(String, String)> = serde_json::from_str(&get_langs()).unwrap();
+        let codes: Vec<&str> = languages.iter().map(|(code, _)| code.as_str()).collect();
+
+        assert_eq!(codes, ["en", "zh-cn", "zh-tw"]);
+    }
 
     #[test]
     fn trim_configured_video_save_directory() {
