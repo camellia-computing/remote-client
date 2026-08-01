@@ -310,6 +310,23 @@ class ManagedReleaseTests(unittest.TestCase):
         self.assertIn("permission-pull-requests: write", token)
         self.assertNotIn("permission-issues: write", token)
 
+    def test_management_lock_runs_after_verify_only_recovery(self) -> None:
+        workflow = (
+            Path(__file__).parents[1] / "workflows" / "publish-release.yml"
+        ).read_text(encoding="utf-8")
+        proposal = workflow.split("  propose_management_lock:", maxsplit=1)[1]
+        condition = proposal.split("    runs-on:", maxsplit=1)[0]
+        self.assertIn("always() &&", condition)
+        self.assertIn("needs.prepare.result == 'success'", condition)
+        self.assertIn("needs.publish.result == 'success'", condition)
+
+    def test_completed_msi_recovery_control_is_absent(self) -> None:
+        workflow = (
+            Path(__file__).parents[1] / "workflows" / "publish-release.yml"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("Apply reviewed v1.0.0 MSI recovery control", workflow)
+        self.assertNotIn("747e257249fb4e7270e0d1ad6d7f2ea8e3930c66", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()

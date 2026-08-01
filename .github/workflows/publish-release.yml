@@ -218,21 +218,6 @@ jobs:
           ref: ${{ needs.prepare.outputs.commit }}
           persist-credentials: false
           submodules: recursive
-      - name: Apply reviewed v1.0.0 MSI recovery control
-        if: ${{ github.event_name == 'workflow_dispatch' && needs.prepare.outputs.commit == '747e257249fb4e7270e0d1ad6d7f2ea8e3930c66' }}
-        shell: pwsh
-        run: |
-          $path = 'res/msi/Package/Fragments/Upgrades.wxs'
-          $content = Get-Content -LiteralPath $path -Raw
-          $root = '<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">'
-          if (([regex]::Matches($content, [regex]::Escape($root))).Count -ne 1) {
-            throw 'The reviewed v1.0.0 upgrade fragment no longer has its exact root element'
-          }
-          if ($content.Contains('Includes.wxi')) {
-            throw 'The reviewed v1.0.0 recovery control is no longer required'
-          }
-          $content = $content.Replace($root, "$root`n`t<?include ../Includes.wxi?>")
-          Set-Content -LiteralPath $path -Value $content -NoNewline -Encoding utf8
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ needs.prepare.outputs.bridge_artifact }}
@@ -375,21 +360,6 @@ jobs:
           ref: ${{ needs.prepare.outputs.commit }}
           persist-credentials: false
           submodules: recursive
-      - name: Apply reviewed v1.0.0 MSI recovery control
-        if: ${{ github.event_name == 'workflow_dispatch' && needs.prepare.outputs.commit == '747e257249fb4e7270e0d1ad6d7f2ea8e3930c66' }}
-        shell: pwsh
-        run: |
-          $path = 'res/msi/Package/Fragments/Upgrades.wxs'
-          $content = Get-Content -LiteralPath $path -Raw
-          $root = '<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">'
-          if (([regex]::Matches($content, [regex]::Escape($root))).Count -ne 1) {
-            throw 'The reviewed v1.0.0 upgrade fragment no longer has its exact root element'
-          }
-          if ($content.Contains('Includes.wxi')) {
-            throw 'The reviewed v1.0.0 recovery control is no longer required'
-          }
-          $content = $content.Replace($root, "$root`n`t<?include ../Includes.wxi?>")
-          Set-Content -LiteralPath $path -Value $content -NoNewline -Encoding utf8
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ needs.prepare.outputs.bridge_artifact }}
@@ -1524,7 +1494,10 @@ jobs:
   propose_management_lock:
     name: Propose Management Web lock
     needs: [prepare, publish]
-    if: ${{ needs.publish.result == 'success' }}
+    if: >-
+      always() &&
+      needs.prepare.result == 'success' &&
+      needs.publish.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
