@@ -38,20 +38,49 @@ Future<T?> showSettingsOverlay<T>({
         color: Theme.of(dialogContext).colorScheme.surface,
         clipBehavior: Clip.antiAlias,
         borderRadius: BorderRadius.circular(medium ? 20 : 24),
-        child: Stack(
+        child: Column(
           children: [
-            Positioned.fill(child: builder(dialogContext)),
-            PositionedDirectional(
-              top: 12,
-              end: 12,
-              child: IconButton.filledTonal(
-                tooltip: MaterialLocalizations.of(
-                  dialogContext,
-                ).closeButtonTooltip,
-                onPressed: () => Navigator.of(dialogContext).pop(),
-                icon: const Icon(Icons.close_rounded),
+            SizedBox(
+              height: 60,
+              child: Padding(
+                padding: const EdgeInsetsDirectional.fromSTEB(22, 0, 12, 0),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.settings_rounded,
+                      size: 22,
+                      color: Theme.of(dialogContext).colorScheme.primary,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(dialogContext).textTheme.titleLarge,
+                      ),
+                    ),
+                    if (actions.isNotEmpty) ...[
+                      const SizedBox(width: 12),
+                      ...actions,
+                    ],
+                    const SizedBox(width: 8),
+                    IconButton.filledTonal(
+                      tooltip: MaterialLocalizations.of(
+                        dialogContext,
+                      ).closeButtonTooltip,
+                      onPressed: () => Navigator.of(dialogContext).pop(),
+                      icon: const Icon(Icons.close_rounded),
+                    ),
+                  ],
+                ),
               ),
             ),
+            Divider(
+              height: 1,
+              color: Theme.of(dialogContext).colorScheme.outlineVariant,
+            ),
+            Expanded(child: builder(dialogContext)),
           ],
         ),
       );

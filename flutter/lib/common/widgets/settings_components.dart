@@ -68,11 +68,11 @@ class SettingsList extends StatelessWidget {
             primary: true,
             padding: contentPadding,
             itemCount: sections.length,
-            separatorBuilder: (_, _) => const SizedBox(height: 20),
+            separatorBuilder: (_, _) => const SizedBox(height: 16),
             itemBuilder: (context, index) => Align(
               alignment: Alignment.topCenter,
               child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 920),
+                constraints: const BoxConstraints(maxWidth: 720),
                 child: sections[index],
               ),
             ),
@@ -199,9 +199,9 @@ class SettingsTile extends AbstractSettingsTile {
 
     final tile = ListTile(
       enabled: enabled,
-      minVerticalPadding: 12,
-      minTileHeight: 56,
-      contentPadding: const EdgeInsetsDirectional.fromSTEB(16, 4, 12, 4),
+      minVerticalPadding: 8,
+      minTileHeight: 52,
+      contentPadding: const EdgeInsetsDirectional.fromSTEB(16, 2, 12, 2),
       leading: leading == null
           ? null
           : IconTheme.merge(
