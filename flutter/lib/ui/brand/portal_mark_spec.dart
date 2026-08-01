@@ -25,9 +25,9 @@ abstract final class PortalMarkSpec {
   static const frontCutout = PortalRectSpec(0.43, 0.47, 0.40, 0.32, 0.09);
 
   static const connectorStartX = 0.43;
-  static const connectorStartY = 0.42;
+  static const connectorStartY = 0.43;
   static const connectorEndX = 0.57;
-  static const connectorEndY = 0.58;
+  static const connectorEndY = 0.57;
   static const connectorWidth = 0.12;
 
   static const plateRadius = 0.23;

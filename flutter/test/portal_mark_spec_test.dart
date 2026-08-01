@@ -31,6 +31,19 @@ void main() {
     expectContained(PortalMarkSpec.frontScreen, PortalMarkSpec.frontCutout);
   });
 
+  test('connector remains centered and follows the screen offset axis', () {
+    expect(PortalMarkSpec.connectorStartX, PortalMarkSpec.connectorStartY);
+    expect(PortalMarkSpec.connectorEndX, PortalMarkSpec.connectorEndY);
+    expect(
+      PortalMarkSpec.connectorStartX + PortalMarkSpec.connectorEndX,
+      closeTo(1, 0.000001),
+    );
+    expect(
+      PortalMarkSpec.connectorStartY + PortalMarkSpec.connectorEndY,
+      closeTo(1, 0.000001),
+    );
+  });
+
   test('vector export contains the reviewed portal layers', () {
     final colored = PortalMarkSpec.svg();
     final monochrome = PortalMarkSpec.svg(monochrome: true);

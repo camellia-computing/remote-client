@@ -8,11 +8,14 @@ specific deployment name.
 ## Information architecture
 
 The client has one root workspace containing connection, incoming-access, and
-device-management capabilities supported by the current build. It does not use
-a root sidebar, duplicated Devices destination, root account control, or root
-bottom navigation. Settings open as a modal surface on larger windows and as a
-full-screen route on compact devices. Account actions, when enabled, live in
-their relevant settings or device context.
+device-management capabilities supported by the current build. Expanded
+layouts use a 296–336 px functional incoming-access pane, not a navigation
+sidebar: it contains the local ID, one-time password, access health, and the
+single Settings entry. Devices exist only in the main workspace. There is no
+root account control or bottom navigation. Settings open as a titled modal
+surface on larger windows and as a full-screen route on compact devices.
+Account actions, when enabled, live in their relevant settings or device
+context.
 
 Remote sessions use a separate command surface because the remote canvas is the
 primary task. Desktop and Web command bars can dock to any edge and persist one
@@ -28,7 +31,7 @@ checks:
 | --- | --- | --- |
 | `< 600` | compact | 16 px page inset; capability cards stack; full-screen settings |
 | `600–1023` | medium | 24 px inset; bounded content; settings side panel when space permits |
-| `≥ 1024` | expanded | 32 px inset; capability cards may split; centered settings dialog |
+| `≥ 1024` | expanded | 296–336 px access pane; bounded Connect card over an expanding Devices region; centered settings dialog |
 
 Primary content is capped rather than stretched across ultrawide displays.
 Every compact layout must scroll vertically without clipped actions. Text scale,
@@ -54,11 +57,15 @@ zero. Repeating ornamental animation is not part of the root workspace.
 
 ## Component behavior
 
-- Headers contain the generated portal mark, runtime app name, optional concise
-  context, and a single settings action.
+- Desktop chrome provides a 40 px platform-aware title bar. Windows and Linux
+  expose drag, system menu, minimize, maximize/restore, and close behavior;
+  macOS retains the native traffic-light controls.
+- Connect readiness is part of the Connect section header, never a detached
+  footer. The access pane owns the only root Settings action.
 - Device categories are mutually exclusive and never control the visibility of
   search or peer actions. Category selection, search, refresh, and view controls
-  remain independent.
+  remain independent. Desktop context menus stay between 224 and 320 px wide,
+  keep 12 px from window edges, and use one hover/action layer per row.
 - Credential dialogs group each credential type, keep labels adjacent to their
   controls, present validation inline, prevent duplicate submission, and use
   aligned Cancel/Connect actions.
@@ -68,8 +75,10 @@ zero. Repeating ornamental animation is not part of the root workspace.
 - Remote command buttons have an icon, visible label, tooltip, semantic label,
   focus state, and at least a 44 px target. A collapsed desktop command bar must
   retain a clearly labeled restore control.
-- Settings sections use the in-tree Material 3 components. New screens must not
-  introduce a second settings component library.
+- Settings surfaces always have a root Settings header plus the selected
+  section header. Desktop navigation is 216 px wide, content is capped at
+  720 px, and rows use compact desktop density without dropping accessible
+  interaction targets. New screens use the in-tree Material 3 components.
 
 ## Accessibility and localization
 
@@ -87,10 +96,11 @@ real people, hosts, organizations, tokens, or service endpoints.
 ## Brand asset contract
 
 The portal mark represents two offset screens joined by a secure transport
-node. `portal_mark_spec.dart` is the geometry source for the runtime painter and
-`tool/generate_brand_assets.dart`. Generated PNG, ICO, ICNS, SVG, Android,
-Apple, Windows, Web, and tray assets are reviewed outputs and must never be
-edited independently. CI regenerates them and rejects drift.
+node. The connector follows the exact 45-degree screen-offset axis and is
+centered on the canvas. `portal_mark_spec.dart` is the geometry source for the
+runtime painter and `tool/generate_brand_assets.dart`. Generated PNG, ICO, ICNS,
+SVG, Android, Apple, Windows, Web, and tray assets are reviewed outputs and must
+never be edited independently. CI regenerates them and rejects drift.
 
 ## Review gates
 
