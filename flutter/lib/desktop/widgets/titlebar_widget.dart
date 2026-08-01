@@ -1,19 +1,320 @@
 import 'package:flutter/material.dart';
+import 'package:window_manager/window_manager.dart';
 
-const sidebarColor = Color(0xFF3730A3);
-const backgroundStartColor = Color(0xFF4F46E5);
-const backgroundEndColor = Color(0xFF4F46E5);
+import '../../common.dart';
+import '../../models/platform_model.dart';
 
-class DesktopTitleBar extends StatelessWidget {
-  final Widget? child;
+const double kDesktopTitleBarHeight = 40;
 
-  const DesktopTitleBar({Key? key, this.child}) : super(key: key);
+final class DesktopTitleBarLabels {
+  const DesktopTitleBarLabels({
+    this.minimize = 'Minimize',
+    this.maximize = 'Maximize',
+    this.restore = 'Restore',
+    this.close = 'Close',
+  });
+
+  final String minimize;
+  final String maximize;
+  final String restore;
+  final String close;
+}
+
+abstract interface class DesktopWindowController {
+  Future<void> startDragging();
+  Future<void> showSystemMenu();
+  Future<bool> isMaximized();
+  Future<void> maximize();
+  Future<void> unmaximize();
+  Future<void> minimize();
+  Future<void> close();
+}
+
+final class WindowManagerDesktopWindowController
+    implements DesktopWindowController {
+  const WindowManagerDesktopWindowController();
+
+  @override
+  Future<void> startDragging() => windowManager.startDragging();
+
+  @override
+  Future<void> showSystemMenu() => windowManager.popUpWindowMenu();
+
+  @override
+  Future<bool> isMaximized() => windowManager.isMaximized();
+
+  @override
+  Future<void> maximize() => windowManager.maximize();
+
+  @override
+  Future<void> unmaximize() => windowManager.unmaximize();
+
+  @override
+  Future<void> minimize() => windowManager.minimize();
+
+  @override
+  Future<void> close() => windowManager.close();
+}
+
+/// Platform-aware custom chrome for the primary desktop window.
+///
+/// macOS keeps its native traffic-light controls. Windows and Linux render
+/// caption controls here while retaining native move, resize, and system-menu
+/// behavior through [windowManager].
+class DesktopTitleBar extends StatefulWidget {
+  const DesktopTitleBar({
+    super.key,
+    this.appName,
+    this.controller = const WindowManagerDesktopWindowController(),
+    this.showCaptionButtons,
+    this.labels = const DesktopTitleBarLabels(),
+  });
+
+  final String? appName;
+  final DesktopWindowController controller;
+  final bool? showCaptionButtons;
+  final DesktopTitleBarLabels labels;
+
+  @override
+  State<DesktopTitleBar> createState() => _DesktopTitleBarState();
+}
+
+class _DesktopTitleBarState extends State<DesktopTitleBar> with WindowListener {
+  bool _isMaximized = false;
+  bool _isFocused = true;
+
+  bool get _usesWindowManager =>
+      widget.controller is WindowManagerDesktopWindowController;
+
+  bool get _showCaptionButtons => widget.showCaptionButtons ?? !isMacOS;
+
+  @override
+  void initState() {
+    super.initState();
+    if (_usesWindowManager) {
+      windowManager.addListener(this);
+    }
+    _refreshMaximized();
+  }
+
+  @override
+  void didUpdateWidget(covariant DesktopTitleBar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final usedWindowManager =
+        oldWidget.controller is WindowManagerDesktopWindowController;
+    if (usedWindowManager != _usesWindowManager) {
+      if (usedWindowManager) windowManager.removeListener(this);
+      if (_usesWindowManager) windowManager.addListener(this);
+    }
+    if (oldWidget.controller != widget.controller) _refreshMaximized();
+  }
+
+  @override
+  void dispose() {
+    if (_usesWindowManager) {
+      windowManager.removeListener(this);
+    }
+    super.dispose();
+  }
+
+  Future<void> _refreshMaximized() async {
+    final value = await widget.controller.isMaximized();
+    if (mounted && value != _isMaximized) {
+      setState(() => _isMaximized = value);
+    }
+  }
+
+  Future<void> _toggleMaximized() async {
+    if (await widget.controller.isMaximized()) {
+      await widget.controller.unmaximize();
+      if (mounted) setState(() => _isMaximized = false);
+    } else {
+      await widget.controller.maximize();
+      if (mounted) setState(() => _isMaximized = true);
+    }
+  }
+
+  @override
+  void onWindowMaximize() {
+    if (mounted) setState(() => _isMaximized = true);
+  }
+
+  @override
+  void onWindowUnmaximize() {
+    if (mounted) setState(() => _isMaximized = false);
+  }
+
+  @override
+  void onWindowFocus() {
+    if (mounted) setState(() => _isFocused = true);
+  }
+
+  @override
+  void onWindowBlur() {
+    if (mounted) setState(() => _isFocused = false);
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      color: backgroundStartColor,
-      child: Row(children: [Expanded(child: child ?? Offstage())]),
+    final theme = Theme.of(context);
+    final foreground = _isFocused
+        ? theme.colorScheme.onSurface
+        : theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.72);
+    final title = widget.appName ?? bind.mainGetAppNameSync();
+    return Material(
+      color: theme.colorScheme.surface,
+      child: Container(
+        height: kDesktopTitleBarHeight,
+        decoration: BoxDecoration(
+          border: Border(
+            bottom: BorderSide(color: theme.colorScheme.outlineVariant),
+          ),
+        ),
+        child: Row(
+          children: [
+            if (isMacOS) const SizedBox(width: 78),
+            _WindowMenuIcon(
+              controller: widget.controller,
+              foreground: foreground,
+              appName: title,
+            ),
+            Expanded(
+              child: GestureDetector(
+                key: const ValueKey('desktop-title-drag-region'),
+                behavior: HitTestBehavior.translucent,
+                onPanStart: (_) => widget.controller.startDragging(),
+                onDoubleTap: _toggleMaximized,
+                onSecondaryTapDown: (_) => widget.controller.showSystemMenu(),
+                child: Align(
+                  alignment: AlignmentDirectional.centerStart,
+                  child: Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.labelMedium?.copyWith(
+                      color: foreground,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            if (_showCaptionButtons) ...[
+              _CaptionButton(
+                tooltip: widget.labels.minimize,
+                icon: IconFont.min,
+                foreground: foreground,
+                onPressed: widget.controller.minimize,
+              ),
+              _CaptionButton(
+                tooltip: _isMaximized
+                    ? widget.labels.restore
+                    : widget.labels.maximize,
+                icon: _isMaximized ? IconFont.restore : IconFont.max,
+                foreground: foreground,
+                onPressed: _toggleMaximized,
+              ),
+              _CaptionButton(
+                tooltip: widget.labels.close,
+                icon: IconFont.close,
+                foreground: foreground,
+                destructive: true,
+                onPressed: widget.controller.close,
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _WindowMenuIcon extends StatelessWidget {
+  const _WindowMenuIcon({
+    required this.controller,
+    required this.foreground,
+    required this.appName,
+  });
+
+  final DesktopWindowController controller;
+  final Color foreground;
+  final String appName;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: appName,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: controller.showSystemMenu,
+        onDoubleTap: controller.close,
+        onSecondaryTapDown: (_) => controller.showSystemMenu(),
+        child: SizedBox(
+          width: 40,
+          height: kDesktopTitleBarHeight,
+          child: Center(
+            child: Opacity(opacity: foreground.a, child: loadIcon(18)),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CaptionButton extends StatefulWidget {
+  const _CaptionButton({
+    required this.tooltip,
+    required this.icon,
+    required this.foreground,
+    required this.onPressed,
+    this.destructive = false,
+  });
+
+  final String tooltip;
+  final IconData icon;
+  final Color foreground;
+  final Future<void> Function() onPressed;
+  final bool destructive;
+
+  @override
+  State<_CaptionButton> createState() => _CaptionButtonState();
+}
+
+class _CaptionButtonState extends State<_CaptionButton> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final background = _hovered
+        ? widget.destructive
+              ? const Color(0xFFC42B1C)
+              : scheme.onSurface.withValues(alpha: 0.08)
+        : Colors.transparent;
+    final foreground = _hovered && widget.destructive
+        ? Colors.white
+        : widget.foreground;
+    return Semantics(
+      button: true,
+      label: widget.tooltip,
+      child: Tooltip(
+        message: widget.tooltip,
+        child: MouseRegion(
+          onEnter: (_) => setState(() => _hovered = true),
+          onExit: (_) => setState(() => _hovered = false),
+          child: Material(
+            color: background,
+            child: InkWell(
+              onTap: widget.onPressed,
+              child: SizedBox(
+                width: 46,
+                height: kDesktopTitleBarHeight,
+                child: Icon(widget.icon, size: 12, color: foreground),
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

@@ -16,6 +16,7 @@ import 'package:camellia_remote_app/common/widgets/peer_tab_page.dart';
 import 'package:camellia_remote_app/consts.dart';
 import 'package:camellia_remote_app/desktop/pages/connection_page.dart';
 import 'package:camellia_remote_app/desktop/pages/desktop_setting_page.dart';
+import 'package:camellia_remote_app/desktop/widgets/titlebar_widget.dart';
 import 'package:camellia_remote_app/models/platform_model.dart';
 import 'package:camellia_remote_app/models/server_model.dart';
 import 'package:camellia_remote_app/plugin/ui_manager.dart';
@@ -53,54 +54,67 @@ class _DesktopHomePageState extends State<DesktopHomePage>
   @override
   Widget build(BuildContext context) {
     super.build(context);
-    return _buildBlock(
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final layout = AppLayout.forWidth(constraints.maxWidth);
-          final compact = layout == AppLayoutSize.compact;
-          final contentHeight = constraints.maxHeight - (compact ? 64 : 76);
-          return CamelliaBackdrop(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                _buildWorkspaceHeader(context, compact),
-                Expanded(
-                  child: FocusTraversalGroup(
-                    policy: WidgetOrderTraversalPolicy(),
-                    child: SingleChildScrollView(
-                      padding: EdgeInsets.only(
-                        bottom: MediaQuery.paddingOf(context).bottom + 24,
-                      ),
-                      child: AdaptiveContent(
-                        maxWidth: 1440,
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            _buildCapabilityWorkspace(
-                              context,
-                              constraints: constraints,
+    return Column(
+      children: [
+        DesktopTitleBar(
+          labels: DesktopTitleBarLabels(
+            minimize: translate('Minimize'),
+            maximize: translate('Maximize'),
+            restore: translate('Restore'),
+            close: translate('Close'),
+          ),
+        ),
+        Expanded(
+          child: _buildBlock(
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final layout = AppLayout.forWidth(constraints.maxWidth);
+                final compact = layout == AppLayoutSize.compact;
+                final contentHeight =
+                    constraints.maxHeight - (compact ? 64 : 76);
+                return CamelliaBackdrop(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _buildWorkspaceHeader(context, compact),
+                      Expanded(
+                        child: FocusTraversalGroup(
+                          policy: WidgetOrderTraversalPolicy(),
+                          child: SingleChildScrollView(
+                            padding: EdgeInsets.only(
+                              bottom: MediaQuery.paddingOf(context).bottom + 24,
                             ),
-                            if (!bind.isIncomingOnly()) ...[
-                              const SizedBox(height: 24),
-                              _buildDevicesWorkspace(
-                                context,
-                                minimumHeight: (contentHeight * 0.48).clamp(
-                                  360.0,
-                                  620.0,
-                                ),
+                            child: AdaptiveContent(
+                              maxWidth: 1440,
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  _buildCapabilityWorkspace(
+                                    context,
+                                    constraints: constraints,
+                                  ),
+                                  if (!bind.isIncomingOnly()) ...[
+                                    const SizedBox(height: 24),
+                                    _buildDevicesWorkspace(
+                                      context,
+                                      minimumHeight: (contentHeight * 0.48)
+                                          .clamp(360.0, 620.0),
+                                    ),
+                                  ],
+                                ],
                               ),
-                            ],
-                          ],
+                            ),
+                          ),
                         ),
                       ),
-                    ),
+                    ],
                   ),
-                ),
-              ],
+                );
+              },
             ),
-          );
-        },
-      ),
+          ),
+        ),
+      ],
     );
   }
 
