@@ -38,13 +38,20 @@ Every compact layout must scroll vertically without clipped actions. Text scale,
 safe-area insets, keyboard insets, and right-to-left direction are allowed to
 change geometry; fixed text-scale wrappers are prohibited.
 
+Devices uses component-local breakpoints so it remains fluid inside either the
+root workspace or a future embedded surface. Below 520 px, categories use one
+compact selector; otherwise they wrap without horizontal scrolling. Device
+actions stack below 440 px, use two rows from 440–639 px, and share one row from
+640 px. Search fills a narrow row but is capped to 220–320 px on wider layouts.
+
 ## Visual language
 
-`camellia_design.dart` is the semantic token source. Components consume color
-scheme roles and `AppVisual` tones rather than literal colors. Azure identifies
-connection and information, aqua success and healthy transport, coral attention
-and destructive session exit, and indigo the secure portal identity. Color is
-never the only status indicator.
+`camellia_design.dart` is the semantic token source. The product has one visual
+language with deliberately distinct light and dark palettes, not multiple
+component skins. Components consume color-scheme roles and `AppVisual` tones
+rather than literal colors. Azure identifies connection and information, aqua
+success and healthy transport, coral attention and destructive session exit,
+and indigo the secure portal identity. Color is never the only status indicator.
 
 Surfaces use a restrained hierarchy: page backdrop, section surface, inset
 control, and transient elevated surface. Border radius, elevation, spacing, and
@@ -64,17 +71,22 @@ zero. Repeating ornamental animation is not part of the root workspace.
   footer. The access pane owns the only root Settings action.
 - Device categories are mutually exclusive and never control the visibility of
   search or peer actions. Category selection, search, refresh, and view controls
-  remain independent. Desktop context menus stay between 224 and 320 px wide,
-  keep 12 px from window edges, and use one hover/action layer per row.
+  remain independent. View and sort use the same borderless 44 px trigger and
+  selectable-row pattern; their menus are 184–216 px wide, omit duplicate
+  headings, and use one hover/action layer per row.
 - Credential dialogs group each credential type, keep labels adjacent to their
   controls, present validation inline, prevent duplicate submission, and use
   aligned Cancel/Connect actions.
-- Session status always exposes text in addition to icons: secure state,
-  direct/relay route, protocol, latency, throughput, frame rate, bitrate, codec,
-  and chroma when known. Unknown values render as an em dash.
-- Remote command buttons have an icon, visible label, tooltip, semantic label,
-  focus state, and at least a 44 px target. A collapsed desktop command bar must
-  retain a clearly labeled restore control.
+- Session status uses a compact two-column information panel and always exposes
+  secure state, direct/relay route, protocol, latency, throughput, frame rate,
+  bitrate, codec, and chroma as text. Unknown values render as an em dash.
+- The remote canvas is never covered by persistent action labels. Desktop/Web
+  command buttons use a 40 px icon target with tooltip, semantic label, focus,
+  and hover state. Status, control, display, and close remain directly available;
+  secondary actions progressively move into a labeled More menu at 720, 560,
+  and 420 px dock extents. Menus are viewport-bounded and scroll when necessary.
+  The collapsed command bar retains an icon-only restore action with an explicit
+  tooltip and semantic label. Mobile touch targets remain at least 48 px.
 - Settings surfaces always have a root Settings header plus the selected
   section header. Desktop navigation is 216 px wide, content is capped at
   720 px, and rows use compact desktop density without dropping accessible
@@ -88,10 +100,16 @@ Keyboard traversal follows visual order, Escape cancels dismissible dialogs,
 and Enter submits only when validation permits. Focus must not be trapped or
 discarded when responsive layouts change.
 
-All user-facing text goes through the localization bridge. Layouts must tolerate
-long translations and 200% text scaling without hiding the only path to an
-action. Examples and fixtures use synthetic identifiers and must not contain
-real people, hosts, organizations, tokens, or service endpoints.
+All user-facing text goes through the localization bridge. The maintained
+catalogs are English, Simplified Chinese, and Traditional Chinese. Empty/default
+selection follows the operating-system locale; Chinese script/region variants
+resolve to the corresponding Chinese catalog and every other unsupported locale
+falls back to English. Noto Sans SC/TC variable fonts are bundled under OFL-1.1
+and selected for the matching Chinese catalog so mixed Latin/CJK text keeps one
+global typographic rhythm. Layouts must tolerate long translations and 200% text
+scaling without hiding the only path to an action. Examples and fixtures use
+synthetic identifiers and must not contain real people, hosts, organizations,
+tokens, or service endpoints.
 
 ## Brand asset contract
 
@@ -104,8 +122,9 @@ never be edited independently. CI regenerates them and rejects drift.
 
 ## Review gates
 
-UI changes require formatting, static analysis, unit/widget tests, and reviewed
-light/dark responsive goldens. Tests cover exact breakpoints, reduced motion,
-settings interaction, command-bar persistence, invalid persisted data, and
-brand geometry. Platform builds remain the authority for native packaging,
-font rendering, accessibility services, and launcher-mask behavior.
+UI changes require formatting, static analysis, unit/widget tests, catalog/font
+integrity checks, and reviewed light/dark responsive goldens. Tests cover exact
+breakpoints, reduced motion, settings interaction, command-bar tiers and
+persistence, invalid persisted data, typography selection, and brand geometry.
+Platform builds remain the authority for native packaging, font rendering,
+accessibility services, title-bar behavior, and launcher-mask behavior.
