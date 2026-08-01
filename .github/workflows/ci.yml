@@ -316,6 +316,109 @@ jobs:
           --target ${{ matrix.target }}
           --features with_serde
 
+  # Disposable feature-branch probe. This job is deliberately absent from the
+  # required aggregate and must never be merged into the product branch.
+  windows_client_probe:
+    name: Temporary Windows x64 client bundle
+    if: needs.classify.outputs.runtime == 'true'
+    needs: [classify, metadata, generate_bridge]
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Download generated bridge
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bridge-generated-${{ github.sha }}
+          path: .
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # zizmor: ignore[superfluous-actions] The pinned action installs the exact Windows x64 target consistently.
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install Flutter
+        uses: ./.github/actions/setup-flutter
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Install vcpkg
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.6
+        with:
+          vcpkgDirectory: C:\vcpkg
+
+      - name: Install MSBuild
+        uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3.0.0
+
+      - name: Synchronize declared version
+        shell: bash
+        run: | # zizmor: ignore[template-injection] Metadata emits canonical numeric values from committed version files.
+          bash .github/scripts/sync-version.sh \
+            "${{ needs.metadata.outputs.version }}" \
+            "${{ needs.metadata.outputs.build_number }}" \
+            "${{ needs.metadata.outputs.source_date_epoch }}"
+
+      - name: Prepare locked dependencies
+        shell: bash
+        run: bash .github/scripts/prepare-dependencies.sh "$DEPENDENCY_MODE"
+
+      - name: Compile release client
+        shell: bash
+        env:
+          VCPKG_DEFAULT_TRIPLET: x64-windows-static
+        run: |
+          "$VCPKG_ROOT/vcpkg" install \
+            --triplet x64-windows-static \
+            --x-install-root="$VCPKG_ROOT/installed"
+          export SODIUM_LIB_DIR="$VCPKG_ROOT/installed/x64-windows-static/lib"
+          cargo build --locked --release --lib --features flutter,hwcodec,vram
+          (cd flutter && flutter build windows --release)
+
+      - name: Validate client payload
+        shell: pwsh
+        run: |
+          $bundle = 'flutter/build/windows/x64/runner/Release'
+          $executable = Join-Path $bundle 'camellia-remote.exe'
+          if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
+            throw "Windows client executable was not produced: $executable"
+          }
+          $nativeLibraries = @(
+            Get-ChildItem -LiteralPath $bundle -Recurse -File -Filter 'camellia_remote.dll'
+          )
+          if ($nativeLibraries.Count -ne 1) {
+            throw "Expected one Camellia native library; found $($nativeLibraries.Count)"
+          }
+          $flutterAssets = Join-Path $bundle 'data/flutter_assets'
+          foreach ($font in @('NotoSansSC-VF.ttf', 'NotoSansTC-VF.ttf')) {
+            $fontPath = Join-Path $flutterAssets "assets/fonts/$font"
+            if (-not (Test-Path -LiteralPath $fontPath -PathType Leaf)) {
+              throw "Bundled UI font was not produced: $fontPath"
+            }
+          }
+          $fontManifest = Join-Path $flutterAssets 'FontManifest.json'
+          $manifest = Get-Content -LiteralPath $fontManifest -Raw
+          foreach ($family in @('CamelliaSansSC', 'CamelliaSansTC')) {
+            if (-not $manifest.Contains($family)) {
+              throw "Font manifest does not contain family: $family"
+            }
+          }
+
+      - name: Upload unsigned client bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-x64-client-${{ github.sha }}
+          path: flutter/build/windows/x64/runner/Release
+          if-no-files-found: error
+          retention-days: 7
+
   windows_portable:
     name: Windows portable smoke check (${{ matrix.target }})
     if: needs.classify.outputs.runtime == 'true'
