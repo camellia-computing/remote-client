@@ -315,8 +315,8 @@ class AppDesignTokens extends ThemeExtension<AppDesignTokens> {
     danger: Color(0xFFB3261E),
     info: CamelliaColors.azureStrong,
     focusRing: CamelliaColors.azure,
-    radiusSmall: 12,
-    radiusMedium: 16,
+    radiusSmall: CamelliaRadius.control,
+    radiusMedium: CamelliaRadius.surface,
     controlHeight: 44,
     touchTarget: 48,
     shadow: Color(0x12182033),
@@ -337,8 +337,8 @@ class AppDesignTokens extends ThemeExtension<AppDesignTokens> {
     danger: Color(0xFFFFB4AB),
     info: Color(0xFF7CB8E4),
     focusRing: Color(0xFF5FA8DE),
-    radiusSmall: 12,
-    radiusMedium: 16,
+    radiusSmall: CamelliaRadius.control,
+    radiusMedium: CamelliaRadius.surface,
     controlHeight: 44,
     touchTarget: 48,
     shadow: Color(0x52000000),
@@ -440,7 +440,7 @@ class MyTheme {
   // ListTile
   static const ListTileThemeData listTileTheme = ListTileThemeData(
     shape: RoundedRectangleBorder(
-      borderRadius: BorderRadius.all(Radius.circular(5)),
+      borderRadius: BorderRadius.all(Radius.circular(CamelliaRadius.control)),
     ),
   );
 
@@ -545,9 +545,31 @@ class MyTheme {
     }),
   );
 
-  static final ThemeData lightTheme = CamelliaTheme.build(
+  static String get _fontFamily {
+    var savedLanguage = '';
+    try {
+      savedLanguage = bind.mainGetLocalOption(key: kCommConfKeyLang);
+    } catch (_) {
+      // Native bindings are unavailable in isolated widget tests.
+    }
+    var locale = const Locale('en', 'US');
+    try {
+      locale = WidgetsBinding.instance.platformDispatcher.locale;
+    } catch (_) {
+      // English is the deterministic bootstrap fallback.
+    }
+    return CamelliaTypography.family(
+      CamelliaTypography.resolve(
+        savedLanguage: savedLanguage,
+        systemLocale: locale,
+      ),
+    );
+  }
+
+  static ThemeData get lightTheme => CamelliaTheme.build(
     brightness: Brightness.light,
     desktopDensity: isDesktop || isWebDesktop,
+    fontFamily: _fontFamily,
     extensions: <ThemeExtension<dynamic>>[
       ColorThemeExtension.light,
       TabbarTheme.light,
@@ -555,9 +577,10 @@ class MyTheme {
     ],
   );
 
-  static final ThemeData darkTheme = CamelliaTheme.build(
+  static ThemeData get darkTheme => CamelliaTheme.build(
     brightness: Brightness.dark,
     desktopDensity: isDesktop || isWebDesktop,
+    fontFamily: _fontFamily,
     extensions: <ThemeExtension<dynamic>>[
       ColorThemeExtension.dark,
       TabbarTheme.dark,
@@ -996,57 +1019,20 @@ extension ParseToString on ThemeMode {
 }
 
 final ButtonStyle flatButtonStyle = TextButton.styleFrom(
-  minimumSize: Size(0, 36),
-  padding: EdgeInsets.symmetric(horizontal: 16.0, vertical: 10.0),
+  minimumSize: const Size(0, 40),
+  padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 10.0),
   shape: const RoundedRectangleBorder(
-    borderRadius: BorderRadius.all(Radius.circular(2.0)),
+    borderRadius: BorderRadius.all(Radius.circular(CamelliaRadius.control)),
   ),
 );
 
-List<Locale> supportedLocales = const [
+const List<Locale> supportedLocales = [
   Locale('en', 'US'),
   Locale('zh', 'CN'),
-  Locale('zh', 'TW'),
   Locale('zh', 'SG'),
-  Locale('fr'),
-  Locale('de'),
-  Locale('it'),
-  Locale('ja'),
-  Locale('cs'),
-  Locale('pl'),
-  Locale('ko'),
-  Locale('hu'),
-  Locale('pt'),
-  Locale('ru'),
-  Locale('sk'),
-  Locale('id'),
-  Locale('da'),
-  Locale('eo'),
-  Locale('tr'),
-  Locale('kz'),
-  Locale('es'),
-  Locale('nl'),
-  Locale('nb'),
-  Locale('et'),
-  Locale('eu'),
-  Locale('bg'),
-  Locale('be'),
-  Locale('vn'),
-  Locale('uk'),
-  Locale('fa'),
-  Locale('ca'),
-  Locale('el'),
-  Locale('sv'),
-  Locale('sq'),
-  Locale('sr'),
-  Locale('th'),
-  Locale('sl'),
-  Locale('ro'),
-  Locale('lt'),
-  Locale('lv'),
-  Locale('ar'),
-  Locale('he'),
-  Locale('hr'),
+  Locale('zh', 'TW'),
+  Locale('zh', 'HK'),
+  Locale('zh', 'MO'),
 ];
 
 String formatDurationToTime(Duration duration) {

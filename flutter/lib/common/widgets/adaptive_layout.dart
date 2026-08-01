@@ -45,7 +45,7 @@ class AppMotion {
   static const Duration feedback = CamelliaMotion.feedback;
   static const Duration stateChange = CamelliaMotion.state;
   static const Duration contentSwap = CamelliaMotion.content;
-  static const Duration modal = Duration(milliseconds: 280);
+  static const Duration modal = CamelliaMotion.modal;
   static const Duration route = CamelliaMotion.route;
 
   static const Curve standardCurve = CamelliaMotion.standard;

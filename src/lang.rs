@@ -1,155 +1,40 @@
 use camellia_remote_protocol::regex::Regex;
 use std::ops::Deref;
 
-mod ar;
-mod be;
-mod bg;
-mod ca;
 mod cn;
-mod cs;
-mod da;
-mod de;
-mod el;
 mod en;
-mod eo;
-mod es;
-mod et;
-mod eu;
-mod fa;
-mod fi;
-mod fr;
-mod ge;
-mod gu;
-mod he;
-mod hi;
-mod hr;
-mod hu;
-mod id;
-mod it;
-mod ja;
-mod ko;
-mod kz;
-mod lt;
-mod lv;
-mod ml;
-mod nb;
-mod nl;
-mod pl;
-mod ptbr;
-mod ro;
-mod ru;
-mod sc;
-mod sk;
-mod sl;
-mod sq;
-mod sr;
-mod sv;
-mod ta;
-mod th;
-mod tr;
 mod tw;
-mod uk;
-mod vi;
 
 pub const LANGS: &[(&str, &str)] = &[
     ("en", "English"),
-    ("it", "Italiano"),
-    ("fr", "Français"),
-    ("de", "Deutsch"),
-    ("nl", "Nederlands"),
-    ("nb", "Norsk bokmål"),
     ("zh-cn", "简体中文"),
     ("zh-tw", "繁體中文"),
-    ("pt", "Português"),
-    ("es", "Español"),
-    ("et", "Eesti keel"),
-    ("eu", "Euskara"),
-    ("hu", "Magyar"),
-    ("bg", "Български"),
-    ("be", "Беларуская"),
-    ("ru", "Русский"),
-    ("sk", "Slovenčina"),
-    ("id", "Indonesia"),
-    ("cs", "Čeština"),
-    ("da", "Dansk"),
-    ("eo", "Esperanto"),
-    ("tr", "Türkçe"),
-    ("vi", "Tiếng Việt"),
-    ("pl", "Polski"),
-    ("ja", "日本語"),
-    ("ko", "한국어"),
-    ("kz", "Қазақ"),
-    ("uk", "Українська"),
-    ("fa", "فارسی"),
-    ("ca", "Català"),
-    ("el", "Ελληνικά"),
-    ("sv", "Svenska"),
-    ("sq", "Shqip"),
-    ("sr", "Srpski"),
-    ("th", "ภาษาไทย"),
-    ("sl", "Slovenščina"),
-    ("ro", "Română"),
-    ("lt", "Lietuvių"),
-    ("lv", "Latviešu"),
-    ("ar", "العربية"),
-    ("he", "עברית"),
-    ("hr", "Hrvatski"),
-    ("sc", "Sardu"),
-    ("ta", "தமிழ்"),
-    ("ge", "ქართული"),
-    ("fi", "Suomi"),
-    ("ml", "മലയാളം"),
-    ("hi", "हिंदी"),
-    ("gu", "ગુજરાતી"),
 ];
 
-pub(crate) fn cjk_ui_unavailable() -> bool {
-    cfg!(all(
-        target_os = "linux",
-        target_arch = "aarch64",
-        feature = "flutter"
-    ))
-}
-
-pub(crate) fn is_cjk_lang(lang_or_locale: &str) -> bool {
-    let lang = lang_or_locale
-        .split(|c| c == '-' || c == '_')
-        .next()
-        .unwrap_or_default()
-        .to_lowercase();
-    matches!(lang.as_str(), "zh" | "ja" | "ko")
-}
-
-fn resolve_lang(saved_lang: &str, locale: &str, cjk_fallback: bool) -> String {
-    let locale = locale.to_lowercase();
-    let mut lang = saved_lang.to_lowercase();
-    if cjk_fallback && is_cjk_lang(&lang) {
-        return "en".to_owned();
+fn canonical_lang(lang_or_locale: &str) -> &'static str {
+    let normalized = lang_or_locale.trim().to_lowercase().replace('_', "-");
+    if !normalized.starts_with("zh") {
+        return "en";
     }
-    if lang.is_empty() {
-        // zh_CN on Linux, zh-Hans-CN on mac, zh_CN_#Hans on Android
-        if locale.starts_with("zh") {
-            lang = (if locale.contains("tw") {
-                "zh-tw"
-            } else {
-                "zh-cn"
-            })
-            .to_owned();
-        }
-    }
-    if lang.is_empty() {
-        lang = locale
-            .split("-")
-            .next()
-            .map(|x| x.split("_").next().unwrap_or_default())
-            .unwrap_or_default()
-            .to_owned();
-    }
-    if cjk_fallback && is_cjk_lang(&lang) {
-        "en".to_owned()
+    if normalized.contains("hant")
+        || normalized.contains("-tw")
+        || normalized.contains("-hk")
+        || normalized.contains("-mo")
+    {
+        "zh-tw"
     } else {
-        lang
+        "zh-cn"
     }
+}
+
+fn resolve_lang(saved_lang: &str, locale: &str) -> String {
+    let saved = saved_lang.trim();
+    let source = if saved.is_empty() || saved.eq_ignore_ascii_case("default") {
+        locale
+    } else {
+        saved
+    };
+    canonical_lang(source).to_owned()
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -162,58 +47,10 @@ pub fn translate_locale(name: String, locale: &str) -> String {
     let lang = resolve_lang(
         &camellia_remote_protocol::config::LocalConfig::get_option("lang"),
         locale,
-        cjk_ui_unavailable(),
     );
     let m = match lang.as_str() {
-        "fr" => fr::T.deref(),
         "zh-cn" => cn::T.deref(),
-        "it" => it::T.deref(),
         "zh-tw" => tw::T.deref(),
-        "de" => de::T.deref(),
-        "nb" => nb::T.deref(),
-        "nl" => nl::T.deref(),
-        "es" => es::T.deref(),
-        "et" => et::T.deref(),
-        "eu" => eu::T.deref(),
-        "hu" => hu::T.deref(),
-        "ru" => ru::T.deref(),
-        "eo" => eo::T.deref(),
-        "id" => id::T.deref(),
-        "br" => ptbr::T.deref(),
-        "pt" => ptbr::T.deref(),
-        "tr" => tr::T.deref(),
-        "cs" => cs::T.deref(),
-        "da" => da::T.deref(),
-        "sk" => sk::T.deref(),
-        "vi" => vi::T.deref(),
-        "pl" => pl::T.deref(),
-        "ja" => ja::T.deref(),
-        "ko" => ko::T.deref(),
-        "kz" => kz::T.deref(),
-        "uk" => uk::T.deref(),
-        "fa" => fa::T.deref(),
-        "fi" => fi::T.deref(),
-        "ca" => ca::T.deref(),
-        "el" => el::T.deref(),
-        "sv" => sv::T.deref(),
-        "sq" => sq::T.deref(),
-        "sr" => sr::T.deref(),
-        "th" => th::T.deref(),
-        "sl" => sl::T.deref(),
-        "ro" => ro::T.deref(),
-        "lt" => lt::T.deref(),
-        "lv" => lv::T.deref(),
-        "ar" => ar::T.deref(),
-        "bg" => bg::T.deref(),
-        "be" => be::T.deref(),
-        "he" => he::T.deref(),
-        "hr" => hr::T.deref(),
-        "sc" => sc::T.deref(),
-        "ta" => ta::T.deref(),
-        "ge" => ge::T.deref(),
-        "ml" => ml::T.deref(),
-        "hi" => hi::T.deref(),
-        "gu" => gu::T.deref(),
         _ => en::T.deref(),
     };
     let (name, placeholder_value) = extract_placeholder(&name);
@@ -288,30 +125,31 @@ mod test {
     }
 
     #[test]
-    fn test_resolve_lang_forces_english_for_saved_cjk_when_target_disables_cjk() {
+    fn test_resolve_lang_respects_explicit_supported_language() {
         use super::resolve_lang as f;
 
-        assert_eq!(f("zh-cn", "en-US", true), "en");
-        assert_eq!(f("zh-tw", "en-US", true), "en");
-        assert_eq!(f("ja", "en-US", true), "en");
-        assert_eq!(f("ko", "en-US", true), "en");
+        assert_eq!(f("en", "zh-TW"), "en");
+        assert_eq!(f("zh-cn", "en-US"), "zh-cn");
+        assert_eq!(f("zh-tw", "en-US"), "zh-tw");
     }
 
     #[test]
-    fn test_resolve_lang_forces_english_for_cjk_locale_when_target_disables_cjk() {
+    fn test_resolve_lang_follows_system_for_default() {
         use super::resolve_lang as f;
 
-        assert_eq!(f("", "zh_CN", true), "en");
-        assert_eq!(f("", "ja-JP", true), "en");
-        assert_eq!(f("", "ko_KR", true), "en");
+        assert_eq!(f("", "zh_CN"), "zh-cn");
+        assert_eq!(f("default", "zh-Hant-HK"), "zh-tw");
+        assert_eq!(f("DEFAULT", "zh_MO"), "zh-tw");
+        assert_eq!(f("", "ja-JP"), "en");
     }
 
     #[test]
-    fn test_resolve_lang_preserves_cjk_when_target_allows_cjk() {
+    fn test_resolve_lang_normalizes_regions_and_scripts() {
         use super::resolve_lang as f;
 
-        assert_eq!(f("zh-cn", "en-US", false), "zh-cn");
-        assert_eq!(f("", "zh_TW", false), "zh-tw");
-        assert_eq!(f("", "ja-JP", false), "ja");
+        assert_eq!(f("zh-Hans-SG", "en-US"), "zh-cn");
+        assert_eq!(f("zh-Hant", "en-US"), "zh-tw");
+        assert_eq!(f("zh-HK", "en-US"), "zh-tw");
+        assert_eq!(f("fr", "zh-TW"), "en");
     }
 }
