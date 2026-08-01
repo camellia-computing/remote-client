@@ -19,6 +19,23 @@ enum RemoteCommandBarEdge {
   };
 }
 
+enum RemoteCommandBarTier {
+  core,
+  input,
+  collaboration,
+  full;
+
+  static RemoteCommandBarTier forExtent(double extent) {
+    if (!extent.isFinite) return full;
+    if (extent < 420) return core;
+    if (extent < 560) return input;
+    if (extent < 720) return collaboration;
+    return full;
+  }
+
+  bool includes(RemoteCommandBarTier minimum) => index >= minimum.index;
+}
+
 /// Persisted, application-wide placement of the remote session command bar.
 ///
 /// The client has not shipped yet, so this schema intentionally has no legacy

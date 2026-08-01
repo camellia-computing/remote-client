@@ -2,6 +2,29 @@ import 'package:camellia_remote_app/ui/remote_ui_models.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('command bar tiers preserve the canvas at every dock extent', () {
+    expect(RemoteCommandBarTier.forExtent(320), RemoteCommandBarTier.core);
+    expect(RemoteCommandBarTier.forExtent(419), RemoteCommandBarTier.core);
+    expect(RemoteCommandBarTier.forExtent(420), RemoteCommandBarTier.input);
+    expect(
+      RemoteCommandBarTier.forExtent(560),
+      RemoteCommandBarTier.collaboration,
+    );
+    expect(RemoteCommandBarTier.forExtent(720), RemoteCommandBarTier.full);
+    expect(
+      RemoteCommandBarTier.forExtent(double.infinity),
+      RemoteCommandBarTier.full,
+    );
+    expect(
+      RemoteCommandBarTier.collaboration.includes(RemoteCommandBarTier.input),
+      isTrue,
+    );
+    expect(
+      RemoteCommandBarTier.input.includes(RemoteCommandBarTier.full),
+      isFalse,
+    );
+  });
+
   group('RemoteCommandBarPreferences', () {
     test('round-trips every dock edge', () {
       for (final edge in RemoteCommandBarEdge.values) {
