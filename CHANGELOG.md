@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1] - 2026-08-01
+
+### Fixes
+
+- fix(windows): share MSI preprocessor metadata (#29) (`2b0106a3d086`)
+- fix(release): authorize merged PR label cleanup (#30) (`d1d1c1417996`)
+
 ## [1.0.0] - 2026-07-31
 
 ### Features
