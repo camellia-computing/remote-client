@@ -15,6 +15,7 @@ import 'package:camellia_remote_app/desktop/widgets/material_mod_popup_menu.dart
 import 'package:camellia_remote_app/desktop/widgets/tabbar_widget.dart';
 import 'package:camellia_remote_app/models/ab_model.dart';
 import 'package:camellia_remote_app/models/peer_model.dart';
+import 'package:camellia_remote_app/ui/device_workspace_controls.dart';
 
 import 'package:camellia_remote_app/models/peer_tab_model.dart';
 import 'package:get/get.dart';
@@ -117,10 +118,7 @@ class _PeerTabPageState extends State<PeerTabPage>
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
                         visibleContextMenuListener(
-                          _createSwitchBar(
-                            context,
-                            compact: constraints.maxWidth < 600,
-                          ),
+                          _createSwitchBar(context, constraints.maxWidth),
                         ),
                         const SizedBox(height: 10),
                         _buildActionBar(context, constraints.maxWidth),
@@ -134,7 +132,7 @@ class _PeerTabPageState extends State<PeerTabPage>
     );
   }
 
-  Widget _createSwitchBar(BuildContext context, {required bool compact}) {
+  Widget _createSwitchBar(BuildContext context, double width) {
     final model = Provider.of<PeerTabModel>(context);
     final tabs = model.visibleEnabledOrderedIndexs;
     if (tabs.isEmpty) return const SizedBox.shrink();
@@ -149,7 +147,7 @@ class _PeerTabPageState extends State<PeerTabPage>
       );
     }
 
-    if (compact) {
+    if (deviceCategoryLayoutForWidth(width) == DeviceCategoryLayout.dropdown) {
       return DropdownButtonFormField<int>(
         key: ValueKey<int>(selected),
         initialValue: selected,
@@ -175,67 +173,58 @@ class _PeerTabPageState extends State<PeerTabPage>
               },
       );
     }
-    return Align(
-      alignment: AlignmentDirectional.centerStart,
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: SegmentedButton<int>(
-          showSelectedIcon: false,
-          segments: [
-            for (final tab in tabs)
-              ButtonSegment<int>(
-                value: tab,
-                icon: Icon(model.tabIcon(tab), size: 18),
-                label: Text(
-                  model.tabTooltip(tab),
-                  overflow: TextOverflow.ellipsis,
-                ),
-                tooltip: model.tabTooltip(tab),
-              ),
-          ],
-          selected: {selected},
-          onSelectionChanged: isOptionFixed(kOptionPeerTabIndex)
-              ? null
-              : (selection) {
-                  if (selection.isNotEmpty) select(selection.first);
-                },
-        ),
-      ),
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: [
+        for (final tab in tabs)
+          ChoiceChip(
+            selected: tab == selected,
+            showCheckmark: false,
+            avatar: Icon(model.tabIcon(tab), size: 18),
+            label: Text(model.tabTooltip(tab)),
+            tooltip: model.tabTooltip(tab),
+            onSelected: isOptionFixed(kOptionPeerTabIndex)
+                ? null
+                : (_) => select(tab),
+          ),
+      ],
     );
   }
 
   Widget _buildActionBar(BuildContext context, double width) {
-    final actions = Row(
-      mainAxisSize: MainAxisSize.min,
+    final actions = Wrap(
+      alignment: WrapAlignment.end,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      spacing: 4,
+      runSpacing: 4,
       children: _landscapeRightActions(context),
     );
-    if (width < 520) {
+    final layout = deviceActionLayoutForWidth(width);
+    if (layout != DeviceActionLayout.inline) {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const PeerSearchBar(),
-          const SizedBox(height: 8),
           Align(
-            alignment: AlignmentDirectional.centerEnd,
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: actions,
+            alignment: AlignmentDirectional.centerStart,
+            child: SizedBox(
+              width: deviceSearchWidth(width),
+              child: const PeerSearchBar(),
             ),
           ),
+          const SizedBox(height: 8),
+          Align(alignment: AlignmentDirectional.centerEnd, child: actions),
         ],
       );
     }
     return Row(
       children: [
-        const Expanded(child: PeerSearchBar()),
+        SizedBox(width: deviceSearchWidth(width), child: const PeerSearchBar()),
         const SizedBox(width: 12),
-        Flexible(
+        Expanded(
           child: Align(
             alignment: AlignmentDirectional.centerEnd,
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: actions,
-            ),
+            child: actions,
           ),
         ),
       ],
@@ -684,20 +673,33 @@ class _PeerSearchBarState extends State<PeerSearchBar> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return ConstrainedBox(
-      constraints: const BoxConstraints(minWidth: 180, maxWidth: 360),
+    final radius = BorderRadius.circular(10);
+    return SizedBox(
+      height: 44,
       child: TextField(
         controller: peerSearchTextController,
         focusNode: _focusNode,
         textInputAction: TextInputAction.search,
         onChanged: (searchText) => peerSearchText.value = searchText,
         decoration: InputDecoration(
+          isDense: true,
+          filled: true,
+          fillColor: theme.colorScheme.surfaceContainer.withValues(alpha: 0.72),
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 12,
+            vertical: 10,
+          ),
           hintText: translate('Search ID'),
           prefixIcon: Icon(
             Icons.search_rounded,
+            size: 18,
             color: _focused
                 ? theme.colorScheme.primary
                 : theme.colorScheme.onSurfaceVariant,
+          ),
+          prefixIconConstraints: const BoxConstraints(
+            minWidth: 40,
+            minHeight: 40,
           ),
           suffixIcon: peerSearchTextController.text.isEmpty
               ? null
@@ -710,6 +712,27 @@ class _PeerSearchBarState extends State<PeerSearchBar> {
                   },
                   icon: const Icon(Icons.close_rounded),
                 ),
+          suffixIconConstraints: const BoxConstraints(
+            minWidth: 40,
+            minHeight: 40,
+          ),
+          border: OutlineInputBorder(
+            borderRadius: radius,
+            borderSide: BorderSide.none,
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: radius,
+            borderSide: BorderSide(
+              color: theme.colorScheme.outlineVariant.withValues(alpha: 0.7),
+            ),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: radius,
+            borderSide: BorderSide(
+              color: theme.colorScheme.primary,
+              width: 1.4,
+            ),
+          ),
         ),
       ).workaroundFreezeLinuxMint(),
     );
@@ -738,13 +761,20 @@ class _PeerViewDropdownState extends State<PeerViewDropdown> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     return Obx(
-      () => PopupMenuButton<PeerUiType>(
+      () => DeviceOptionMenuButton<PeerUiType>(
         tooltip: translate('Change view'),
-        constraints: const BoxConstraints(minWidth: 220, maxWidth: 280),
-        position: PopupMenuPosition.under,
+        icon: _icon(peerCardUiType.value),
         enabled: !isOptionFixed(kOptionPeerCardUiType),
+        selectedValue: peerCardUiType.value,
+        options: [
+          for (final type in PeerUiType.values)
+            DeviceOptionMenuItem<PeerUiType>(
+              value: type,
+              label: _label(type),
+              icon: _icon(type),
+            ),
+        ],
         onSelected: (value) async {
           peerCardUiType.value = value;
           await bind.setLocalFlutterOption(
@@ -752,39 +782,6 @@ class _PeerViewDropdownState extends State<PeerViewDropdown> {
             v: value.index.toString(),
           );
         },
-        itemBuilder: (context) => [
-          for (final type in PeerUiType.values)
-            CheckedPopupMenuItem<PeerUiType>(
-              value: type,
-              checked: peerCardUiType.value == type,
-              height: 42,
-              child: Row(
-                children: [
-                  Icon(_icon(type), size: 18),
-                  const SizedBox(width: 12),
-                  Text(_label(type)),
-                ],
-              ),
-            ),
-        ],
-        child: Container(
-          height: 40,
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          decoration: BoxDecoration(
-            border: Border.all(color: theme.colorScheme.outlineVariant),
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(_icon(peerCardUiType.value), size: 18),
-              const SizedBox(width: 8),
-              Text(translate('View')),
-              const SizedBox(width: 6),
-              const Icon(Icons.expand_more_rounded, size: 18),
-            ],
-          ),
-        ),
       ),
     );
   }
@@ -811,64 +808,28 @@ class _PeerSortDropdownState extends State<PeerSortDropdown> {
 
   @override
   Widget build(BuildContext context) {
-    final style = TextStyle(
-      color: Theme.of(context).textTheme.titleLarge?.color,
-      fontSize: MenuConfig.fontSize,
-      fontWeight: FontWeight.normal,
-    );
-    List<PopupMenuEntry> items = List.empty(growable: true);
-    items.add(
-      PopupMenuItem(
-        height: 36,
-        enabled: false,
-        child: Text(translate("Sort by"), style: style),
-      ),
-    );
-    for (var e in PeerSortType.values) {
-      items.add(
-        PopupMenuItem(
-          height: 36,
-          child: Obx(
-            () => Center(
-              child: SizedBox(
-                height: 36,
-                child: getRadio(
-                  Text(translate(e), style: style),
-                  e,
-                  peerSort.value,
-                  dense: true,
-                  (String? v) async {
-                    if (v != null) {
-                      peerSort.value = v;
-                      await bind.setLocalFlutterOption(
-                        k: kOptionPeerSorting,
-                        v: peerSort.value,
-                      );
-                    }
-                  },
-                ),
-              ),
+    return Obx(
+      () => DeviceOptionMenuButton<String>(
+        tooltip: translate('Sort by'),
+        icon: Icons.sort_rounded,
+        selectedValue: peerSort.value,
+        options: [
+          for (final option in PeerSortType.values)
+            DeviceOptionMenuItem<String>(
+              value: option,
+              label: translate(option),
+              icon: option == PeerSortType.remoteId
+                  ? Icons.numbers_rounded
+                  : Icons.text_fields_rounded,
             ),
-          ),
-        ),
-      );
-    }
-
-    var menuPos = RelativeRect.fromLTRB(0, 0, 0, 0);
-    return _hoverAction(
-      context: context,
-      toolTip: translate('Sort by'),
-      child: Icon(Icons.sort_rounded, size: 18),
-      onTapDown: (details) {
-        final x = details.globalPosition.dx;
-        final y = details.globalPosition.dy;
-        menuPos = RelativeRect.fromLTRB(x, y, x, y);
-      },
-      onTap: () => showMenu(
-        context: context,
-        position: menuPos,
-        items: items,
-        elevation: 8,
+        ],
+        onSelected: (value) async {
+          peerSort.value = value;
+          await bind.setLocalFlutterOption(
+            k: kOptionPeerSorting,
+            v: peerSort.value,
+          );
+        },
       ),
     );
   }

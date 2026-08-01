@@ -110,11 +110,8 @@ class _DesktopHomePageState extends State<DesktopHomePage>
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  const SizedBox(
-                    height: 258,
-                    child: ConnectionPage(showDevices: false),
-                  ),
-                  const SizedBox(height: 20),
+                  const ConnectionPage(showDevices: false),
+                  const SizedBox(height: 16),
                   Expanded(child: _buildDevicesWorkspace(context)),
                 ],
               ),
@@ -136,16 +133,18 @@ class _DesktopHomePageState extends State<DesktopHomePage>
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            if (!incomingOnly)
-              const SizedBox(
-                height: 286,
-                child: ConnectionPage(showDevices: false),
-              ),
+            if (!incomingOnly) const ConnectionPage(showDevices: false),
             if (!incomingOnly && !outgoingOnly) const SizedBox(height: 16),
             if (!outgoingOnly) _buildAccessPane(context, scrollable: false),
             if (!incomingOnly) ...[
               const SizedBox(height: 16),
-              SizedBox(height: 520, child: _buildDevicesWorkspace(context)),
+              SizedBox(
+                height: (MediaQuery.sizeOf(context).height * 0.58).clamp(
+                  380.0,
+                  640.0,
+                ),
+                child: _buildDevicesWorkspace(context),
+              ),
             ],
           ],
         ),

@@ -326,73 +326,48 @@ class _ConnectionPageState extends State<ConnectionPage>
             const Expanded(child: PeerTabPage()),
           ],
         );
-        return CamelliaBackdrop(
-          child: Column(
-            children: [
-              Expanded(
-                child: Padding(
-                  padding: EdgeInsets.fromLTRB(padding, padding, padding, 0),
-                  child: !widget.showDevices
-                      ? Align(
-                          alignment: Alignment.topCenter,
-                          child: SingleChildScrollView(
-                            child: ConstrainedBox(
-                              constraints: const BoxConstraints(maxWidth: 680),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.stretch,
-                                children: [
-                                  _buildRemoteIDTextField(
-                                    context,
-                                    maxWidth: 680,
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        )
-                      : split
-                      ? Row(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            SizedBox(
-                              width: 360,
-                              child: SingleChildScrollView(
-                                child: Column(
-                                  crossAxisAlignment:
-                                      CrossAxisAlignment.stretch,
-                                  children: [
-                                    _buildRemoteIDTextField(
-                                      context,
-                                      maxWidth: 360,
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 24),
-                            VerticalDivider(
-                              width: 1,
-                              color: AppVisual.border(context),
-                            ),
-                            const SizedBox(width: 24),
-                            Expanded(child: devices),
-                          ],
-                        )
-                      : Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            _buildRemoteIDTextField(
-                              context,
-                              maxWidth: compact ? 620 : 760,
-                            ),
-                            const SizedBox(height: 22),
-                            Expanded(child: devices),
-                          ],
-                        ),
+        final content = Padding(
+          padding: EdgeInsets.fromLTRB(padding, padding, padding, 0),
+          child: !widget.showDevices
+              ? Align(
+                  alignment: Alignment.topCenter,
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 680),
+                    child: _buildRemoteIDTextField(context, maxWidth: 680),
+                  ),
+                )
+              : split
+              ? Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    SizedBox(
+                      width: 360,
+                      child: SingleChildScrollView(
+                        child: _buildRemoteIDTextField(context, maxWidth: 360),
+                      ),
+                    ),
+                    const SizedBox(width: 24),
+                    VerticalDivider(width: 1, color: AppVisual.border(context)),
+                    const SizedBox(width: 24),
+                    Expanded(child: devices),
+                  ],
+                )
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _buildRemoteIDTextField(
+                      context,
+                      maxWidth: compact ? 620 : 760,
+                    ),
+                    const SizedBox(height: 22),
+                    Expanded(child: devices),
+                  ],
                 ),
-              ),
-            ],
-          ),
+        );
+        return CamelliaBackdrop(
+          child: widget.showDevices
+              ? Column(children: [Expanded(child: content)])
+              : content,
         );
       },
     );
@@ -635,11 +610,7 @@ class _ConnectionPageState extends State<ConnectionPage>
                 enableSuggestions: false,
                 keyboardType: TextInputType.visiblePassword,
                 focusNode: fieldFocusNode,
-                style: const TextStyle(
-                  fontFamily: 'WorkSans',
-                  fontSize: 22,
-                  height: 1.35,
-                ),
+                style: const TextStyle(fontSize: 22, height: 1.35),
                 maxLines: 1,
                 cursorColor: Theme.of(context).textTheme.titleLarge?.color,
                 decoration: InputDecoration(
