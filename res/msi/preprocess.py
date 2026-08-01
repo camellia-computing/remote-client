@@ -28,6 +28,25 @@ BUILD_DATE = re.compile(
     r"(?:[01][0-9]|2[0-3]):[0-5][0-9]",
     re.ASCII,
 )
+SHARED_PREPROCESSOR_VARIABLES = frozenset(
+    {
+        "Version",
+        "Manufacturer",
+        "Product",
+        "Description",
+        "ExeName",
+        "ProductLower",
+        "RegKeyRoot",
+        "RegKeyInstall",
+        "BuildDir",
+        "BuildDate",
+        "UpgradeCode",
+    }
+)
+PREPROCESSOR_VARIABLE = re.compile(r"\$\(var\.([A-Za-z_][A-Za-z0-9_.-]*)\)")
+SHARED_INCLUDE = re.compile(
+    r"<\?include\s+(?:[^?]*[\\/])?Includes\.wxi\s*\?>", re.IGNORECASE
+)
 
 # Replace the following links with your own in the custom arp properties.
 # https://learn.microsoft.com/en-us/windows/win32/msi/property-reference
@@ -510,6 +529,29 @@ def gen_content_between_tags(filename, tag_start, tag_end, func):
     return True
 
 
+def validate_shared_preprocessor_contract():
+    """Require each independently compiled WiX source to load shared metadata."""
+    violations = []
+    for source in sorted(PACKAGE_DIR.rglob("*.wxs")):
+        content = source.read_text(encoding="utf-8")
+        references = [
+            match
+            for match in PREPROCESSOR_VARIABLE.finditer(content)
+            if match.group(1) in SHARED_PREPROCESSOR_VARIABLES
+        ]
+        include = SHARED_INCLUDE.search(content)
+        if references and (include is None or include.start() > references[0].start()):
+            referenced = {match.group(1) for match in references}
+            variables = ", ".join(sorted(referenced))
+            violations.append(f"{source.relative_to(PACKAGE_DIR)} ({variables})")
+    if violations:
+        raise ValueError(
+            "WiX sources reference shared preprocessor variables before including "
+            f"Includes.wxi: {'; '.join(violations)}"
+        )
+    return True
+
+
 def prepare_resources():
     icon_src = SCRIPT_DIR.parent / "icon.ico"
     icon_dst = PACKAGE_DIR / "Resources" / "icon.ico"
@@ -620,6 +662,8 @@ if __name__ == "__main__":
 
     if not gen_custom_dialog_bitmaps():
         sys.exit(-1)
+
+    validate_shared_preprocessor_contract()
 
     replace_app_name_in_langs(args.app_name)
     replace_app_name_in_custom_actions(args.app_name)
