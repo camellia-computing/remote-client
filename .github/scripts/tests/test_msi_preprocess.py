@@ -93,6 +93,36 @@ class MsiPreprocessTests(unittest.TestCase):
             with redirect_stdout(io.StringIO()):
                 self.assertFalse(preprocess.init_global_vars(Path(directory), args))
 
+    def test_shared_wix_variables_require_the_shared_include(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            package = Path(directory)
+            fragment = package / "Fragments" / "Upgrades.wxs"
+            fragment.parent.mkdir()
+            fragment.write_text(
+                '<Wix><Fragment><Upgrade Id="$(var.UpgradeCode)" /></Fragment></Wix>\n',
+                encoding="utf-8",
+            )
+            with mock.patch.object(preprocess, "PACKAGE_DIR", package):
+                with self.assertRaisesRegex(ValueError, "Upgrades.wxs.*UpgradeCode"):
+                    preprocess.validate_shared_preprocessor_contract()
+                fragment.write_text(
+                    '<Wix><?include ../Includes.wxi?><Fragment>'
+                    '<Upgrade Id="$(var.UpgradeCode)" /></Fragment></Wix>\n',
+                    encoding="utf-8",
+                )
+                self.assertTrue(preprocess.validate_shared_preprocessor_contract())
+                fragment.write_text(
+                    '<Wix><Fragment><Upgrade Id="$(var.UpgradeCode)" /></Fragment>'
+                    '<?include ../Includes.wxi?></Wix>\n',
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(ValueError, "Upgrades.wxs.*UpgradeCode"):
+                    preprocess.validate_shared_preprocessor_contract()
+
+    def test_checked_in_upgrade_fragment_loads_shared_definitions(self) -> None:
+        fragment = preprocess.PACKAGE_DIR / "Fragments" / "Upgrades.wxs"
+        self.assertRegex(fragment.read_text(encoding="utf-8"), preprocess.SHARED_INCLUDE)
+
 
 if __name__ == "__main__":
     unittest.main()

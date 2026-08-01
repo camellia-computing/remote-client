@@ -21,6 +21,11 @@ and the product upgrade code remains stable across builds. Run preprocessing onl
 against a trusted build output because it executes that application to read its
 build date when producing installer metadata.
 
+WiX compiles each `.wxs` file independently. Every source that consumes generated
+product metadata therefore includes `Package/Includes.wxi`; preprocessing validates
+this contract before MSBuild so a missing definition fails early with its source
+file and variable names.
+
 Run `msiexec /i package.msi /l*v install.log` to record the log.
 
 ## Usage
