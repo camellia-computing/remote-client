@@ -36,6 +36,35 @@ enum RemoteCommandBarTier {
   bool includes(RemoteCommandBarTier minimum) => index >= minimum.index;
 }
 
+abstract final class RemoteCommandMenuMetrics {
+  static const double rowHeight = 36;
+  static const double compactHandleExtent = 64;
+
+  static double _availableExtent(double viewportExtent, double maximum) {
+    if (!viewportExtent.isFinite) return maximum;
+    return (viewportExtent - 24).clamp(0.0, maximum).toDouble();
+  }
+
+  static double menuWidth(double viewportWidth) =>
+      _availableExtent(viewportWidth, 232);
+
+  static double statusMenuWidth(double viewportWidth) =>
+      _availableExtent(viewportWidth, 260);
+
+  static double menuHeight(double viewportHeight) =>
+      _availableExtent(viewportHeight, 720);
+
+  static double statusPanelWidth(double viewportWidth) =>
+      (statusMenuWidth(viewportWidth) - 24).clamp(0.0, 236.0).toDouble();
+
+  static double statusMetricWidth(double viewportWidth) {
+    final contentWidth = (statusPanelWidth(viewportWidth) - 24)
+        .clamp(0.0, 212.0)
+        .toDouble();
+    return contentWidth >= 190 ? (contentWidth - 6) / 2 : contentWidth;
+  }
+}
+
 /// Persisted, application-wide placement of the remote session command bar.
 ///
 /// The client has not shipped yet, so this schema intentionally has no legacy

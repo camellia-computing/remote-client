@@ -25,6 +25,22 @@ void main() {
     );
   });
 
+  test('command menus stay compact inside narrow session windows', () {
+    expect(RemoteCommandMenuMetrics.menuWidth(507), 232);
+    expect(RemoteCommandMenuMetrics.menuWidth(200), 176);
+    expect(RemoteCommandMenuMetrics.menuWidth(120), 96);
+    expect(RemoteCommandMenuMetrics.statusMenuWidth(507), 260);
+    expect(RemoteCommandMenuMetrics.statusMenuWidth(240), 216);
+    expect(RemoteCommandMenuMetrics.statusMenuWidth(120), 96);
+    expect(RemoteCommandMenuMetrics.menuHeight(900), 720);
+    expect(RemoteCommandMenuMetrics.menuHeight(120), 96);
+    expect(RemoteCommandMenuMetrics.statusPanelWidth(507), 236);
+    expect(RemoteCommandMenuMetrics.statusMetricWidth(507), 103);
+    expect(RemoteCommandMenuMetrics.statusMetricWidth(240), 168);
+    expect(RemoteCommandMenuMetrics.rowHeight, 36);
+    expect(RemoteCommandMenuMetrics.compactHandleExtent, 64);
+  });
+
   group('RemoteCommandBarPreferences', () {
     test('round-trips every dock edge', () {
       for (final edge in RemoteCommandBarEdge.values) {
