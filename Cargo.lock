@@ -1075,7 +1075,7 @@ dependencies = [
 
 [[package]]
 name = "camellia-remote"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "android-wakelock",
  "android_logger 0.13.3",
