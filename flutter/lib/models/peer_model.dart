@@ -182,6 +182,8 @@ class Peers extends ChangeNotifier {
   List<String> restPeerIds = List.empty(growable: true);
   final GetInitPeers? getInitPeers;
   UpdateEvent event = UpdateEvent.load;
+  bool hasLoaded = false;
+  bool isLoading = false;
   static const _cbQueryOnlines = 'callback_query_onlines';
 
   Peers(
@@ -189,6 +191,7 @@ class Peers extends ChangeNotifier {
       required this.getInitPeers,
       required this.loadEvent}) {
     peers = getInitPeers?.call() ?? [];
+    hasLoaded = peers.isNotEmpty;
     platformFFI.registerEventHandler(_cbQueryOnlines, name, (evt) async {
       _updateOnlineState(evt);
     });
@@ -214,6 +217,12 @@ class Peers extends ChangeNotifier {
 
   int getPeersCount() {
     return peers.length;
+  }
+
+  void beginLoad() {
+    if (isLoading) return;
+    isLoading = true;
+    notifyListeners();
   }
 
   void _updateOnlineState(Map<String, dynamic> evt) {
@@ -263,6 +272,8 @@ class Peers extends ChangeNotifier {
       final state = onlineStates[peer.id];
       peer.online = state != null && state != false;
     }
+    hasLoaded = true;
+    isLoading = false;
     event = UpdateEvent.load;
     notifyListeners();
   }

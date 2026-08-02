@@ -7,3 +7,7 @@ remain applicable. Third-party dependencies retain their respective licenses.
 
 Build automation includes a modified copy of subosito/flutter-action v2.23.0 under the MIT
 License; its source notice and license are retained in .github/actions/setup-flutter/.
+
+The client embeds Noto Sans SC and Noto Sans TC from the Noto CJK Sans 2.004 release.
+The unmodified font files are distributed under the SIL Open Font License 1.1; the complete
+license is retained in flutter/assets/fonts/OFL.txt.

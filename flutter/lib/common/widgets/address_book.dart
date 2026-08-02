@@ -1,8 +1,5 @@
-import 'dart:math';
-
 import 'package:bot_toast/bot_toast.dart';
 import 'package:dropdown_button2/dropdown_button2.dart';
-import 'package:dynamic_layouts/dynamic_layouts.dart';
 import 'package:flutter/material.dart';
 import 'package:camellia_remote_app/common/formatter/id_formatter.dart';
 import 'package:camellia_remote_app/common/hbbs/hbbs.dart';
@@ -38,6 +35,7 @@ class AddressBook extends StatefulWidget {
 
 class _AddressBookState extends State<AddressBook> {
   var menuPos = RelativeRect.fill;
+  final _tagsMenuController = MenuController();
 
   @override
   Widget build(BuildContext context) => Obx(() {
@@ -105,23 +103,18 @@ class _AddressBookState extends State<AddressBook> {
             retry: null, // remove retry
             close: () => gFFI.abModel.currentAbPushError.value = '',
           ),
-          Expanded(
-            child: LayoutBuilder(
-              builder: (context, constraints) => constraints.maxWidth < 720
-                  ? _buildAddressBookPortrait()
-                  : _buildAddressBookLandscape(),
-            ),
-          ),
+          Expanded(child: _buildAddressBookContent()),
         ],
       );
     }
   });
 
-  Widget _buildAddressBookLandscape() {
+  Widget _buildAddressBookContent() {
     return Column(
       children: [
         Container(
-          padding: const EdgeInsets.fromLTRB(12, 6, 8, 6),
+          height: 48,
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
           decoration: BoxDecoration(
             color: Theme.of(context).colorScheme.surface,
             border: Border(
@@ -132,63 +125,108 @@ class _AddressBookState extends State<AddressBook> {
           ),
           child: Row(
             children: [
-              SizedBox(width: 250, child: _buildAbDropdown()),
-              if (!hideAbTagsPanel.value) ...[
-                const SizedBox(width: 12),
-                SizedBox(
-                  height: 30,
-                  child: VerticalDivider(
-                    width: 1,
-                    color: AppVisual.border(context),
-                  ),
+              Flexible(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 208),
+                  child: _buildAbDropdown(),
                 ),
-                const SizedBox(width: 12),
+              ),
+              const Spacer(),
+              if (!hideAbTagsPanel.value) _buildTagsMenuButton(),
+              const SizedBox(width: 4),
+              _buildAbPermission(),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        _buildPeersViews(),
+      ],
+    );
+  }
+
+  Widget _buildTagsMenuButton() => Obx(() {
+    final selectedCount = gFFI.abModel.selectedTags.length;
+    final mediaSize = MediaQuery.sizeOf(context);
+    final popoverWidth = (mediaSize.width - 24).clamp(0.0, 280.0).toDouble();
+    final popoverHeight = (mediaSize.height - 24).clamp(0.0, 400.0).toDouble();
+    return MenuAnchor(
+      controller: _tagsMenuController,
+      alignmentOffset: const Offset(0, 4),
+      style: MenuStyle(
+        minimumSize: WidgetStatePropertyAll(Size(popoverWidth, 0)),
+        maximumSize: WidgetStatePropertyAll(Size(popoverWidth, popoverHeight)),
+        padding: const WidgetStatePropertyAll(EdgeInsets.zero),
+        shape: WidgetStatePropertyAll(
+          RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+            side: BorderSide(color: AppVisual.border(context)),
+          ),
+        ),
+      ),
+      menuChildren: [
+        ConstrainedBox(
+          constraints: BoxConstraints(
+            maxWidth: popoverWidth,
+            maxHeight: popoverHeight,
+          ),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
                 Row(
-                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    Text(
-                      translate('Tags'),
-                      style: Theme.of(context).textTheme.labelMedium,
+                    Expanded(
+                      child: Text(
+                        translate('Tags'),
+                        style: Theme.of(context).textTheme.titleSmall,
+                      ),
                     ),
-                    const SizedBox(width: 2),
                     Listener(
                       onPointerDown: (event) {
                         final x = event.position.dx;
                         final y = event.position.dy;
                         menuPos = RelativeRect.fromLTRB(x, y, x, y);
                       },
-                      onPointerUp: (_) => _showMenu(menuPos),
+                      onPointerUp: (_) {
+                        _tagsMenuController.close();
+                        _showMenu(menuPos);
+                      },
                       child: build_more(context, invert: true),
                     ),
                   ],
                 ),
-                const SizedBox(width: 8),
-                Expanded(child: _buildTagStrip()),
-              ] else
-                const Spacer(),
-              Padding(
-                padding: const EdgeInsets.only(left: 8),
-                child: _buildAbPermission(),
-              ),
-            ],
+                const SizedBox(height: 6),
+                Flexible(
+                  child: SingleChildScrollView(
+                    child: Wrap(
+                      spacing: 2,
+                      runSpacing: 2,
+                      children: [
+                        for (final tag in _addressBookTags()) _tagBuilder(tag),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
-        const SizedBox(height: 10),
-        _buildPeersViews(),
       ],
-    );
-  }
-
-  Widget _buildTagStrip() {
-    return Obx(
-      () => SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Row(
-          children: [for (final tag in _addressBookTags()) _tagBuilder(tag)],
+      builder: (context, controller, child) => Tooltip(
+        message: translate('Tags'),
+        child: IconButton(
+          onPressed: controller.isOpen ? controller.close : controller.open,
+          icon: Badge.count(
+            count: selectedCount,
+            isLabelVisible: selectedCount > 0,
+            child: const Icon(Icons.sell_outlined, size: 19),
+          ),
         ),
       ),
     );
-  }
+  });
 
   List<String> _addressBookTags() {
     final tags = gFFI.abModel.currentAbTags
@@ -217,36 +255,21 @@ class _AddressBookState extends State<AddressBook> {
     );
   }
 
-  Widget _buildAddressBookPortrait() {
-    const padding = 8.0;
-    return Column(
-      children: [
-        Offstage(
-          offstage: hideAbTagsPanel.value,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(padding, 0, padding, padding),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                _buildAbDropdown(),
-                _buildTagHeader().marginOnly(left: 8.0, right: 0),
-                SizedBox(width: double.infinity, child: _buildTags()),
-              ],
-            ),
-          ),
-        ),
-        Divider(height: 1, color: AppVisual.border(context)),
-        _buildPeersViews(),
-      ],
-    );
-  }
-
   Widget _buildAbPermission() {
     icon(IconData data, String tooltip) {
       return Tooltip(
         message: translate(tooltip),
         waitDuration: Duration.zero,
-        child: Icon(data, size: 12.0).marginSymmetric(horizontal: 2.0),
+        child: SizedBox.square(
+          dimension: 32,
+          child: Center(
+            child: Icon(
+              data,
+              size: 18,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ),
       );
     }
 
@@ -301,6 +324,14 @@ class _AddressBookState extends State<AddressBook> {
     Row buildItem(String e, {bool button = false}) {
       return Row(
         children: [
+          if (button) ...[
+            Icon(
+              Icons.menu_book_outlined,
+              size: 18,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+            const SizedBox(width: 8),
+          ],
           Expanded(
             child: Tooltip(
               waitDuration: Duration(milliseconds: 500),
@@ -310,7 +341,7 @@ class _AddressBookState extends State<AddressBook> {
                 style: button ? null : TextStyle(fontSize: 14.0),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                textAlign: button ? TextAlign.center : null,
+                textAlign: TextAlign.start,
               ),
             ),
           ),
@@ -335,14 +366,14 @@ class _AddressBookState extends State<AddressBook> {
               }
             },
       customButton: Obx(
-        () => Container(
-          height: stateGlobal.isPortrait.isFalse ? 48 : 40,
+        () => SizedBox(
+          height: 40,
           child: Row(
             children: [
               Expanded(
                 child: buildItem(gFFI.abModel.currentName.value, button: true),
               ),
-              Icon(Icons.arrow_drop_down),
+              const Icon(Icons.arrow_drop_down, size: 20),
             ],
           ),
         ),
@@ -389,44 +420,6 @@ class _AddressBookState extends State<AddressBook> {
         },
       ),
     );
-  }
-
-  Widget _buildTagHeader() {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-      children: [
-        Text(translate('Tags')),
-        Listener(
-          onPointerDown: (e) {
-            final x = e.position.dx;
-            final y = e.position.dy;
-            menuPos = RelativeRect.fromLTRB(x, y, x, y);
-          },
-          onPointerUp: (_) => _showMenu(menuPos),
-          child: build_more(context, invert: true),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildTags() {
-    return Obx(() {
-      final tags = _addressBookTags();
-      gridView(bool isPortrait) => DynamicGridView.builder(
-        shrinkWrap: isPortrait,
-        gridDelegate: SliverGridDelegateWithWrapping(),
-        itemCount: tags.length,
-        itemBuilder: (BuildContext context, int index) {
-          return _tagBuilder(tags[index]);
-        },
-      );
-      final maxHeight = max(MediaQuery.of(context).size.height / 6, 100.0);
-      return Obx(
-        () => stateGlobal.isPortrait.isFalse
-            ? gridView(false)
-            : LimitedBox(maxHeight: maxHeight, child: gridView(true)),
-      );
-    });
   }
 
   Widget _buildPeersViews() {

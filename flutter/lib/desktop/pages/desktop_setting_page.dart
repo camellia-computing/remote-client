@@ -30,7 +30,7 @@ import '../../common/widgets/dialog.dart';
 import '../../common/widgets/login.dart';
 
 const double _kTabWidth = 216;
-const double _kCardFixedWidth = 920;
+const double _kCardFixedWidth = 720;
 const double _kCardLeftMargin = 15;
 const double _kContentHMargin = 15;
 const double _kContentHSubMargin = _kContentHMargin + 33;
@@ -343,7 +343,7 @@ class _DesktopSettingPageState extends State<DesktopSettingPage>
                         child: LayoutBuilder(
                           builder: (context, contentConstraints) {
                             final contentWidth = contentConstraints.maxWidth
-                                .clamp(0.0, 1040.0)
+                                .clamp(0.0, 840.0)
                                 .toDouble();
                             return Center(
                               child: SizedBox(
@@ -387,7 +387,7 @@ class _DesktopSettingPageState extends State<DesktopSettingPage>
         orElse: () => tabs.first,
       );
       return Container(
-        height: compact ? 62 : 72,
+        height: compact ? 58 : 64,
         padding: EdgeInsets.symmetric(horizontal: compact ? 12 : 22),
         color: Theme.of(context).colorScheme.surface,
         child: Row(
@@ -470,7 +470,7 @@ class _DesktopSettingPageState extends State<DesktopSettingPage>
         child: AnimatedContainer(
           duration: AppMotion.duration(context, AppMotion.stateChange),
           curve: AppMotion.enterCurve,
-          height: AppVisual.tokens(context).touchTarget,
+          height: compact ? 48 : 44,
           margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
           decoration: BoxDecoration(
             color: selected
@@ -1444,7 +1444,7 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
               )
               .toList();
 
-          var onChanged = tmpEnabled && !locked
+          ValueChanged<String?>? onChanged = tmpEnabled && !locked
               ? (value) {
                   if (value != null) {
                     () async {
@@ -1461,8 +1461,9 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
                     children: [
                       Radio(
                         value: value,
-                        groupValue: model.temporaryPasswordLength,
-                        onChanged: onChanged,
+                        enabled: onChanged != null,
+                        visualDensity: VisualDensity.compact,
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                       ),
                       Text(
                         value,
@@ -1541,7 +1542,11 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
                 _SubLabeledWidget(
                   context,
                   'One-time password length',
-                  Row(children: [...lengthRadios]),
+                  RadioGroup<String>(
+                    groupValue: model.temporaryPasswordLength,
+                    onChanged: onChanged ?? (_) {},
+                    child: Row(children: [...lengthRadios]),
+                  ),
                   enabled: tmpEnabled && !locked,
                 ),
               if (usePassword) numericOneTimePassword,
@@ -2950,7 +2955,7 @@ Widget _Card({
   List<Widget>? title_suffix,
 }) {
   return Padding(
-    padding: const EdgeInsets.fromLTRB(12, 14, 12, 0),
+    padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
     child: Align(
       alignment: Alignment.topCenter,
       child: ConstrainedBox(
@@ -2961,7 +2966,7 @@ Widget _Card({
           trailing: title_suffix == null
               ? null
               : Row(mainAxisSize: MainAxisSize.min, children: title_suffix),
-          padding: const EdgeInsets.fromLTRB(18, 2, 18, 16),
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [...children.map((e) => e.marginOnly(top: 4))],
@@ -3062,21 +3067,34 @@ Widget _Radio<T>(
         }
       : null;
   return GestureDetector(
-    child: Row(
-      children: [
-        Radio<T>(value: value, groupValue: groupValue, onChanged: onChange2),
-        Expanded(
-          child: Text(
-            translate(label),
-            overflow: autoNewLine ? null : TextOverflow.ellipsis,
-            style: TextStyle(
-              fontSize: _kContentFontSize,
-              color: disabledTextColor(context, onChange2 != null),
+    behavior: HitTestBehavior.opaque,
+    child: RadioGroup<T>(
+      groupValue: groupValue,
+      onChanged: onChange2 ?? (_) {},
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 44),
+        child: Row(
+          children: [
+            Radio<T>(
+              value: value,
+              enabled: onChange2 != null,
+              visualDensity: VisualDensity.compact,
+              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
             ),
-          ).marginOnly(left: 5),
-        ),
-      ],
-    ).marginOnly(left: _kRadioLeftMargin),
+            Expanded(
+              child: Text(
+                translate(label),
+                overflow: autoNewLine ? null : TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: _kContentFontSize,
+                  color: disabledTextColor(context, onChange2 != null),
+                ),
+              ).marginOnly(left: 8),
+            ),
+          ],
+        ).marginOnly(left: _kRadioLeftMargin),
+      ),
+    ),
     onTap: () => onChange2?.call(value),
   );
 }

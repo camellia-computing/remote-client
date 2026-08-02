@@ -2,6 +2,45 @@ import 'package:camellia_remote_app/ui/remote_ui_models.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('command bar tiers preserve the canvas at every dock extent', () {
+    expect(RemoteCommandBarTier.forExtent(320), RemoteCommandBarTier.core);
+    expect(RemoteCommandBarTier.forExtent(419), RemoteCommandBarTier.core);
+    expect(RemoteCommandBarTier.forExtent(420), RemoteCommandBarTier.input);
+    expect(
+      RemoteCommandBarTier.forExtent(560),
+      RemoteCommandBarTier.collaboration,
+    );
+    expect(RemoteCommandBarTier.forExtent(720), RemoteCommandBarTier.full);
+    expect(
+      RemoteCommandBarTier.forExtent(double.infinity),
+      RemoteCommandBarTier.full,
+    );
+    expect(
+      RemoteCommandBarTier.collaboration.includes(RemoteCommandBarTier.input),
+      isTrue,
+    );
+    expect(
+      RemoteCommandBarTier.input.includes(RemoteCommandBarTier.full),
+      isFalse,
+    );
+  });
+
+  test('command menus stay compact inside narrow session windows', () {
+    expect(RemoteCommandMenuMetrics.menuWidth(507), 232);
+    expect(RemoteCommandMenuMetrics.menuWidth(200), 176);
+    expect(RemoteCommandMenuMetrics.menuWidth(120), 96);
+    expect(RemoteCommandMenuMetrics.statusMenuWidth(507), 260);
+    expect(RemoteCommandMenuMetrics.statusMenuWidth(240), 216);
+    expect(RemoteCommandMenuMetrics.statusMenuWidth(120), 96);
+    expect(RemoteCommandMenuMetrics.menuHeight(900), 720);
+    expect(RemoteCommandMenuMetrics.menuHeight(120), 96);
+    expect(RemoteCommandMenuMetrics.statusPanelWidth(507), 236);
+    expect(RemoteCommandMenuMetrics.statusMetricWidth(507), 103);
+    expect(RemoteCommandMenuMetrics.statusMetricWidth(240), 168);
+    expect(RemoteCommandMenuMetrics.rowHeight, 36);
+    expect(RemoteCommandMenuMetrics.compactHandleExtent, 64);
+  });
+
   group('RemoteCommandBarPreferences', () {
     test('round-trips every dock edge', () {
       for (final edge in RemoteCommandBarEdge.values) {

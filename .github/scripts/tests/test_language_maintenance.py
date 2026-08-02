@@ -10,6 +10,22 @@ SPEC.loader.exec_module(language)
 
 
 class LanguageMaintenanceTests(unittest.TestCase):
+    def test_only_supported_translation_tables_are_checked_in(self) -> None:
+        self.assertEqual(
+            set(language.LANGUAGE_SOURCES),
+            {"en", "cn", "tw", "template"},
+        )
+
+    def test_chinese_tables_match_the_template_and_are_complete(self) -> None:
+        template_keys = set(language.get_lang("template"))
+        for locale in ("cn", "tw"):
+            translations = language.get_lang(locale)
+            self.assertEqual(set(translations), template_keys)
+            self.assertFalse(
+                [key for key, value in translations.items() if not value],
+                f"{locale} contains empty translations",
+            )
+
     def test_language_names_cannot_escape_the_translation_directory(self) -> None:
         for invalid in ["../en", "nested/en", "", "en.csv", "not_a_language"]:
             with self.assertRaises(ValueError):

@@ -29,10 +29,14 @@ Color _connectionModeTone(_ConnectionMode mode) => switch (mode) {
 };
 
 class OnlineStatusWidget extends StatefulWidget {
-  const OnlineStatusWidget({Key? key, this.onSvcStatusChanged})
-    : super(key: key);
+  const OnlineStatusWidget({
+    Key? key,
+    this.onSvcStatusChanged,
+    this.compact = false,
+  }) : super(key: key);
 
   final VoidCallback? onSvcStatusChanged;
+  final bool compact;
 
   @override
   State<OnlineStatusWidget> createState() => _OnlineStatusWidgetState();
@@ -45,7 +49,7 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
   Timer? _updateTimer;
 
   double get em => 14.0;
-  double? get height => bind.isIncomingOnly() ? null : em * 3;
+  double? get height => bind.isIncomingOnly() || widget.compact ? null : em * 3;
 
   void onUsePublicServerGuide() {
     const url = "https://github.com/camellia-computing/remote-client";
@@ -101,7 +105,9 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
     );
 
     basicWidget() => Padding(
-      padding: EdgeInsets.fromLTRB(12, 5, isIncomingOnly ? 0 : 12, 5),
+      padding: widget.compact
+          ? EdgeInsets.zero
+          : EdgeInsets.fromLTRB(12, 5, isIncomingOnly ? 0 : 12, 5),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
@@ -298,16 +304,11 @@ class _ConnectionPageState extends State<ConnectionPage>
 
   @override
   Widget build(BuildContext context) {
-    final isOutgoingOnly = bind.isOutgoingOnly();
     return LayoutBuilder(
       builder: (context, constraints) {
         final compact = constraints.maxWidth < 720;
         final split = widget.showDevices && constraints.maxWidth >= 860;
         final padding = compact ? 14.0 : 24.0;
-        final pageHeader = CamelliaPageHeader(
-          title: translate('Connect'),
-          subtitle: translate('Choose a mode and enter a trusted device ID'),
-        );
         final devices = Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -325,82 +326,48 @@ class _ConnectionPageState extends State<ConnectionPage>
             const Expanded(child: PeerTabPage()),
           ],
         );
-        return CamelliaBackdrop(
-          child: Column(
-            children: [
-              Expanded(
-                child: Padding(
-                  padding: EdgeInsets.fromLTRB(padding, padding, padding, 0),
-                  child: !widget.showDevices
-                      ? Align(
-                          alignment: Alignment.topCenter,
-                          child: SingleChildScrollView(
-                            child: ConstrainedBox(
-                              constraints: const BoxConstraints(maxWidth: 680),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.stretch,
-                                children: [
-                                  pageHeader,
-                                  const SizedBox(height: 18),
-                                  _buildRemoteIDTextField(
-                                    context,
-                                    maxWidth: 680,
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        )
-                      : split
-                      ? Row(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            SizedBox(
-                              width: 360,
-                              child: SingleChildScrollView(
-                                child: Column(
-                                  crossAxisAlignment:
-                                      CrossAxisAlignment.stretch,
-                                  children: [
-                                    pageHeader,
-                                    const SizedBox(height: 18),
-                                    _buildRemoteIDTextField(
-                                      context,
-                                      maxWidth: 360,
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 24),
-                            VerticalDivider(
-                              width: 1,
-                              color: AppVisual.border(context),
-                            ),
-                            const SizedBox(width: 24),
-                            Expanded(child: devices),
-                          ],
-                        )
-                      : Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            pageHeader,
-                            const SizedBox(height: 18),
-                            _buildRemoteIDTextField(
-                              context,
-                              maxWidth: compact ? 620 : 760,
-                            ),
-                            const SizedBox(height: 22),
-                            Expanded(child: devices),
-                          ],
-                        ),
+        final content = Padding(
+          padding: EdgeInsets.fromLTRB(padding, padding, padding, 0),
+          child: !widget.showDevices
+              ? Align(
+                  alignment: Alignment.topCenter,
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 680),
+                    child: _buildRemoteIDTextField(context, maxWidth: 680),
+                  ),
+                )
+              : split
+              ? Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    SizedBox(
+                      width: 360,
+                      child: SingleChildScrollView(
+                        child: _buildRemoteIDTextField(context, maxWidth: 360),
+                      ),
+                    ),
+                    const SizedBox(width: 24),
+                    VerticalDivider(width: 1, color: AppVisual.border(context)),
+                    const SizedBox(width: 24),
+                    Expanded(child: devices),
+                  ],
+                )
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _buildRemoteIDTextField(
+                      context,
+                      maxWidth: compact ? 620 : 760,
+                    ),
+                    const SizedBox(height: 22),
+                    Expanded(child: devices),
+                  ],
                 ),
-              ),
-              if (!isOutgoingOnly)
-                Container(height: 1, color: AppVisual.border(context)),
-              if (!isOutgoingOnly) const OnlineStatusWidget(),
-            ],
-          ),
+        );
+        return CamelliaBackdrop(
+          child: widget.showDevices
+              ? Column(children: [Expanded(child: content)])
+              : content,
         );
       },
     );
@@ -439,116 +406,141 @@ class _ConnectionPageState extends State<ConnectionPage>
   }) {
     return ConstrainedBox(
       constraints: BoxConstraints(maxWidth: maxWidth),
-      child: CamelliaSection(
-        padding: const EdgeInsets.fromLTRB(18, 18, 18, 16),
-        accent: _connectionModeTone(_connectionMode),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            LayoutBuilder(
-              builder: (context, constraints) {
-                final showLabels = constraints.maxWidth >= 560;
-                return SegmentedButton<_ConnectionMode>(
-                  showSelectedIcon: false,
-                  segments: [
-                    ButtonSegment(
-                      value: _ConnectionMode.desktop,
-                      icon: const Icon(Icons.desktop_windows_outlined),
-                      label: showLabels ? Text(translate('Desktop')) : null,
-                      tooltip: translate('Control Remote Desktop'),
-                    ),
-                    ButtonSegment(
-                      value: _ConnectionMode.files,
-                      icon: const Icon(Icons.folder_copy_outlined),
-                      label: showLabels ? Text(translate('Files')) : null,
-                      tooltip: translate('Transfer file'),
-                    ),
-                    ButtonSegment(
-                      value: _ConnectionMode.camera,
-                      icon: const Icon(Icons.videocam_outlined),
-                      label: showLabels ? Text(translate('Camera')) : null,
-                      tooltip: translate('View camera'),
-                    ),
-                    ButtonSegment(
-                      value: _ConnectionMode.terminal,
-                      icon: const Icon(Icons.terminal_rounded),
-                      label: showLabels ? Text(translate('Terminal')) : null,
-                      tooltip: translate('Terminal'),
-                    ),
-                  ],
-                  selected: {_connectionMode},
-                  onSelectionChanged: (selection) {
-                    setState(() => _connectionMode = selection.first);
-                  },
-                );
-              },
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final compact = constraints.maxWidth < 560;
+          final showStatus = !bind.isOutgoingOnly();
+          return CamelliaSection(
+            title: translate('Connect'),
+            description: translate(
+              'Choose a mode and enter a trusted device ID',
             ),
-            const SizedBox(height: 14),
-            Obx(
-              () => AnimatedContainer(
-                duration: AppMotion.duration(context, AppMotion.stateChange),
-                curve: Curves.easeOutCubic,
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                decoration: BoxDecoration(
-                  color: AppVisual.inset(context),
-                  borderRadius: BorderRadius.circular(AppVisual.radius),
-                  border: Border.all(
-                    color: _idInputFocused.value
-                        ? CamelliaColors.azure
-                        : AppVisual.border(context),
-                    width: _idInputFocused.value ? 1.4 : 1,
-                  ),
-                ),
-                child: LayoutBuilder(
+            trailing: showStatus && !compact
+                ? const OnlineStatusWidget(compact: true)
+                : null,
+            padding: const EdgeInsets.fromLTRB(18, 8, 18, 16),
+            accent: _connectionModeTone(_connectionMode),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (showStatus && compact) ...[
+                  const OnlineStatusWidget(compact: true),
+                  const SizedBox(height: 10),
+                ],
+                LayoutBuilder(
                   builder: (context, constraints) {
-                    final compact = constraints.maxWidth < 460;
-                    final optionsWidth =
-                        (constraints.maxWidth - (compact ? 72.0 : 146.0))
-                            .clamp(220.0, 620.0)
-                            .toDouble();
-                    return Row(
-                      children: [
-                        Expanded(
-                          child: _buildAutocomplete(context, optionsWidth),
+                    final showLabels = constraints.maxWidth >= 560;
+                    return SegmentedButton<_ConnectionMode>(
+                      showSelectedIcon: false,
+                      segments: [
+                        ButtonSegment(
+                          value: _ConnectionMode.desktop,
+                          icon: const Icon(Icons.desktop_windows_outlined),
+                          label: showLabels ? Text(translate('Desktop')) : null,
+                          tooltip: translate('Control Remote Desktop'),
                         ),
-                        const SizedBox(width: 8),
-                        SizedBox(
-                          height: 42,
-                          child: compact
-                              ? FilledButton(
-                                  style: FilledButton.styleFrom(
-                                    backgroundColor: _connectionModeTone(
-                                      _connectionMode,
-                                    ),
-                                  ),
-                                  onPressed: _connectSelectedMode,
-                                  child: const Icon(
-                                    Icons.arrow_forward_rounded,
-                                    size: 18,
-                                  ),
-                                )
-                              : FilledButton.icon(
-                                  style: FilledButton.styleFrom(
-                                    backgroundColor: _connectionModeTone(
-                                      _connectionMode,
-                                    ),
-                                  ),
-                                  onPressed: _connectSelectedMode,
-                                  icon: const Icon(
-                                    Icons.arrow_forward_rounded,
-                                    size: 18,
-                                  ),
-                                  label: Text(translate("Connect")),
-                                ),
+                        ButtonSegment(
+                          value: _ConnectionMode.files,
+                          icon: const Icon(Icons.folder_copy_outlined),
+                          label: showLabels ? Text(translate('Files')) : null,
+                          tooltip: translate('Transfer file'),
+                        ),
+                        ButtonSegment(
+                          value: _ConnectionMode.camera,
+                          icon: const Icon(Icons.videocam_outlined),
+                          label: showLabels ? Text(translate('Camera')) : null,
+                          tooltip: translate('View camera'),
+                        ),
+                        ButtonSegment(
+                          value: _ConnectionMode.terminal,
+                          icon: const Icon(Icons.terminal_rounded),
+                          label: showLabels
+                              ? Text(translate('Terminal'))
+                              : null,
+                          tooltip: translate('Terminal'),
                         ),
                       ],
+                      selected: {_connectionMode},
+                      onSelectionChanged: (selection) {
+                        setState(() => _connectionMode = selection.first);
+                      },
                     );
                   },
                 ),
-              ),
+                const SizedBox(height: 14),
+                Obx(
+                  () => AnimatedContainer(
+                    duration: AppMotion.duration(
+                      context,
+                      AppMotion.stateChange,
+                    ),
+                    curve: Curves.easeOutCubic,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 6,
+                    ),
+                    decoration: BoxDecoration(
+                      color: AppVisual.inset(context),
+                      borderRadius: BorderRadius.circular(AppVisual.radius),
+                      border: Border.all(
+                        color: _idInputFocused.value
+                            ? CamelliaColors.azure
+                            : AppVisual.border(context),
+                        width: _idInputFocused.value ? 1.4 : 1,
+                      ),
+                    ),
+                    child: LayoutBuilder(
+                      builder: (context, constraints) {
+                        final compact = constraints.maxWidth < 460;
+                        final optionsWidth =
+                            (constraints.maxWidth - (compact ? 72.0 : 146.0))
+                                .clamp(220.0, 620.0)
+                                .toDouble();
+                        return Row(
+                          children: [
+                            Expanded(
+                              child: _buildAutocomplete(context, optionsWidth),
+                            ),
+                            const SizedBox(width: 8),
+                            SizedBox(
+                              height: 42,
+                              child: compact
+                                  ? FilledButton(
+                                      style: FilledButton.styleFrom(
+                                        backgroundColor: _connectionModeTone(
+                                          _connectionMode,
+                                        ),
+                                      ),
+                                      onPressed: _connectSelectedMode,
+                                      child: const Icon(
+                                        Icons.arrow_forward_rounded,
+                                        size: 18,
+                                      ),
+                                    )
+                                  : FilledButton.icon(
+                                      style: FilledButton.styleFrom(
+                                        backgroundColor: _connectionModeTone(
+                                          _connectionMode,
+                                        ),
+                                      ),
+                                      onPressed: _connectSelectedMode,
+                                      icon: const Icon(
+                                        Icons.arrow_forward_rounded,
+                                        size: 18,
+                                      ),
+                                      label: Text(translate("Connect")),
+                                    ),
+                            ),
+                          ],
+                        );
+                      },
+                    ),
+                  ),
+                ),
+              ],
             ),
-          ],
-        ),
+          );
+        },
       ),
     );
   }
@@ -618,11 +610,7 @@ class _ConnectionPageState extends State<ConnectionPage>
                 enableSuggestions: false,
                 keyboardType: TextInputType.visiblePassword,
                 focusNode: fieldFocusNode,
-                style: const TextStyle(
-                  fontFamily: 'WorkSans',
-                  fontSize: 22,
-                  height: 1.35,
-                ),
+                style: const TextStyle(fontSize: 22, height: 1.35),
                 maxLines: 1,
                 cursorColor: Theme.of(context).textTheme.titleLarge?.color,
                 decoration: InputDecoration(

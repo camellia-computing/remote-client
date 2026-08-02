@@ -8,6 +8,6 @@
   </defs>
   <rect width="1024" height="1024" rx="236" fill="url(#plate)"/>
   <rect x="185" y="216" width="451" height="389" rx="117" fill="url(#rear)" mask="url(#rear-mask)"/>
-  <path d="M458 450 L566 574" stroke="#ff5c7a" stroke-width="93" stroke-linecap="round"/>
+  <path d="M458 458 L566 566" stroke="#ff5c7a" stroke-width="93" stroke-linecap="round"/>
   <rect x="387" y="419" width="451" height="389" rx="117" fill="url(#front)" mask="url(#front-mask)"/>
 </svg>

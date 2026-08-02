@@ -1,5 +1,37 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+
+enum CamelliaLanguage { english, simplifiedChinese, traditionalChinese }
+
+abstract final class CamelliaTypography {
+  static const simplifiedFamily = 'CamelliaSansSC';
+  static const traditionalFamily = 'CamelliaSansTC';
+
+  static CamelliaLanguage resolve({
+    required String savedLanguage,
+    required Locale systemLocale,
+  }) {
+    final saved = savedLanguage.trim().toLowerCase().replaceAll('_', '-');
+    final system = <String>[
+      systemLocale.languageCode,
+      if (systemLocale.scriptCode != null) systemLocale.scriptCode!,
+      if (systemLocale.countryCode != null) systemLocale.countryCode!,
+    ].join('-').toLowerCase();
+    final candidate = saved.isEmpty || saved == 'default' ? system : saved;
+    if (!candidate.startsWith('zh')) return CamelliaLanguage.english;
+    if (candidate.contains('hant') ||
+        candidate.contains('-tw') ||
+        candidate.contains('-hk') ||
+        candidate.contains('-mo')) {
+      return CamelliaLanguage.traditionalChinese;
+    }
+    return CamelliaLanguage.simplifiedChinese;
+  }
+
+  static String family(CamelliaLanguage language) =>
+      language == CamelliaLanguage.traditionalChinese
+      ? traditionalFamily
+      : simplifiedFamily;
+}
 
 abstract final class CamelliaColors {
   static const indigo = Color(0xFF6558F5);
@@ -26,21 +58,21 @@ abstract final class CamelliaColors {
   static const portalCutoutLight = Color(0xFFF9FAFF);
   static const portalCutoutDark = Color(0xFF0B0D15);
 
-  static const lightCanvas = Color(0xFFF6F7FC);
-  static const lightSurface = Color(0xFFFFFFFF);
-  static const lightInset = Color(0xFFF0F2FA);
+  static const lightCanvas = Color(0xFFF4F7FC);
+  static const lightSurface = Color(0xFFFCFDFF);
+  static const lightInset = Color(0xFFEDF3FB);
   static const lightRaised = Color(0xFFFFFFFF);
-  static const lightBorder = Color(0xFFDCE0EE);
-  static const lightText = Color(0xFF171925);
-  static const lightMuted = Color(0xFF62697A);
+  static const lightBorder = Color(0xFFD6DFEC);
+  static const lightText = Color(0xFF172033);
+  static const lightMuted = Color(0xFF617087);
 
-  static const darkCanvas = Color(0xFF0B0D15);
-  static const darkSurface = Color(0xFF151824);
-  static const darkInset = Color(0xFF1C2030);
-  static const darkRaised = Color(0xFF23283A);
-  static const darkBorder = Color(0xFF343A51);
-  static const darkText = Color(0xFFF6F7FC);
-  static const darkMuted = Color(0xFFAAB1C3);
+  static const darkCanvas = Color(0xFF090F1D);
+  static const darkSurface = Color(0xFF111A2B);
+  static const darkInset = Color(0xFF18243A);
+  static const darkRaised = Color(0xFF202E47);
+  static const darkBorder = Color(0xFF30405C);
+  static const darkText = Color(0xFFEDF4FF);
+  static const darkMuted = Color(0xFF9AAAC2);
 
   static const lightAccentWash = indigoSoft;
   static const darkAccentWash = Color(0xFF29264F);
@@ -57,17 +89,18 @@ abstract final class CamelliaSpace {
 }
 
 abstract final class CamelliaRadius {
-  static const control = 12.0;
-  static const surface = 16.0;
-  static const sheet = 20.0;
+  static const control = 10.0;
+  static const surface = 14.0;
+  static const sheet = 18.0;
   static const status = 999.0;
 }
 
 abstract final class CamelliaMotion {
   static const hover = Duration(milliseconds: 120);
-  static const feedback = Duration(milliseconds: 180);
-  static const state = Duration(milliseconds: 220);
-  static const content = Duration(milliseconds: 240);
+  static const feedback = Duration(milliseconds: 160);
+  static const state = Duration(milliseconds: 200);
+  static const content = Duration(milliseconds: 220);
+  static const modal = Duration(milliseconds: 260);
   static const route = Duration(milliseconds: 280);
   static const enter = Curves.easeOutCubic;
   static const exit = Curves.easeInCubic;
@@ -78,6 +111,7 @@ abstract final class CamelliaTheme {
   static ThemeData build({
     required Brightness brightness,
     required bool desktopDensity,
+    String fontFamily = CamelliaTypography.simplifiedFamily,
     List<ThemeExtension<dynamic>> extensions = const [],
   }) {
     final dark = brightness == Brightness.dark;
@@ -96,7 +130,7 @@ abstract final class CamelliaTheme {
         : CamelliaColors.lightBorder;
     final text = dark ? CamelliaColors.darkText : CamelliaColors.lightText;
     final muted = dark ? CamelliaColors.darkMuted : CamelliaColors.lightMuted;
-    final primary = dark ? const Color(0xFFA9A5FF) : CamelliaColors.indigo;
+    final primary = dark ? const Color(0xFFAAA7FF) : CamelliaColors.indigo;
     final primaryContainer = dark
         ? CamelliaColors.darkAccentWash
         : CamelliaColors.lightAccentWash;
@@ -113,13 +147,13 @@ abstract final class CamelliaTheme {
           primaryContainer: primaryContainer,
           onPrimaryContainer: onPrimaryContainer,
           secondary: dark
-              ? const Color(0xFFC5C2FF)
+              ? const Color(0xFF77C7FF)
               : CamelliaColors.indigoStrong,
           onSecondary: dark ? const Color(0xFF211B66) : Colors.white,
           secondaryContainer: dark
               ? const Color(0xFF302C63)
               : const Color(0xFFEDEBFF),
-          tertiary: dark ? const Color(0xFFB9C0CC) : const Color(0xFF535B68),
+          tertiary: dark ? const Color(0xFF67DDCE) : CamelliaColors.aquaStrong,
           tertiaryContainer: dark
               ? const Color(0xFF30343C)
               : const Color(0xFFE9EBEF),
@@ -136,21 +170,9 @@ abstract final class CamelliaTheme {
           error: dark ? const Color(0xFFFFB4AB) : const Color(0xFFB3261E),
           onError: Colors.white,
         );
-    final platform = defaultTargetPlatform;
-    final font = switch (platform) {
-      TargetPlatform.windows => 'Segoe UI',
-      TargetPlatform.android => 'Roboto',
-      TargetPlatform.linux => 'Inter',
-      _ => null,
-    };
-    const fallbacks = <String>[
-      'SF Pro Text',
-      'Segoe UI',
-      'Roboto',
-      'Inter',
-      'Noto Sans CJK SC',
-      'Noto Sans',
-    ];
+    final fallbackFamily = fontFamily == CamelliaTypography.traditionalFamily
+        ? CamelliaTypography.simplifiedFamily
+        : CamelliaTypography.traditionalFamily;
     TextStyle style(
       double size,
       FontWeight weight, {
@@ -158,8 +180,8 @@ abstract final class CamelliaTheme {
       double tracking = 0,
       Color? color,
     }) => TextStyle(
-      fontFamily: font,
-      fontFamilyFallback: fallbacks,
+      fontFamily: fontFamily,
+      fontFamilyFallback: <String>[fallbackFamily],
       fontSize: size,
       fontWeight: weight,
       height: height,
@@ -198,6 +220,8 @@ abstract final class CamelliaTheme {
     return ThemeData(
       useMaterial3: true,
       brightness: brightness,
+      fontFamily: fontFamily,
+      fontFamilyFallback: <String>[fallbackFamily],
       colorScheme: scheme,
       scaffoldBackgroundColor: canvas,
       canvasColor: canvas,
@@ -410,7 +434,7 @@ abstract final class CamelliaTheme {
             : Duration.zero,
         showDuration: const Duration(seconds: 2),
         decoration: BoxDecoration(
-          color: dark ? CamelliaColors.lightText : CamelliaColors.darkSurface,
+          color: dark ? const Color(0xFFE7EEFB) : const Color(0xFF111A2B),
           borderRadius: BorderRadius.circular(5),
         ),
         textStyle: style(12, FontWeight.w500, color: Colors.white),
@@ -526,14 +550,24 @@ class CamelliaBackdrop extends StatelessWidget {
           colors: [
             theme.scaffoldBackgroundColor,
             Color.alphaBlend(
-              CamelliaColors.indigo.withValues(alpha: dark ? 0.08 : 0.035),
+              (dark ? CamelliaColors.indigo : CamelliaColors.azure).withValues(
+                alpha: dark ? 0.16 : 0.065,
+              ),
               theme.scaffoldBackgroundColor,
             ),
             Color.alphaBlend(
-              CamelliaColors.azure.withValues(alpha: dark ? 0.055 : 0.025),
+              (dark ? CamelliaColors.azure : CamelliaColors.indigo).withValues(
+                alpha: dark ? 0.10 : 0.04,
+              ),
               theme.scaffoldBackgroundColor,
             ),
+            if (dark)
+              Color.alphaBlend(
+                CamelliaColors.aqua.withValues(alpha: 0.045),
+                theme.scaffoldBackgroundColor,
+              ),
           ],
+          stops: dark ? const [0, 0.36, 0.72, 1] : const [0, 0.5, 1],
         ),
       ),
       child: Padding(padding: padding ?? EdgeInsets.zero, child: child),
@@ -623,6 +657,8 @@ class CamelliaSection extends StatelessWidget {
       child: Material(
         color: theme.colorScheme.surface,
         surfaceTintColor: Colors.transparent,
+        elevation: theme.brightness == Brightness.dark ? 2 : 0,
+        shadowColor: Colors.black.withValues(alpha: 0.34),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(CamelliaRadius.surface),
           side: BorderSide(color: border),

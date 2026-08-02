@@ -258,6 +258,69 @@ class _DeviceRow extends StatelessWidget {
   }
 }
 
+class _TypographyFixture extends StatelessWidget {
+  const _TypographyFixture();
+
+  @override
+  Widget build(BuildContext context) {
+    Widget sample(String family, String title, String body) {
+      return Expanded(
+        child: DefaultTextStyle.merge(
+          style: TextStyle(fontFamily: family),
+          child: AppSurface(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  title,
+                  style: TextStyle(
+                    fontFamily: family,
+                    fontSize: 20,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  body,
+                  style: TextStyle(
+                    fontFamily: family,
+                    fontSize: 15,
+                    height: 1.5,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Scaffold(
+      body: CamelliaBackdrop(
+        padding: const EdgeInsets.all(24),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            sample(
+              CamelliaTypography.simplifiedFamily,
+              '简体中文 · English',
+              '连接可信设备，保持清晰一致的字重。\nSecurely connect to a trusted device.',
+            ),
+            const SizedBox(width: 16),
+            sample(
+              CamelliaTypography.traditionalFamily,
+              '繁體中文 · English',
+              '連線可信任的裝置，維持清晰一致的字重。\nSecurely connect to a trusted device.',
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 Future<void> _renderGolden(
   WidgetTester tester, {
   required Size size,
@@ -304,6 +367,34 @@ void main() {
       size: const Size(390, 844),
       theme: MyTheme.lightTheme,
       file: 'goldens/camellia_mobile_light.png',
+    );
+  });
+
+  testWidgets('mobile dark visual review', (tester) async {
+    await _renderGolden(
+      tester,
+      size: const Size(390, 844),
+      theme: MyTheme.darkTheme,
+      file: 'goldens/camellia_mobile_dark.png',
+    );
+  });
+
+  testWidgets('simplified and traditional typography review', (tester) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(860, 280);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
+    await tester.pumpWidget(
+      MaterialApp(
+        debugShowCheckedModeBanner: false,
+        theme: MyTheme.lightTheme,
+        home: const _TypographyFixture(),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 700));
+    await expectLater(
+      find.byType(_TypographyFixture),
+      matchesGoldenFile('goldens/camellia_typography_sc_tc.png'),
     );
   });
 }

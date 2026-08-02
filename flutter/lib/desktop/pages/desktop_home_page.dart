@@ -8,7 +8,6 @@ import 'package:flutter/services.dart';
 import 'package:camellia_remote_app/common.dart';
 import 'package:camellia_remote_app/common/widgets/adaptive_layout.dart';
 import 'package:camellia_remote_app/common/widgets/animated_rotation_widget.dart';
-import 'package:camellia_remote_app/common/widgets/brand_shell.dart';
 import 'package:camellia_remote_app/ui/camellia_design.dart';
 import 'package:camellia_remote_app/common/widgets/custom_password.dart';
 import 'package:camellia_remote_app/common/widgets/dialog.dart';
@@ -16,6 +15,7 @@ import 'package:camellia_remote_app/common/widgets/peer_tab_page.dart';
 import 'package:camellia_remote_app/consts.dart';
 import 'package:camellia_remote_app/desktop/pages/connection_page.dart';
 import 'package:camellia_remote_app/desktop/pages/desktop_setting_page.dart';
+import 'package:camellia_remote_app/desktop/widgets/titlebar_widget.dart';
 import 'package:camellia_remote_app/models/platform_model.dart';
 import 'package:camellia_remote_app/models/server_model.dart';
 import 'package:camellia_remote_app/plugin/ui_manager.dart';
@@ -53,111 +53,106 @@ class _DesktopHomePageState extends State<DesktopHomePage>
   @override
   Widget build(BuildContext context) {
     super.build(context);
-    return _buildBlock(
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final layout = AppLayout.forWidth(constraints.maxWidth);
-          final compact = layout == AppLayoutSize.compact;
-          final contentHeight = constraints.maxHeight - (compact ? 64 : 76);
-          return CamelliaBackdrop(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                _buildWorkspaceHeader(context, compact),
-                Expanded(
+    return Column(
+      children: [
+        DesktopTitleBar(
+          labels: DesktopTitleBarLabels(
+            minimize: translate('Minimize'),
+            maximize: translate('Maximize'),
+            restore: translate('Restore'),
+            close: translate('Close'),
+          ),
+        ),
+        Expanded(
+          child: _buildBlock(
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                return CamelliaBackdrop(
                   child: FocusTraversalGroup(
                     policy: WidgetOrderTraversalPolicy(),
-                    child: SingleChildScrollView(
-                      padding: EdgeInsets.only(
-                        bottom: MediaQuery.paddingOf(context).bottom + 24,
-                      ),
-                      child: AdaptiveContent(
-                        maxWidth: 1440,
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            _buildCapabilityWorkspace(
-                              context,
-                              constraints: constraints,
-                            ),
-                            if (!bind.isIncomingOnly()) ...[
-                              const SizedBox(height: 24),
-                              _buildDevicesWorkspace(
-                                context,
-                                minimumHeight: (contentHeight * 0.48).clamp(
-                                  360.0,
-                                  620.0,
-                                ),
-                              ),
-                            ],
-                          ],
-                        ),
-                      ),
-                    ),
+                    child: constraints.maxWidth >= AppLayout.splitBreakpoint
+                        ? _buildExpandedWorkspace(context)
+                        : _buildStackedWorkspace(context),
                   ),
-                ),
-              ],
+                );
+              },
             ),
-          );
-        },
-      ),
+          ),
+        ),
+      ],
     );
   }
 
-  Widget _buildCapabilityWorkspace(
-    BuildContext context, {
-    required BoxConstraints constraints,
-  }) {
+  Widget _buildExpandedWorkspace(BuildContext context) {
     final incomingOnly = bind.isIncomingOnly();
     final outgoingOnly = bind.isOutgoingOnly();
-    final expanded = constraints.maxWidth >= AppLayout.expandedBreakpoint;
-    final panelHeight = expanded ? 316.0 : 304.0;
-    final share = SizedBox(
-      height: panelHeight,
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(CamelliaRadius.surface),
-        child: buildLeftPane(context),
-      ),
-    );
-    final connect = SizedBox(
-      height: panelHeight,
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(CamelliaRadius.surface),
-        child: const ConnectionPage(showDevices: false),
-      ),
-    );
-    if (incomingOnly) {
-      return Align(
-        alignment: AlignmentDirectional.topStart,
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 560),
-          child: share,
-        ),
-      );
-    }
-    if (outgoingOnly) {
-      return connect;
-    }
-    if (expanded) {
-      return Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Expanded(flex: 4, child: share),
-          const SizedBox(width: 24),
-          Expanded(flex: 8, child: connect),
-        ],
-      );
-    }
-    return Column(
+    return Row(
       crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [connect, const SizedBox(height: 16), share],
+      children: [
+        if (!outgoingOnly)
+          ConstrainedBox(
+            constraints: const BoxConstraints(minWidth: 296, maxWidth: 336),
+            child: SizedBox(
+              width: 320,
+              child: _buildAccessPane(context, scrollable: true),
+            ),
+          ),
+        if (!outgoingOnly)
+          VerticalDivider(
+            width: 1,
+            thickness: 1,
+            color: AppVisual.border(context),
+          ),
+        if (!incomingOnly)
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const ConnectionPage(showDevices: false),
+                  const SizedBox(height: 16),
+                  Expanded(child: _buildDevicesWorkspace(context)),
+                ],
+              ),
+            ),
+          ),
+      ],
     );
   }
 
-  Widget _buildDevicesWorkspace(
-    BuildContext context, {
-    required double minimumHeight,
-  }) {
+  Widget _buildStackedWorkspace(BuildContext context) {
+    final incomingOnly = bind.isIncomingOnly();
+    final outgoingOnly = bind.isOutgoingOnly();
+    return SingleChildScrollView(
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.paddingOf(context).bottom + 24,
+      ),
+      child: AdaptiveContent(
+        maxWidth: 900,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (!incomingOnly) const ConnectionPage(showDevices: false),
+            if (!incomingOnly && !outgoingOnly) const SizedBox(height: 16),
+            if (!outgoingOnly) _buildAccessPane(context, scrollable: false),
+            if (!incomingOnly) ...[
+              const SizedBox(height: 16),
+              SizedBox(
+                height: (MediaQuery.sizeOf(context).height * 0.58).clamp(
+                  380.0,
+                  640.0,
+                ),
+                child: _buildDevicesWorkspace(context),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDevicesWorkspace(BuildContext context) {
     return CamelliaSection(
       title: translate('Devices'),
       description: translate(
@@ -165,67 +160,39 @@ class _DesktopHomePageState extends State<DesktopHomePage>
       ),
       accent: CamelliaColors.azure,
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-      child: SizedBox(height: minimumHeight, child: const PeerTabPage()),
+      child: const PeerTabPage(),
     );
   }
 
-  Widget _buildWorkspaceHeader(BuildContext context, bool compact) {
-    final theme = Theme.of(context);
-    return Container(
-      height: compact ? 64 : 76,
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surface.withValues(alpha: 0.94),
-        border: Border(
-          bottom: BorderSide(
-            color: Theme.of(context).colorScheme.outlineVariant,
-          ),
-        ),
+  Widget _buildAccessPane(BuildContext context, {required bool scrollable}) {
+    final pane = buildLeftPane(context, scrollable: scrollable);
+    return Material(
+      color: Theme.of(context).colorScheme.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(CamelliaRadius.surface),
+        side: BorderSide(color: AppVisual.border(context)),
       ),
-      child: Padding(
-        padding: EdgeInsets.symmetric(horizontal: compact ? 16 : 28),
-        child: Row(
-          children: [
-            CamelliaAnimatedBrandMark(
-              size: compact ? 36 : 42,
-              semanticLabel: bind.mainGetAppNameSync(),
-            ),
-            SizedBox(width: compact ? 10 : 14),
-            Expanded(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    bind.mainGetAppNameSync(),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  if (!compact)
-                    Text(
-                      translate('Connect, share, and manage trusted devices'),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: AppVisual.subduedText(context),
-                      ),
-                    ),
-                ],
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        mainAxisSize: scrollable ? MainAxisSize.max : MainAxisSize.min,
+        children: [
+          if (scrollable) Expanded(child: pane) else pane,
+          if (!bind.isDisableSettings()) ...[
+            Divider(height: 1, color: AppVisual.border(context)),
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: () =>
+                      DesktopSettingPage.switch2page(SettingsTabKey.general),
+                  icon: const Icon(Icons.settings_outlined, size: 19),
+                  label: Text(translate('Settings')),
+                ),
               ),
             ),
-            if (!bind.isDisableSettings()) ...[
-              const SizedBox(width: 12),
-              IconButton(
-                tooltip: translate('Settings'),
-                onPressed: () =>
-                    DesktopSettingPage.switch2page(SettingsTabKey.general),
-                icon: const Icon(Icons.tune_rounded),
-              ),
-            ],
           ],
-        ),
+        ],
       ),
     );
   }
@@ -239,7 +206,11 @@ class _DesktopHomePageState extends State<DesktopHomePage>
     );
   }
 
-  Widget buildLeftPane(BuildContext context, {double? width}) {
+  Widget buildLeftPane(
+    BuildContext context, {
+    double? width,
+    bool scrollable = true,
+  }) {
     final isIncomingOnly = bind.isIncomingOnly();
     final isOutgoingOnly = bind.isOutgoingOnly();
     final children = <Widget>[
@@ -258,6 +229,13 @@ class _DesktopHomePageState extends State<DesktopHomePage>
         const OnlineStatusWidget().marginOnly(bottom: 6, right: 6),
       ]);
     }
+    final content = Padding(
+      padding: const EdgeInsets.fromLTRB(0, 8, 0, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: children,
+      ),
+    );
     return ChangeNotifierProvider.value(
       value: gFFI.serverModel,
       child: AnimatedContainer(
@@ -266,14 +244,12 @@ class _DesktopHomePageState extends State<DesktopHomePage>
         width: width,
         color: Colors.transparent,
         clipBehavior: Clip.antiAlias,
-        child: SingleChildScrollView(
-          controller: _leftPaneScrollController,
-          padding: const EdgeInsets.fromLTRB(0, 10, 0, 12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: children,
-          ),
-        ),
+        child: scrollable
+            ? SingleChildScrollView(
+                controller: _leftPaneScrollController,
+                child: content,
+              )
+            : content,
       ),
     );
   }
