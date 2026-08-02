@@ -1,21 +1,17 @@
 import 'package:flutter/material.dart';
 
-enum DeviceCategoryLayout { dropdown, wrapped }
+enum DeviceCategoryLayout { selector, bar, rail }
 
-enum DeviceActionLayout { stacked, twoRows, inline }
+DeviceCategoryLayout deviceCategoryLayoutForWidth(double width) => width < 520
+    ? DeviceCategoryLayout.selector
+    : width < 840
+    ? DeviceCategoryLayout.bar
+    : DeviceCategoryLayout.rail;
 
-DeviceCategoryLayout deviceCategoryLayoutForWidth(double width) =>
-    width < 520 ? DeviceCategoryLayout.dropdown : DeviceCategoryLayout.wrapped;
-
-DeviceActionLayout deviceActionLayoutForWidth(double width) {
-  if (width < 440) return DeviceActionLayout.stacked;
-  if (width < 640) return DeviceActionLayout.twoRows;
-  return DeviceActionLayout.inline;
-}
-
-double deviceSearchWidth(double availableWidth) {
-  if (availableWidth < 440) return availableWidth;
-  return (availableWidth * 0.36).clamp(220, 320).toDouble();
+double deviceSearchWidth(double availableWidth, {bool focused = false}) {
+  if (availableWidth < 520) return availableWidth;
+  final preferred = focused ? 280.0 : 208.0;
+  return preferred.clamp(0, availableWidth * 0.52).toDouble();
 }
 
 class DeviceOptionMenuItem<T> {
