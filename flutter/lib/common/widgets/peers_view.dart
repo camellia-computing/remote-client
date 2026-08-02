@@ -188,6 +188,13 @@ class _PeersViewState extends State<_PeersView>
       child: Consumer<Peers>(builder: (context, peers, child) {
         if (peers.peers.isEmpty) {
           gFFI.peerTabModel.setCurrentTabCachedPeers([]);
+          if (peers.isLoading && !peers.hasLoaded) {
+            return AppStatePane(
+              state: AppContentState.loading,
+              title: translate('Loading...'),
+              message: translate('Please wait'),
+            );
+          }
           return AppStatePane(
             state: AppContentState.empty,
             title: translate('Empty'),
@@ -224,6 +231,13 @@ class _PeersViewState extends State<_PeersView>
             var peers = snapshot.data!;
             if (peers.length > 1000) peers = peers.sublist(0, 1000);
             gFFI.peerTabModel.setCurrentTabCachedPeers(peers);
+            if (peers.isEmpty) {
+              return AppStatePane(
+                state: AppContentState.noResults,
+                title: translate('Search'),
+                message: translate('Empty'),
+              );
+            }
             buildOnePeer(Peer peer, bool isPortrait) {
               final visibilityChild = VisibilityDetector(
                 key: ValueKey(_cardId(peer.id)),
@@ -450,13 +464,6 @@ class RecentPeersView extends BasePeersView {
             menuPadding: menuPadding,
           ),
         );
-
-  @override
-  Widget build(BuildContext context) {
-    final widget = super.build(context);
-    bind.mainLoadRecentPeers();
-    return widget;
-  }
 }
 
 class FavoritePeersView extends BasePeersView {
@@ -470,13 +477,6 @@ class FavoritePeersView extends BasePeersView {
             menuPadding: menuPadding,
           ),
         );
-
-  @override
-  Widget build(BuildContext context) {
-    final widget = super.build(context);
-    bind.mainLoadFavPeers();
-    return widget;
-  }
 }
 
 class DiscoveredPeersView extends BasePeersView {
@@ -490,14 +490,6 @@ class DiscoveredPeersView extends BasePeersView {
             menuPadding: menuPadding,
           ),
         );
-
-  @override
-  Widget build(BuildContext context) {
-    final widget = super.build(context);
-    bind.mainLoadLanPeers();
-    bind.mainDiscover();
-    return widget;
-  }
 }
 
 class AddressBookPeersView extends BasePeersView {

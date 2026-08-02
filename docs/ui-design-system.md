@@ -40,9 +40,11 @@ change geometry; fixed text-scale wrappers are prohibited.
 
 Devices uses component-local breakpoints so it remains fluid inside either the
 root workspace or a future embedded surface. Below 520 px, categories use one
-compact selector; otherwise they wrap without horizontal scrolling. Device
-actions stack below 440 px, use two rows from 440–639 px, and share one row from
-640 px. Search fills a narrow row but is capped to 220–320 px on wider layouts.
+compact selector; from 520–839 px they use one icon-only category bar; at 840 px
+and above they move into a 52 px internal rail. These are workspace controls,
+not a second application navigation surface. Compact layouts reveal search in
+place from an icon action. Wider layouts reserve 208 px for search and may grow
+it to 280 px while focused, without taking space from peer content.
 
 ## Visual language
 
@@ -71,12 +73,17 @@ zero. Repeating ornamental animation is not part of the root workspace.
   footer. The access pane owns the only root Settings action.
 - Device categories are mutually exclusive and never control the visibility of
   search or peer actions. Category selection, search, refresh, and view controls
-  remain independent. View and sort use the same borderless 44 px trigger and
-  selectable-row pattern; their menus are 184–216 px wide, omit duplicate
-  headings, and use one hover/action layer per row.
+  remain independent. Selecting a category explicitly starts its first load;
+  rendering a peer list never causes repeated network requests. View and sort
+  use compact icon triggers with tooltips and the same selectable-row pattern.
+  Address-book selection remains visible, while tags live in a bounded popover
+  instead of consuming a permanent content row.
 - Credential dialogs group each credential type, keep labels adjacent to their
   controls, present validation inline, prevent duplicate submission, and use
-  aligned Cancel/Connect actions.
+  aligned Cancel/Connect actions. Explanatory text is subordinate to the input,
+  not another nested card. Desktop represents optional credential persistence
+  with one 40 px stateful icon and tooltip; touch layouts retain a visible label
+  and a minimum 48 px target.
 - Session status uses a compact two-column information panel and always exposes
   secure state, direct/relay route, protocol, latency, throughput, frame rate,
   bitrate, codec, and chroma as text. Unknown values render as an em dash.
@@ -84,9 +91,13 @@ zero. Repeating ornamental animation is not part of the root workspace.
   command buttons use a 40 px icon target with tooltip, semantic label, focus,
   and hover state. Status, control, display, and close remain directly available;
   secondary actions progressively move into a labeled More menu at 720, 560,
-  and 420 px dock extents. Menus are viewport-bounded and scroll when necessary.
-  The collapsed command bar retains an icon-only restore action with an explicit
-  tooltip and semantic label. Mobile touch targets remain at least 48 px.
+  and 420 px dock extents. Top-level actions are direct anchored controls, not
+  nested menu bars. General display and cursor options use named submenus;
+  ordinary menus are 168–232 px wide, status is 216–260 px wide, and rows are
+  36 px high. Menus remain viewport-bounded and scroll when necessary. The
+  collapsed command bar is a fully rounded 64 px drag-and-restore surface with
+  explicit tooltips and semantic labels. Mobile touch targets remain at least
+  48 px.
 - Settings surfaces always have a root Settings header plus the selected
   section header. Desktop navigation is 216 px wide, content is capped at
   720 px, and rows use compact desktop density without dropping accessible

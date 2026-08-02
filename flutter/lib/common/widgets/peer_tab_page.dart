@@ -43,9 +43,20 @@ EdgeInsets? _menuPadding() {
 class _PeerTabPageState extends State<PeerTabPage>
     with SingleTickerProviderStateMixin {
   final List<_TabEntry> entries = [
-    _TabEntry(RecentPeersView(menuPadding: _menuPadding())),
-    _TabEntry(FavoritePeersView(menuPadding: _menuPadding())),
-    _TabEntry(DiscoveredPeersView(menuPadding: _menuPadding())),
+    _TabEntry(
+      RecentPeersView(menuPadding: _menuPadding()),
+      ({dynamic hint}) => bind.mainLoadRecentPeers(),
+    ),
+    _TabEntry(
+      FavoritePeersView(menuPadding: _menuPadding()),
+      ({dynamic hint}) => bind.mainLoadFavPeers(),
+    ),
+    _TabEntry(DiscoveredPeersView(menuPadding: _menuPadding()), ({
+      dynamic hint,
+    }) {
+      bind.mainLoadLanPeers();
+      bind.mainDiscover();
+    }),
     _TabEntry(
       AddressBook(menuPadding: _menuPadding()),
       ({dynamic hint}) => gFFI.abModel.pullAb(
@@ -59,6 +70,10 @@ class _PeerTabPageState extends State<PeerTabPage>
     ),
   ];
   RelativeRect? mobileTabContextMenuPos;
+  bool _searchFocused = false;
+  bool _compactSearchOpen = false;
+  int? _loadedTab;
+  int? _scheduledTab;
 
   final isOptVisiableFixed = isOptionFixed(kOptionPeerTabVisible);
 
@@ -66,6 +81,22 @@ class _PeerTabPageState extends State<PeerTabPage>
   void initState() {
     super.initState();
     _loadLocalOptions();
+  }
+
+  void _ensureTabLoaded(int tabIndex) {
+    if (_loadedTab == tabIndex || _scheduledTab == tabIndex) return;
+    _scheduledTab = tabIndex;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _scheduledTab = null;
+      final currentTab = gFFI.peerTabModel.currentTab;
+      if (currentTab != tabIndex) {
+        _ensureTabLoaded(currentTab);
+        return;
+      }
+      _loadedTab = tabIndex;
+      _loadTab(tabIndex, hint: false);
+    });
   }
 
   void _loadLocalOptions() {
@@ -82,57 +113,92 @@ class _PeerTabPageState extends State<PeerTabPage>
         bind.mainGetLocalOption(key: kOptionHideAbTagsPanel) == 'Y';
   }
 
+  void _loadTab(int tabIndex, {dynamic hint}) {
+    if (tabIndex >= 0 && tabIndex < entries.length) {
+      switch (PeerTabIndex.values[tabIndex]) {
+        case PeerTabIndex.recent:
+          gFFI.recentPeersModel.beginLoad();
+          break;
+        case PeerTabIndex.fav:
+          gFFI.favoritePeersModel.beginLoad();
+          break;
+        case PeerTabIndex.lan:
+          gFFI.lanPeersModel.beginLoad();
+          break;
+        case PeerTabIndex.ab:
+        case PeerTabIndex.group:
+          break;
+      }
+      entries[tabIndex].load?.call(hint: hint);
+    }
+  }
+
   Future<void> handleTabSelection(int tabIndex) async {
-    if (tabIndex < entries.length) {
+    if (tabIndex >= 0 && tabIndex < entries.length) {
+      _loadedTab = tabIndex;
       if (tabIndex != gFFI.peerTabModel.currentTab) {
         gFFI.peerTabModel.setCurrentTabCachedPeers([]);
       }
       gFFI.peerTabModel.setCurrentTab(tabIndex);
-      entries[tabIndex].load?.call(hint: false);
+      _loadTab(tabIndex, hint: false);
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final model = Provider.of<PeerTabModel>(context);
+    _ensureTabLoaded(model.currentTab);
     return LayoutBuilder(
-      builder: (context, constraints) => Column(
-        textBaseline: TextBaseline.ideographic,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          AnimatedSwitcher(
-            duration: const Duration(milliseconds: 180),
-            child: model.multiSelectionMode
-                ? ConstrainedBox(
-                    key: const ValueKey('peer-multi-selection'),
-                    constraints: const BoxConstraints(minHeight: 48),
-                    child: SingleChildScrollView(
-                      scrollDirection: Axis.horizontal,
-                      child: createMultiSelectionBar(model),
-                    ),
-                  )
-                : Padding(
-                    key: const ValueKey('peer-category-and-actions'),
-                    padding: const EdgeInsets.only(bottom: 10),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        visibleContextMenuListener(
-                          _createSwitchBar(context, constraints.maxWidth),
-                        ),
-                        const SizedBox(height: 10),
-                        _buildActionBar(context, constraints.maxWidth),
-                      ],
-                    ),
-                  ),
-          ),
-          _createPeersView(),
-        ],
-      ),
+      builder: (context, constraints) {
+        final categoryLayout = deviceCategoryLayoutForWidth(
+          constraints.maxWidth,
+        );
+        final contentWidth = categoryLayout == DeviceCategoryLayout.rail
+            ? constraints.maxWidth - 64
+            : constraints.maxWidth;
+        final content = Column(
+          textBaseline: TextBaseline.ideographic,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (categoryLayout != DeviceCategoryLayout.rail) ...[
+              visibleContextMenuListener(
+                _createCategoryControl(context, categoryLayout),
+              ),
+              const SizedBox(height: 8),
+            ],
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 180),
+              child: model.multiSelectionMode
+                  ? ConstrainedBox(
+                      key: const ValueKey('peer-multi-selection'),
+                      constraints: const BoxConstraints(minHeight: 44),
+                      child: SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: createMultiSelectionBar(model),
+                      ),
+                    )
+                  : _buildActionBar(context, contentWidth),
+            ),
+            _createPeersView(),
+          ],
+        );
+        if (categoryLayout != DeviceCategoryLayout.rail) return content;
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            visibleContextMenuListener(_createCategoryRail(context)),
+            const SizedBox(width: 12),
+            Expanded(child: content),
+          ],
+        );
+      },
     );
   }
 
-  Widget _createSwitchBar(BuildContext context, double width) {
+  Widget _createCategoryControl(
+    BuildContext context,
+    DeviceCategoryLayout layout,
+  ) {
     final model = Provider.of<PeerTabModel>(context);
     final tabs = model.visibleEnabledOrderedIndexs;
     if (tabs.isEmpty) return const SizedBox.shrink();
@@ -147,87 +213,184 @@ class _PeerTabPageState extends State<PeerTabPage>
       );
     }
 
-    if (deviceCategoryLayoutForWidth(width) == DeviceCategoryLayout.dropdown) {
-      return DropdownButtonFormField<int>(
-        key: ValueKey<int>(selected),
-        initialValue: selected,
-        isExpanded: true,
-        decoration: InputDecoration(
-          labelText: translate('Devices'),
-          prefixIcon: Icon(model.tabIcon(selected)),
+    if (layout == DeviceCategoryLayout.selector) {
+      return SizedBox(
+        height: 44,
+        child: DropdownButtonFormField<int>(
+          key: ValueKey<int>(selected),
+          initialValue: selected,
+          isExpanded: true,
+          decoration: InputDecoration(
+            isDense: true,
+            contentPadding: const EdgeInsets.symmetric(horizontal: 12),
+            prefixIcon: Icon(model.tabIcon(selected), size: 19),
+          ),
+          items: [
+            for (final tab in tabs)
+              DropdownMenuItem<int>(
+                value: tab,
+                child: Text(
+                  model.tabTooltip(tab),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+          ],
+          onChanged: isOptionFixed(kOptionPeerTabIndex)
+              ? null
+              : (tab) {
+                  if (tab != null) select(tab);
+                },
         ),
-        items: [
+      );
+    }
+    return SizedBox(
+      height: 44,
+      child: Row(
+        children: [
           for (final tab in tabs)
-            DropdownMenuItem<int>(
-              value: tab,
-              child: Text(
-                model.tabTooltip(tab),
-                overflow: TextOverflow.ellipsis,
+            Padding(
+              padding: const EdgeInsetsDirectional.only(end: 4),
+              child: _categoryButton(
+                context,
+                tab: tab,
+                selected: tab == selected,
+                onPressed: isOptionFixed(kOptionPeerTabIndex)
+                    ? null
+                    : () => select(tab),
               ),
             ),
         ],
-        onChanged: isOptionFixed(kOptionPeerTabIndex)
-            ? null
-            : (tab) {
-                if (tab != null) select(tab);
-              },
-      );
-    }
-    return Wrap(
-      spacing: 8,
-      runSpacing: 8,
-      children: [
-        for (final tab in tabs)
-          ChoiceChip(
-            selected: tab == selected,
-            showCheckmark: false,
-            avatar: Icon(model.tabIcon(tab), size: 18),
-            label: Text(model.tabTooltip(tab)),
-            tooltip: model.tabTooltip(tab),
-            onSelected: isOptionFixed(kOptionPeerTabIndex)
-                ? null
-                : (_) => select(tab),
+      ),
+    );
+  }
+
+  Widget _createCategoryRail(BuildContext context) {
+    final model = Provider.of<PeerTabModel>(context);
+    final tabs = model.visibleEnabledOrderedIndexs;
+    return SizedBox(
+      width: 52,
+      child: Column(
+        children: [
+          for (final tab in tabs)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: _categoryButton(
+                context,
+                tab: tab,
+                selected: tab == model.currentTab,
+                onPressed: isOptionFixed(kOptionPeerTabIndex)
+                    ? null
+                    : () async {
+                        await handleTabSelection(tab);
+                        await bind.setLocalFlutterOption(
+                          k: kOptionPeerTabIndex,
+                          v: tab.toString(),
+                        );
+                      },
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _categoryButton(
+    BuildContext context, {
+    required int tab,
+    required bool selected,
+    required VoidCallback? onPressed,
+  }) {
+    final model = Provider.of<PeerTabModel>(context, listen: false);
+    final theme = Theme.of(context);
+    final label = model.tabTooltip(tab);
+    return Semantics(
+      button: true,
+      selected: selected,
+      label: label,
+      child: Tooltip(
+        message: label,
+        child: Material(
+          color: selected
+              ? theme.colorScheme.primaryContainer
+              : Colors.transparent,
+          borderRadius: BorderRadius.circular(10),
+          child: InkWell(
+            onTap: onPressed,
+            borderRadius: BorderRadius.circular(10),
+            child: SizedBox(
+              width: 44,
+              height: 44,
+              child: Center(
+                child: Icon(
+                  model.tabIcon(tab),
+                  size: 20,
+                  color: selected
+                      ? theme.colorScheme.onPrimaryContainer
+                      : theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ),
           ),
-      ],
+        ),
+      ),
     );
   }
 
   Widget _buildActionBar(BuildContext context, double width) {
-    final actions = Wrap(
-      alignment: WrapAlignment.end,
-      crossAxisAlignment: WrapCrossAlignment.center,
-      spacing: 4,
-      runSpacing: 4,
-      children: _landscapeRightActions(context),
-    );
-    final layout = deviceActionLayoutForWidth(width);
-    if (layout != DeviceActionLayout.inline) {
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Align(
-            alignment: AlignmentDirectional.centerStart,
-            child: SizedBox(
-              width: deviceSearchWidth(width),
-              child: const PeerSearchBar(),
+    final actions = _landscapeRightActions(context);
+    if (width < 520 && !_compactSearchOpen && peerSearchText.value.isEmpty) {
+      return SizedBox(
+        height: 44,
+        child: Row(
+          children: [
+            _hoverAction(
+              context: context,
+              child: const Icon(Icons.search_rounded, size: 19),
+              onTap: () => setState(() => _compactSearchOpen = true),
+              toolTip: translate('Search ID'),
             ),
-          ),
-          const SizedBox(height: 8),
-          Align(alignment: AlignmentDirectional.centerEnd, child: actions),
-        ],
+            const Spacer(),
+            ...actions,
+          ],
+        ),
       );
     }
-    return Row(
-      children: [
-        SizedBox(width: deviceSearchWidth(width), child: const PeerSearchBar()),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Align(
-            alignment: AlignmentDirectional.centerEnd,
-            child: actions,
+    return SizedBox(
+      height: 44,
+      child: Row(
+        children: [
+          if (width < 520)
+            IconButton(
+              tooltip: translate('Back'),
+              onPressed: () {
+                FocusManager.instance.primaryFocus?.unfocus();
+                peerSearchTextController.clear();
+                peerSearchText.value = '';
+                setState(() => _compactSearchOpen = false);
+              },
+              icon: const Icon(Icons.arrow_back_rounded),
+            ),
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 160),
+            curve: Curves.easeOutCubic,
+            width: width < 520
+                ? (width - 48).clamp(0, width).toDouble()
+                : deviceSearchWidth(width, focused: _searchFocused),
+            child: PeerSearchBar(
+              onFocusChanged: (focused) {
+                if (_searchFocused != focused && mounted) {
+                  setState(() => _searchFocused = focused);
+                }
+              },
+            ),
           ),
-        ),
-      ],
+          if (width >= 520) ...[
+            const SizedBox(width: 8),
+            const Spacer(),
+            ...actions,
+          ],
+        ],
+      ),
     );
   }
 
@@ -252,33 +415,29 @@ class _PeerTabPageState extends State<PeerTabPage>
       }
     }
     return Expanded(
-      child: child.marginSymmetric(
-        vertical: (isDesktop || isWebDesktop) ? 12.0 : 6.0,
+      child: Padding(
+        padding: EdgeInsets.only(top: (isDesktop || isWebDesktop) ? 8.0 : 6.0),
+        child: child,
       ),
     );
   }
 
-  Widget _createRefresh({
-    required PeerTabIndex index,
-    required RxBool loading,
-  }) {
-    final model = Provider.of<PeerTabModel>(context);
+  Widget _createRefresh() {
+    final model = Provider.of<PeerTabModel>(context, listen: false);
     final textColor = Theme.of(context).textTheme.titleLarge?.color;
-    return Offstage(
-      offstage: model.currentTab != index.index,
-      child: Tooltip(
-        message: translate('Refresh'),
-        child: RefreshWidget(
-          onPressed: () {
-            if (gFFI.peerTabModel.currentTab < entries.length) {
-              entries[gFFI.peerTabModel.currentTab].load?.call();
-            }
-          },
-          spinning: loading,
-          child: RotatedBox(
-            quarterTurns: 2,
-            child: Icon(Icons.refresh, size: 18, color: textColor),
-          ),
+    final loading = switch (PeerTabIndex.values[model.currentTab]) {
+      PeerTabIndex.ab => gFFI.abModel.currentAbLoading,
+      PeerTabIndex.group => gFFI.groupModel.groupLoading,
+      _ => null,
+    };
+    return Tooltip(
+      message: translate('Refresh'),
+      child: RefreshWidget(
+        onPressed: () => _loadTab(model.currentTab),
+        spinning: loading,
+        child: RotatedBox(
+          quarterTurns: 2,
+          child: Icon(Icons.refresh, size: 18, color: textColor),
         ),
       ),
     );
@@ -610,33 +769,19 @@ class _PeerTabPageState extends State<PeerTabPage>
   List<Widget> _landscapeRightActions(BuildContext context) {
     final model = Provider.of<PeerTabModel>(context);
     return [
-      _createRefresh(
-        index: PeerTabIndex.ab,
-        loading: gFFI.abModel.currentAbLoading,
-      ),
-      _createRefresh(
-        index: PeerTabIndex.group,
-        loading: gFFI.groupModel.groupLoading,
-      ),
-      Offstage(
-        offstage: model.currentTabCachedPeers.isEmpty,
-        child: _createMultiSelection(),
-      ),
+      _createRefresh(),
+      if (model.currentTabCachedPeers.isNotEmpty) _createMultiSelection(),
       _createPeerViewTypeSwitch(context),
-      Offstage(
-        offstage: model.currentTab == PeerTabIndex.recent.index,
-        child: PeerSortDropdown(),
-      ),
-      Offstage(
-        offstage: model.currentTab != PeerTabIndex.ab.index,
-        child: _toggleTags(),
-      ),
+      if (model.currentTab != PeerTabIndex.recent.index) PeerSortDropdown(),
+      if (model.currentTab == PeerTabIndex.ab.index) _toggleTags(),
     ];
   }
 }
 
 class PeerSearchBar extends StatefulWidget {
-  const PeerSearchBar({Key? key}) : super(key: key);
+  const PeerSearchBar({Key? key, this.onFocusChanged}) : super(key: key);
+
+  final ValueChanged<bool>? onFocusChanged;
 
   @override
   State<StatefulWidget> createState() => _PeerSearchBarState();
@@ -656,6 +801,7 @@ class _PeerSearchBarState extends State<PeerSearchBar> {
   void _handleFocusChanged() {
     if (!mounted) return;
     setState(() => _focused = _focusNode.hasFocus);
+    widget.onFocusChanged?.call(_focusNode.hasFocus);
   }
 
   void _handleTextChanged() {

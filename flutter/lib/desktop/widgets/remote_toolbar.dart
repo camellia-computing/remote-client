@@ -115,20 +115,10 @@ Alignment _alignmentForEdge(_ToolbarEdge edge, double fraction) {
   }
 }
 
-// The drag handle hangs off the side of the toolbar facing away from the
-// docked edge, so the icons themselves sit flush against that edge.
-BorderRadius _collapseHandleBorderRadius(_ToolbarEdge edge) {
-  const r = Radius.circular(5);
-  switch (edge) {
-    case _ToolbarEdge.top:
-      return const BorderRadius.vertical(bottom: r);
-    case _ToolbarEdge.bottom:
-      return const BorderRadius.vertical(top: r);
-    case _ToolbarEdge.left:
-      return const BorderRadius.horizontal(right: r);
-    case _ToolbarEdge.right:
-      return const BorderRadius.horizontal(left: r);
-  }
+// The handle is visually separate from the toolbar and keeps the same rounded
+// silhouette at every dock edge.
+BorderRadius _collapseHandleBorderRadius() {
+  return BorderRadius.circular(12);
 }
 
 IconData _toolbarCollapseIcon(_ToolbarEdge edge, bool isCollapsed) {
@@ -298,12 +288,18 @@ class _ToolbarTheme {
       MyTheme.color(context).divider;
 
   static MenuStyle defaultMenuStyle(BuildContext context) {
-    final maxHeight = (MediaQuery.sizeOf(context).height - 24)
-        .clamp(160.0, 720.0)
-        .toDouble();
+    final maxHeight = RemoteCommandMenuMetrics.menuHeight(
+      MediaQuery.sizeOf(context).height,
+    );
+    final maxWidth = RemoteCommandMenuMetrics.menuWidth(
+      MediaQuery.sizeOf(context).width,
+    );
+    final minWidth = maxWidth < 168
+        ? maxWidth
+        : maxWidth.clamp(168.0, 196.0).toDouble();
     return MenuStyle(
-      minimumSize: const WidgetStatePropertyAll(Size(196, 0)),
-      maximumSize: WidgetStatePropertyAll(Size(248, maxHeight)),
+      minimumSize: WidgetStatePropertyAll(Size(minWidth, 0)),
+      maximumSize: WidgetStatePropertyAll(Size(maxWidth, maxHeight)),
       side: WidgetStatePropertyAll(
         BorderSide(width: 1, color: borderColor(context)),
       ),
@@ -318,27 +314,22 @@ class _ToolbarTheme {
     );
   }
 
-  static MenuStyle statusMenuStyle(BuildContext context) =>
-      defaultMenuStyle(context).copyWith(
-        minimumSize: const WidgetStatePropertyAll(Size(288, 0)),
-        maximumSize: WidgetStatePropertyAll(
-          Size(
-            300,
-            (MediaQuery.sizeOf(context).height - 24)
-                .clamp(160.0, 720.0)
-                .toDouble(),
+  static MenuStyle statusMenuStyle(BuildContext context) {
+    final width = RemoteCommandMenuMetrics.statusMenuWidth(
+      MediaQuery.sizeOf(context).width,
+    );
+    return defaultMenuStyle(context).copyWith(
+      minimumSize: WidgetStatePropertyAll(Size(width, 0)),
+      maximumSize: WidgetStatePropertyAll(
+        Size(
+          width,
+          RemoteCommandMenuMetrics.menuHeight(
+            MediaQuery.sizeOf(context).height,
           ),
         ),
-      );
-  static final defaultMenuButtonStyle = ButtonStyle(
-    backgroundColor: const WidgetStatePropertyAll(Colors.transparent),
-    padding: const WidgetStatePropertyAll(EdgeInsets.zero),
-    overlayColor: WidgetStateProperty.resolveWith(
-      (states) => states.contains(WidgetState.hovered)
-          ? CamelliaColors.indigo.withValues(alpha: 0.12)
-          : Colors.transparent,
-    ),
-  );
+      ),
+    );
+  }
 
   static Widget borderWrapper(
     BuildContext context,
@@ -356,6 +347,18 @@ class _ToolbarTheme {
 }
 
 typedef DismissFunc = void Function();
+
+Widget _menuLabel(BuildContext context, IconData icon, String label) {
+  return Row(
+    children: [
+      Icon(icon, size: 17, color: Theme.of(context).colorScheme.primary),
+      const SizedBox(width: 8),
+      Expanded(
+        child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
+      ),
+    ],
+  );
+}
 
 class RemoteMenuEntry {
   static MenuEntryButton<String> insertLock(
@@ -454,9 +457,6 @@ class _RemoteToolbarState extends State<RemoteToolbar> {
   FfiModel get ffiModel => widget.ffi.ffiModel;
 
   triggerAutoHide() => _debouncerHide.value = _debouncerHide.value + 1;
-
-  void _minimize() async =>
-      await WindowController.fromWindowId(windowId).minimize();
 
   void _loadDockingPreferences() {
     final cached = _cachedToolbarDockingOptions(widget.ffi.sessionId);
@@ -626,7 +626,7 @@ class _RemoteToolbarState extends State<RemoteToolbar> {
       if (collapse.isFalse && _dragging.isFalse) {
         triggerAutoHide();
       }
-      final borderRadius = _collapseHandleBorderRadius(edge);
+      final borderRadius = _collapseHandleBorderRadius();
       return Offstage(
         offstage: _dragging.isTrue,
         child: Material(
@@ -646,8 +646,6 @@ class _RemoteToolbarState extends State<RemoteToolbar> {
             isHorizontal: isHorizontal,
             onPlacementChanged: _saveDockingPreferences,
             toolbarState: widget.state,
-            setFullscreen: _setFullscreen,
-            setMinimize: _minimize,
             borderRadius: borderRadius,
           ),
         ),
@@ -831,9 +829,12 @@ class _RemoteToolbarState extends State<RemoteToolbar> {
           ),
         );
         final handle = _buildDraggableCollapse(context, edge, isHorizontal);
+        final gap = isHorizontal
+            ? const SizedBox(height: 4)
+            : const SizedBox(width: 4);
         final children = (edge == _ToolbarEdge.top || edge == _ToolbarEdge.left)
-            ? [toolbarMaterial, handle]
-            : [handle, toolbarMaterial];
+            ? [toolbarMaterial, gap, handle]
+            : [handle, gap, toolbarMaterial];
         return Flex(
           direction: outerAxis,
           mainAxisSize: MainAxisSize.min,
@@ -847,9 +848,11 @@ class _RemoteToolbarState extends State<RemoteToolbar> {
     return Theme.of(context).copyWith(
       menuButtonTheme: MenuButtonThemeData(
         style: ButtonStyle(
-          minimumSize: const WidgetStatePropertyAll(Size(0, 40)),
+          minimumSize: const WidgetStatePropertyAll(
+            Size(0, RemoteCommandMenuMetrics.rowHeight),
+          ),
           padding: const WidgetStatePropertyAll(
-            EdgeInsets.symmetric(horizontal: 10),
+            EdgeInsets.symmetric(horizontal: 8),
           ),
           textStyle: const WidgetStatePropertyAll(
             TextStyle(fontWeight: FontWeight.normal),
@@ -893,7 +896,9 @@ class _PinMenu extends StatelessWidget {
   Widget build(BuildContext context) {
     return Obx(
       () => _IconMenuButton(
-        assetName: state.pin ? "assets/pinned.svg" : "assets/unpinned.svg",
+        icon: Icon(
+          state.pin ? Icons.push_pin_rounded : Icons.push_pin_outlined,
+        ),
         tooltip: state.pin ? 'Unpin Toolbar' : 'Pin Toolbar',
         inOverflow: inOverflow,
         onPressed: state.switchPin,
@@ -1025,11 +1030,15 @@ class _SessionStatusPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final viewportWidth = MediaQuery.sizeOf(context).width;
+    final metricWidth = RemoteCommandMenuMetrics.statusMetricWidth(
+      viewportWidth,
+    );
     return Semantics(
       container: true,
       label: translate('Session status'),
       child: SizedBox(
-        width: 276,
+        width: RemoteCommandMenuMetrics.statusPanelWidth(viewportWidth),
         child: Padding(
           padding: const EdgeInsets.all(12),
           child: Column(
@@ -1046,46 +1055,55 @@ class _SessionStatusPanel extends StatelessWidget {
                 runSpacing: 6,
                 children: [
                   _StatusMetric(
+                    width: metricWidth,
                     icon: Icons.shield_outlined,
                     label: translate('Security'),
                     value: _security(),
                   ),
                   _StatusMetric(
+                    width: metricWidth,
                     icon: Icons.route_outlined,
                     label: translate('Route'),
                     value: _route(),
                   ),
                   _StatusMetric(
+                    width: metricWidth,
                     icon: Icons.swap_horiz_rounded,
                     label: translate('Protocol'),
                     value: snapshot.display(snapshot.streamType),
                   ),
                   _StatusMetric(
+                    width: metricWidth,
                     icon: Icons.speed_rounded,
                     label: translate('Latency'),
                     value: snapshot.delayValue,
                   ),
                   _StatusMetric(
+                    width: metricWidth,
                     icon: Icons.network_check_rounded,
                     label: translate('Speed'),
                     value: snapshot.display(snapshot.speed),
                   ),
                   _StatusMetric(
+                    width: metricWidth,
                     icon: Icons.movie_filter_outlined,
                     label: translate('FPS'),
                     value: snapshot.display(snapshot.fps),
                   ),
                   _StatusMetric(
+                    width: metricWidth,
                     icon: Icons.tune_rounded,
                     label: translate('Target Bitrate'),
                     value: snapshot.bitrateValue,
                   ),
                   _StatusMetric(
+                    width: metricWidth,
                     icon: Icons.memory_rounded,
                     label: translate('Codec'),
                     value: snapshot.display(snapshot.codec),
                   ),
                   _StatusMetric(
+                    width: metricWidth,
                     icon: Icons.palette_outlined,
                     label: translate('Chroma'),
                     value: snapshot.display(snapshot.chroma),
@@ -1102,11 +1120,13 @@ class _SessionStatusPanel extends StatelessWidget {
 
 class _StatusMetric extends StatelessWidget {
   const _StatusMetric({
+    required this.width,
     required this.icon,
     required this.label,
     required this.value,
   });
 
+  final double width;
   final IconData icon;
   final String label;
   final String value;
@@ -1115,7 +1135,7 @@ class _StatusMetric extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return Container(
-      width: 123,
+      width: width,
       constraints: const BoxConstraints(minHeight: 42),
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
       decoration: BoxDecoration(
@@ -1173,7 +1193,7 @@ class _MobileActionMenu extends StatelessWidget {
     if (!ffi.ffiModel.isPeerAndroid) return Offstage();
     return Obx(
       () => _IconMenuButton(
-        assetName: 'assets/actions_mobile.svg',
+        icon: const Icon(Icons.touch_app_rounded),
         tooltip: 'Mobile Actions',
         inOverflow: inOverflow,
         onPressed: () => ffi.dialogManager.setMobileActionsOverlayVisible(
@@ -1245,33 +1265,10 @@ class _MainMonitorSwitchButton extends StatelessWidget {
         color: _ToolbarTheme.blueColor,
         hoverColor: _ToolbarTheme.hoverBlueColor,
         onPressed: cycle.next,
-        icon: SizedBox(
-          width: _ToolbarTheme.buttonSize,
-          height: _ToolbarTheme.buttonSize,
-          child: Stack(
-            alignment: const Alignment(0, -0.125),
-            children: [
-              SvgPicture.asset(
-                'assets/display_switcher.svg',
-                colorFilter: const ColorFilter.mode(
-                  Colors.white,
-                  BlendMode.srcIn,
-                ),
-                width: _ToolbarTheme.buttonSize,
-                height: _ToolbarTheme.buttonSize,
-              ),
-              Text(
-                label,
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  color: Colors.black,
-                  fontSize: 11,
-                  height: 1,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ],
-          ),
+        icon: Badge(
+          label: Text(label),
+          offset: const Offset(5, -5),
+          child: const Icon(Icons.monitor_rounded),
         ),
       );
     });
@@ -1298,21 +1295,17 @@ class _MonitorMenu extends StatelessWidget {
   }
 
   Widget buildMonitorMenu(BuildContext context) {
-    final width = SimpleWrapper<double>(0);
-    final monitorsIcon = globalMonitorsWidget(
-      width,
-      Colors.white,
-      Colors.black38,
-    );
     return _IconSubmenuButton(
       tooltip: 'Select Monitor',
-      icon: monitorsIcon,
+      icon: const Icon(Icons.splitscreen_rounded),
       ffi: ffi,
       inOverflow: inOverflow,
       color: _ToolbarTheme.blueColor,
       hoverColor: _ToolbarTheme.hoverBlueColor,
-      menuStyle: MenuStyle(
-        padding: WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 6)),
+      menuStyle: _ToolbarTheme.defaultMenuStyle(context).copyWith(
+        padding: const WidgetStatePropertyAll(
+          EdgeInsets.symmetric(horizontal: 6),
+        ),
       ),
       menuChildrenGetter: (_) => [buildMonitorSubmenuWidget(context)],
     );
@@ -1323,8 +1316,8 @@ class _MonitorMenu extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: [
         Row(children: buildMonitorList(context)),
-        supportIndividualWindows ? Divider() : Offstage(),
-        supportIndividualWindows ? chooseDisplayBehavior() : Offstage(),
+        supportIndividualWindows ? const Divider() : const Offstage(),
+        supportIndividualWindows ? chooseDisplayBehavior() : const Offstage(),
       ],
     );
   }
@@ -1388,7 +1381,7 @@ class _MonitorMenu extends StatelessWidget {
             : _ToolbarTheme.hoverInactiveColor,
         width: isAllMonitors ? width.value : null,
         icon: isAllMonitors
-            ? monitorsIcon
+            ? monitorsIcon!
             : Container(
                 alignment: AlignmentDirectional.center,
                 constraints: const BoxConstraints(
@@ -1399,7 +1392,7 @@ class _MonitorMenu extends StatelessWidget {
                   children: [
                     SvgPicture.asset(
                       "assets/screen.svg",
-                      colorFilter: ColorFilter.mode(
+                      colorFilter: const ColorFilter.mode(
                         Colors.white,
                         BlendMode.srcIn,
                       ),
@@ -1431,7 +1424,7 @@ class _MonitorMenu extends StatelessWidget {
       RxInt display = CurrentDisplayState.find(id);
       final rect = ffi.ffiModel.globalDisplaysRect();
       if (rect == null) {
-        return Offstage();
+        return const Offstage();
       }
 
       final scale = _ToolbarTheme.buttonSize / rect.height * 0.75;
@@ -1528,7 +1521,7 @@ class _ControlMenu extends StatelessWidget {
   Widget build(BuildContext context) {
     return _IconSubmenuButton(
       tooltip: 'Control Actions',
-      svg: "assets/actions.svg",
+      icon: const Icon(Icons.bolt_rounded),
       color: _ToolbarTheme.blueColor,
       hoverColor: _ToolbarTheme.hoverBlueColor,
       ffi: ffi,
@@ -1764,6 +1757,22 @@ class _DisplayMenuState extends State<_DisplayMenu> {
     _screenAdjustor.updateScreen();
     menuChildrenGetter(_IconSubmenuButtonState state) {
       final menuChildren = <Widget>[
+        MenuButton(
+          child: Text(
+            translate(
+              stateGlobal.fullscreen.isTrue ? 'Exit Fullscreen' : 'Fullscreen',
+            ),
+          ),
+          trailingIcon: Icon(
+            stateGlobal.fullscreen.isTrue
+                ? Icons.fullscreen_exit_rounded
+                : Icons.fullscreen_rounded,
+            size: 18,
+          ),
+          onPressed: () => widget.setFullscreen(!stateGlobal.fullscreen.value),
+          ffi: widget.ffi,
+        ),
+        const Divider(),
         _screenAdjustor.adjustWindow(context),
         viewStyle(customPercent: _customPercent),
         scrollStyle(state, colorScheme),
@@ -1833,7 +1842,7 @@ class _DisplayMenuState extends State<_DisplayMenu> {
 
     return _IconSubmenuButton(
       tooltip: 'Display Settings',
-      svg: "assets/display.svg",
+      icon: const Icon(Icons.display_settings_rounded),
       ffi: widget.ffi,
       color: _ToolbarTheme.blueColor,
       hoverColor: _ToolbarTheme.hoverBlueColor,
@@ -2015,7 +2024,11 @@ class _DisplayMenuState extends State<_DisplayMenu> {
         final v = data as List<TRadioMenu<String>>;
         return _SubmenuButton(
           ffi: widget.ffi,
-          child: Text(translate('Image Quality')),
+          child: _menuLabel(
+            context,
+            Icons.high_quality_outlined,
+            translate('Image Quality'),
+          ),
           menuChildren: v
               .map(
                 (e) => RdoMenuButton<String>(
@@ -2041,7 +2054,11 @@ class _DisplayMenuState extends State<_DisplayMenu> {
 
         return _SubmenuButton(
           ffi: widget.ffi,
-          child: Text(translate('Codec')),
+          child: _menuLabel(
+            context,
+            Icons.video_settings_outlined,
+            translate('Codec'),
+          ),
           menuChildren: v
               .map(
                 (e) => RdoMenuButton(
@@ -2059,49 +2076,58 @@ class _DisplayMenuState extends State<_DisplayMenu> {
   }
 
   cursorToggles() {
-    return futureBuilder(
-      future: toolbarCursor(context, id, ffi),
-      hasData: (data) {
-        final v = data as List<TToggleMenu>;
-        if (v.isEmpty) return Offstage();
-        return Column(
-          children: [
-            Divider(),
-            ...v
-                .map(
-                  (e) => CkbMenuButton(
-                    value: e.value,
-                    onChanged: e.onChanged,
-                    child: e.child,
-                    ffi: ffi,
-                  ),
-                )
-                .toList(),
-          ],
-        );
-      },
+    return _SubmenuButton(
+      ffi: widget.ffi,
+      child: _menuLabel(context, Icons.mouse_outlined, translate('Mouse mode')),
+      menuChildren: [
+        futureBuilder(
+          future: toolbarCursor(context, id, ffi),
+          hasData: (data) {
+            final v = data as List<TToggleMenu>;
+            if (v.isEmpty) return const Offstage();
+            return Column(
+              children: v
+                  .map(
+                    (e) => CkbMenuButton(
+                      value: e.value,
+                      onChanged: e.onChanged,
+                      child: e.child,
+                      ffi: ffi,
+                    ),
+                  )
+                  .toList(),
+            );
+          },
+        ),
+      ],
     );
   }
 
   toggles() {
-    return futureBuilder(
-      future: toolbarDisplayToggle(context, id, ffi),
-      hasData: (data) {
-        final v = data as List<TToggleMenu>;
-        if (v.isEmpty) return Offstage();
-        return Column(
-          children: v
-              .map(
-                (e) => CkbMenuButton(
-                  value: e.value,
-                  onChanged: e.onChanged,
-                  child: e.child,
-                  ffi: ffi,
-                ),
-              )
-              .toList(),
-        );
-      },
+    return _SubmenuButton(
+      ffi: widget.ffi,
+      child: _menuLabel(context, Icons.tune_rounded, translate('General')),
+      menuChildren: [
+        futureBuilder(
+          future: toolbarDisplayToggle(context, id, ffi),
+          hasData: (data) {
+            final v = data as List<TToggleMenu>;
+            if (v.isEmpty) return const Offstage();
+            return Column(
+              children: v
+                  .map(
+                    (e) => CkbMenuButton(
+                      value: e.value,
+                      onChanged: e.onChanged,
+                      child: e.child,
+                      ffi: ffi,
+                    ),
+                  )
+                  .toList(),
+            );
+          },
+        ),
+      ],
     );
   }
 }
@@ -2373,7 +2399,11 @@ class _ResolutionsMenuState extends State<_ResolutionsMenu> {
             _menuDivider(showOriginalBtn, showFitLocalBtn, isVirtualDisplay),
           ] +
           _supportedResolutionMenuButtons(),
-      child: Text(translate("Resolution")),
+      child: _menuLabel(
+        context,
+        Icons.aspect_ratio_rounded,
+        translate("Resolution"),
+      ),
     );
   }
 
@@ -2674,7 +2704,7 @@ class _KeyboardMenu extends StatelessWidget {
 
     return _IconSubmenuButton(
       tooltip: 'Keyboard Settings',
-      svg: "assets/keyboard_mouse.svg",
+      icon: const Icon(Icons.keyboard_alt_outlined),
       ffi: ffi,
       inOverflow: inOverflow,
       color: _ToolbarTheme.blueColor,
@@ -2987,7 +3017,7 @@ class _ChatMenuState extends State<_ChatMenu> {
       return _IconSubmenuButton(
         tooltip: 'Chat',
         key: chatButtonKey,
-        svg: 'assets/chat.svg',
+        icon: const Icon(Icons.chat_bubble_outline_rounded),
         ffi: widget.ffi,
         inOverflow: widget.inOverflow,
         color: _ToolbarTheme.blueColor,
@@ -2999,7 +3029,7 @@ class _ChatMenuState extends State<_ChatMenu> {
 
   buildTextChatButton() {
     return _IconMenuButton(
-      assetName: 'assets/message_24dp_5F6368.svg',
+      icon: const Icon(Icons.chat_rounded),
       tooltip: 'Text chat',
       key: chatButtonKey,
       inOverflow: widget.inOverflow,
@@ -3097,7 +3127,7 @@ class _VoiceCallMenu extends StatelessWidget {
         case VoiceCallStatus.connected:
           return _IconSubmenuButton(
             tooltip: 'Voice call',
-            svg: 'assets/voice_call.svg',
+            icon: const Icon(Icons.call_rounded),
             inOverflow: inOverflow,
             color: _ToolbarTheme.blueColor,
             hoverColor: _ToolbarTheme.hoverBlueColor,
@@ -3112,7 +3142,7 @@ class _VoiceCallMenu extends StatelessWidget {
 
   Widget buildCallWaiting(BuildContext context) {
     return _IconMenuButton(
-      assetName: "assets/call_wait.svg",
+      icon: const Icon(Icons.call_end_rounded),
       tooltip: "Waiting",
       inOverflow: inOverflow,
       onPressed: () => bind.sessionCloseVoiceCall(sessionId: ffi.sessionId),
@@ -3137,7 +3167,11 @@ class _RecordMenu extends StatelessWidget {
         (recordingModel.start || ffi.permissions['recording'] != false);
     if (!visible) return Offstage();
     return _IconMenuButton(
-      assetName: 'assets/rec.svg',
+      icon: Icon(
+        recordingModel.start
+            ? Icons.stop_circle_outlined
+            : Icons.fiber_manual_record_rounded,
+      ),
       inOverflow: inOverflow,
       tooltip: recordingModel.start
           ? 'Stop session recording'
@@ -3162,7 +3196,7 @@ class _CloseMenu extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return _IconMenuButton(
-      assetName: 'assets/close.svg',
+      icon: const Icon(Icons.close_rounded),
       tooltip: 'Close',
       onPressed: () async {
         if (await showConnEndAuditDialogCloseCanceled(ffi: ffi)) {
@@ -3177,8 +3211,7 @@ class _CloseMenu extends StatelessWidget {
 }
 
 class _IconMenuButton extends StatefulWidget {
-  final String? assetName;
-  final Widget? icon;
+  final Widget icon;
   final String tooltip;
   final Color color;
   final Color hoverColor;
@@ -3190,8 +3223,7 @@ class _IconMenuButton extends StatefulWidget {
   final double? width;
   const _IconMenuButton({
     Key? key,
-    this.assetName,
-    this.icon,
+    required this.icon,
     required this.tooltip,
     required this.color,
     required this.hoverColor,
@@ -3212,22 +3244,13 @@ class _IconMenuButtonState extends State<_IconMenuButton> {
 
   @override
   Widget build(BuildContext context) {
-    assert(widget.assetName != null || widget.icon != null);
     final tint = hover ? widget.hoverColor : widget.color;
-    final icon =
-        widget.icon ??
-        SvgPicture.asset(
-          widget.assetName!,
-          colorFilter: ColorFilter.mode(tint, BlendMode.srcIn),
-          width: 20,
-          height: 20,
-        );
     final label = translate(widget.tooltip);
     final leadingIcon = SizedBox.square(
       dimension: 20,
       child: IconTheme.merge(
         data: IconThemeData(color: tint, size: 20),
-        child: FittedBox(fit: BoxFit.contain, child: icon),
+        child: FittedBox(fit: BoxFit.contain, child: widget.icon),
       ),
     );
     if (widget.inOverflow) {
@@ -3248,14 +3271,17 @@ class _IconMenuButtonState extends State<_IconMenuButton> {
             ? _ToolbarTheme.buttonSize
             : widget.width ?? _ToolbarTheme.buttonSize,
         height: _ToolbarTheme.buttonSize,
-        child: MenuItemButton(
-          style: _ToolbarTheme.defaultMenuButtonStyle,
-          onHover: (value) => setState(() => hover = value),
-          onPressed: widget.onPressed,
-          child: _CommandBarActionSurface(
-            icon: leadingIcon,
-            tint: tint,
-            hovered: hover,
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(_ToolbarTheme.iconRadius),
+            onHover: (value) => setState(() => hover = value),
+            onTap: widget.onPressed,
+            child: _CommandBarActionSurface(
+              icon: leadingIcon,
+              tint: tint,
+              hovered: hover,
+            ),
           ),
         ),
       ),
@@ -3265,10 +3291,7 @@ class _IconMenuButtonState extends State<_IconMenuButton> {
         button: true,
         enabled: widget.onPressed != null,
         label: label,
-        child: Tooltip(
-          message: label,
-          child: MenuBar(children: [button]),
-        ),
+        child: Tooltip(message: label, child: button),
       );
     }
     return Semantics(
@@ -3316,8 +3339,7 @@ class _CommandBarActionSurface extends StatelessWidget {
 
 class _IconSubmenuButton extends StatefulWidget {
   final String tooltip;
-  final String? svg;
-  final Widget? icon;
+  final Widget icon;
   final Color color;
   final Color hoverColor;
   final List<Widget> Function(_IconSubmenuButtonState state) menuChildrenGetter;
@@ -3327,8 +3349,7 @@ class _IconSubmenuButton extends StatefulWidget {
 
   _IconSubmenuButton({
     Key? key,
-    this.svg,
-    this.icon,
+    required this.icon,
     required this.tooltip,
     required this.color,
     required this.hoverColor,
@@ -3344,6 +3365,7 @@ class _IconSubmenuButton extends StatefulWidget {
 
 class _IconSubmenuButtonState extends State<_IconSubmenuButton> {
   bool hover = false;
+  final MenuController _menuController = MenuController();
 
   @override // discard @protected
   void setState(VoidCallback fn) {
@@ -3352,22 +3374,13 @@ class _IconSubmenuButtonState extends State<_IconSubmenuButton> {
 
   @override
   Widget build(BuildContext context) {
-    assert(widget.svg != null || widget.icon != null);
     final tint = hover ? widget.hoverColor : widget.color;
-    final icon =
-        widget.icon ??
-        SvgPicture.asset(
-          widget.svg!,
-          colorFilter: ColorFilter.mode(tint, BlendMode.srcIn),
-          width: 20,
-          height: 20,
-        );
     final label = translate(widget.tooltip);
     final leadingIcon = SizedBox.square(
       dimension: 20,
       child: IconTheme.merge(
         data: IconThemeData(color: tint, size: 20),
-        child: FittedBox(fit: BoxFit.contain, child: icon),
+        child: FittedBox(fit: BoxFit.contain, child: widget.icon),
       ),
     );
     final menuChildren = widget
@@ -3383,34 +3396,16 @@ class _IconSubmenuButtonState extends State<_IconSubmenuButton> {
         child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
       );
     }
-    final button = Padding(
-      padding: const EdgeInsets.symmetric(
-        horizontal: _ToolbarTheme.buttonHMargin,
-        vertical: _ToolbarTheme.buttonVMargin,
-      ),
-      child: SizedBox(
-        width: _ToolbarTheme.buttonSize,
-        height: _ToolbarTheme.buttonSize,
-        child: SubmenuButton(
-          menuStyle:
-              widget.menuStyle ?? _ToolbarTheme.defaultMenuStyle(context),
-          style: _ToolbarTheme.defaultMenuButtonStyle,
-          onHover: (value) => setState(() => hover = value),
-          menuChildren: menuChildren,
-          child: _CommandBarActionSurface(
-            icon: leadingIcon,
-            tint: tint,
-            hovered: hover,
-          ),
-        ),
-      ),
-    );
-    return Semantics(
-      button: true,
-      label: label,
-      child: Tooltip(
-        message: label,
-        child: MenuBar(children: [button]),
+    return MenuAnchor(
+      controller: _menuController,
+      style: widget.menuStyle ?? _ToolbarTheme.defaultMenuStyle(context),
+      menuChildren: menuChildren,
+      builder: (context, controller, child) => _IconMenuButton(
+        icon: widget.icon,
+        tooltip: widget.tooltip,
+        color: widget.color,
+        hoverColor: widget.hoverColor,
+        onPressed: controller.isOpen ? controller.close : controller.open,
       ),
     );
   }
@@ -3554,9 +3549,6 @@ class _DraggableShowHide extends StatefulWidget {
   final ToolbarState toolbarState;
   final BorderRadius borderRadius;
 
-  final Function(bool) setFullscreen;
-  final Function() setMinimize;
-
   const _DraggableShowHide({
     Key? key,
     required this.id,
@@ -3571,8 +3563,6 @@ class _DraggableShowHide extends StatefulWidget {
     required this.onPlacementChanged,
     required this.dragging,
     required this.toolbarState,
-    required this.setFullscreen,
-    required this.setMinimize,
     required this.borderRadius,
   }) : super(key: key);
 
@@ -3583,6 +3573,8 @@ class _DraggableShowHide extends StatefulWidget {
 class _DraggableShowHideState extends State<_DraggableShowHide> {
   static const double _left = 0;
   static const double _right = 1;
+  static const double _controlExtent =
+      RemoteCommandMenuMetrics.compactHandleExtent / 2;
   Offset? _lastPointerDown;
   Offset? _dragGrabOffset;
   double? _dragLongAxisGrabOffset;
@@ -3705,7 +3697,7 @@ class _DraggableShowHideState extends State<_DraggableShowHide> {
   Widget _buildDraggable(BuildContext context) {
     final icon = Icon(
       widget.isHorizontal ? Icons.drag_indicator : Icons.drag_handle,
-      size: 20,
+      size: 18,
       color: Theme.of(context).colorScheme.onSurfaceVariant,
     );
     return Listener(
@@ -3720,7 +3712,10 @@ class _DraggableShowHideState extends State<_DraggableShowHide> {
               color: Theme.of(context).colorScheme.surface,
               elevation: 8,
               borderRadius: BorderRadius.circular(CamelliaRadius.control),
-              child: SizedBox.square(dimension: 40, child: Center(child: icon)),
+              child: SizedBox.square(
+                dimension: _controlExtent,
+                child: Center(child: icon),
+              ),
             ),
             onDragStarted: () {
               final pointerDown = _lastPointerDown;
@@ -3735,7 +3730,10 @@ class _DraggableShowHideState extends State<_DraggableShowHide> {
               _updatePreview(details.globalPosition);
             },
             onDragEnd: (_) => _commitPreview(),
-            child: SizedBox.square(dimension: 40, child: Center(child: icon)),
+            child: SizedBox.square(
+              dimension: _controlExtent,
+              child: Center(child: icon),
+            ),
           ),
         ),
       ),
@@ -3744,8 +3742,7 @@ class _DraggableShowHideState extends State<_DraggableShowHide> {
 
   @override
   Widget build(BuildContext context) {
-    final isFullscreen = stateGlobal.fullscreen;
-    const double iconSize = 20;
+    const double iconSize = 18;
 
     Widget buttonWrapper(
       VoidCallback? onPressed,
@@ -3758,9 +3755,13 @@ class _DraggableShowHideState extends State<_DraggableShowHide> {
         child: TextButton(
           onPressed: onPressed,
           style: ButtonStyle(
-            minimumSize: const WidgetStatePropertyAll(Size(40, 40)),
-            maximumSize: const WidgetStatePropertyAll(Size(40, 40)),
-            padding: const WidgetStatePropertyAll(EdgeInsets.all(10)),
+            minimumSize: const WidgetStatePropertyAll(
+              Size(_controlExtent, _controlExtent),
+            ),
+            maximumSize: const WidgetStatePropertyAll(
+              Size(_controlExtent, _controlExtent),
+            ),
+            padding: const WidgetStatePropertyAll(EdgeInsets.all(7)),
             shape: WidgetStatePropertyAll(
               RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(CamelliaRadius.control),
@@ -3793,28 +3794,6 @@ class _DraggableShowHideState extends State<_DraggableShowHide> {
         ),
         Obx(
           () => buttonWrapper(
-            () {
-              widget.setFullscreen(!isFullscreen.value);
-            },
-            isFullscreen.isTrue ? Icons.fullscreen_exit : Icons.fullscreen,
-            tooltip: translate(
-              isFullscreen.isTrue ? 'Exit Fullscreen' : 'Fullscreen',
-            ),
-          ),
-        ),
-        if (!isMacOS && !isWebDesktop)
-          Obx(
-            () => Offstage(
-              offstage: isFullscreen.isFalse,
-              child: buttonWrapper(
-                widget.setMinimize,
-                Icons.remove,
-                tooltip: translate('Minimize'),
-              ),
-            ),
-          ),
-        Obx(
-          () => buttonWrapper(
             () => widget.toolbarState.switchCollapse(widget.sessionId),
             _toolbarCollapseIcon(widget.edge.value, collapse.isTrue),
             tooltip: translate(
@@ -3838,7 +3817,7 @@ class _DraggableShowHideState extends State<_DraggableShowHide> {
       ],
     );
     return Container(
-      padding: const EdgeInsets.all(2),
+      padding: EdgeInsets.zero,
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surface.withValues(alpha: 0.96),
         border: Border.all(color: _ToolbarTheme.borderColor(context), width: 1),
@@ -3951,42 +3930,42 @@ class _MinimizedMonitorSwitchButton extends StatelessWidget {
         return const Offstage();
       }
 
-      return Tooltip(
-        message: cycle.tooltip,
-        child: TextButton(
-          onPressed: cycle.next,
-          style: ButtonStyle(
-            minimumSize: WidgetStateProperty.all(const Size(0, 0)),
-            padding: WidgetStateProperty.all(EdgeInsets.zero),
-            backgroundColor: WidgetStateProperty.resolveWith((states) {
-              if (states.contains(WidgetState.hovered)) {
-                return _ToolbarTheme.blueColor.withValues(alpha: 0.15);
-              }
-              return null;
-            }),
-          ),
-          child: Stack(
-            alignment: const Alignment(0, -0.125),
-            children: [
-              SvgPicture.asset(
-                'assets/display_switcher.svg',
-                colorFilter: ColorFilter.mode(
-                  _ToolbarTheme.blueColor,
-                  BlendMode.srcIn,
+      return SizedBox.square(
+        dimension: 32,
+        child: Tooltip(
+          message: cycle.tooltip,
+          child: TextButton(
+            onPressed: cycle.next,
+            style: ButtonStyle(
+              minimumSize: const WidgetStatePropertyAll(Size(32, 32)),
+              maximumSize: const WidgetStatePropertyAll(Size(32, 32)),
+              padding: const WidgetStatePropertyAll(EdgeInsets.all(6)),
+              backgroundColor: WidgetStateProperty.resolveWith((states) {
+                if (states.contains(WidgetState.hovered)) {
+                  return _ToolbarTheme.blueColor.withValues(alpha: 0.15);
+                }
+                return null;
+              }),
+            ),
+            child: Stack(
+              alignment: const Alignment(0, -0.125),
+              children: [
+                const Icon(
+                  Icons.monitor_rounded,
+                  size: iconSize,
+                  color: _ToolbarTheme.blueColor,
                 ),
-                width: iconSize,
-                height: iconSize,
-              ),
-              Text(
-                label,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 9,
-                  height: 1,
-                  fontWeight: FontWeight.bold,
+                Text(
+                  label,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 8,
+                    height: 1,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       );

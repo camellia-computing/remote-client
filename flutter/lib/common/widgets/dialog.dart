@@ -9,6 +9,7 @@ import 'package:camellia_remote_app/consts.dart';
 import 'package:camellia_remote_app/desktop/widgets/tabbar_widget.dart';
 import 'package:camellia_remote_app/models/peer_model.dart';
 import 'package:camellia_remote_app/models/peer_tab_model.dart';
+import 'package:camellia_remote_app/ui/credential_controls.dart';
 import 'package:get/get.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:camellia_remote_app/utils/http_service.dart' as http;
@@ -1001,31 +1002,24 @@ _connectDialog(
 
       descWidget(String text) {
         final colorScheme = Theme.of(context).colorScheme;
-        return Container(
-          width: double.infinity,
-          margin: const EdgeInsets.only(bottom: 12),
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-          decoration: BoxDecoration(
-            color: colorScheme.primaryContainer.withValues(alpha: 0.58),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: colorScheme.outlineVariant),
-          ),
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 8),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Icon(
                 Icons.info_outline_rounded,
-                size: 19,
-                color: colorScheme.primary,
+                size: 16,
+                color: colorScheme.onSurfaceVariant,
               ),
-              const SizedBox(width: 10),
+              const SizedBox(width: 7),
               Expanded(
                 child: Text(
                   text,
                   softWrap: true,
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: colorScheme.onSurface,
-                    height: 1.45,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: colorScheme.onSurfaceVariant,
+                    height: 1.35,
                   ),
                 ),
               ),
@@ -1039,23 +1033,11 @@ _connectDialog(
         bool remember,
         ValueChanged<bool?>? onChanged,
       ) {
-        final scheme = Theme.of(context).colorScheme;
-        return CheckboxListTile(
+        return CredentialRememberControl(
+          label: desc,
           value: remember,
-          onChanged: onChanged,
-          controlAffinity: ListTileControlAffinity.trailing,
-          contentPadding: const EdgeInsets.symmetric(horizontal: 12),
-          minTileHeight: 52,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
-          tileColor: scheme.surfaceContainer,
-          secondary: Icon(
-            Icons.save_outlined,
-            size: 20,
-            color: scheme.onSurfaceVariant,
-          ),
-          title: Text(desc, style: Theme.of(context).textTheme.bodyMedium),
+          compactIconOnly: isDesktop || isWebDesktop,
+          onChanged: onChanged == null ? null : (next) => onChanged(next),
         );
       }
 
@@ -1120,46 +1102,52 @@ _connectDialog(
       }
 
       final scheme = Theme.of(context).colorScheme;
-      final titleWidget = Column(
-        mainAxisSize: MainAxisSize.min,
+      final titleWidget = Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           Container(
-            width: 48,
-            height: 48,
+            width: 42,
+            height: 42,
             decoration: BoxDecoration(
               gradient: LinearGradient(
                 colors: [scheme.primary, scheme.tertiary],
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
               ),
-              borderRadius: BorderRadius.circular(16),
+              borderRadius: BorderRadius.circular(13),
             ),
             child: const Icon(
               Icons.lock_rounded,
               color: Colors.white,
-              size: 24,
+              size: 21,
             ),
           ),
-          const SizedBox(height: 14),
-          Text(
-            translate('Password Required'),
-            textAlign: TextAlign.center,
-            style: Theme.of(
-              context,
-            ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            translate('Authenticate to continue the secure session'),
-            textAlign: TextAlign.center,
-            style: Theme.of(
-              context,
-            ).textTheme.bodyMedium?.copyWith(color: scheme.onSurfaceVariant),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  translate('Password Required'),
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  translate('Authenticate to continue the secure session'),
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
           ),
         ],
       );
       final contentWidget = ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 440),
+        constraints: const BoxConstraints(maxWidth: 400),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -1174,7 +1162,7 @@ _connectDialog(
       return CustomAlertDialog(
         title: titleWidget,
         content: contentWidget,
-        contentBoxConstraints: const BoxConstraints(maxWidth: 440),
+        contentBoxConstraints: const BoxConstraints(maxWidth: 400),
         actions: [
           SizedBox(
             width: 132,
@@ -1224,42 +1212,31 @@ class _CredentialSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return Container(
+    return SizedBox(
       width: double.infinity,
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: scheme.surfaceContainerLow,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: scheme.outlineVariant),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            children: [
-              Container(
-                width: 32,
-                height: 32,
-                decoration: BoxDecoration(
-                  color: scheme.primaryContainer,
-                  borderRadius: BorderRadius.circular(10),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Icon(icon, size: 19, color: scheme.primary),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    title,
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
                 ),
-                child: Icon(icon, size: 18, color: scheme.primary),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  title,
-                  style: Theme.of(
-                    context,
-                  ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          ...children,
-        ],
+              ],
+            ),
+            const SizedBox(height: 8),
+            ...children,
+          ],
+        ),
       ),
     );
   }

@@ -5,20 +5,18 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   test('device controls choose stable responsive layouts', () {
-    expect(deviceCategoryLayoutForWidth(390), DeviceCategoryLayout.dropdown);
-    expect(deviceCategoryLayoutForWidth(519), DeviceCategoryLayout.dropdown);
-    expect(deviceCategoryLayoutForWidth(520), DeviceCategoryLayout.wrapped);
-    expect(deviceActionLayoutForWidth(390), DeviceActionLayout.stacked);
-    expect(deviceActionLayoutForWidth(440), DeviceActionLayout.twoRows);
-    expect(deviceActionLayoutForWidth(639), DeviceActionLayout.twoRows);
-    expect(deviceActionLayoutForWidth(640), DeviceActionLayout.inline);
+    expect(deviceCategoryLayoutForWidth(390), DeviceCategoryLayout.selector);
+    expect(deviceCategoryLayoutForWidth(519), DeviceCategoryLayout.selector);
+    expect(deviceCategoryLayoutForWidth(520), DeviceCategoryLayout.bar);
+    expect(deviceCategoryLayoutForWidth(839), DeviceCategoryLayout.bar);
+    expect(deviceCategoryLayoutForWidth(840), DeviceCategoryLayout.rail);
   });
 
   test('desktop search width is bounded without consuming the action row', () {
     expect(deviceSearchWidth(390), 390);
-    expect(deviceSearchWidth(440), 220);
-    expect(deviceSearchWidth(1024), 320);
-    expect(deviceSearchWidth(1280), 320);
+    expect(deviceSearchWidth(520), 208);
+    expect(deviceSearchWidth(1024), 208);
+    expect(deviceSearchWidth(1280, focused: true), 280);
   });
 
   testWidgets('option menu uses one compact selectable row contract', (
