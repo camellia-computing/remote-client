@@ -45,6 +45,7 @@ import '../utils/image.dart' as img;
 import '../common/widgets/dialog.dart';
 import 'input_model.dart';
 import 'platform_model.dart';
+import 'remote_window_geometry.dart';
 import 'package:camellia_remote_app/utils/scale.dart';
 
 import 'package:camellia_remote_app/generated_bridge.dart'
@@ -3681,9 +3682,13 @@ class CursorModel with ChangeNotifier {
   }
 
   bool _isInCurrentWindow(double x, double y) {
-    final w = _windowRect!.width / devicePixelRatio;
-    final h = _windowRect!.width / devicePixelRatio;
-    return x >= 0 && y >= 0 && x <= w && y <= h;
+    return isLocalPointInsideWindowFrame(
+      x: x,
+      y: y,
+      windowFrame: _windowRect!,
+      devicePixelRatio: devicePixelRatio,
+      frameUsesPhysicalPixels: isWindows,
+    );
   }
 
   _handleTouchMode(Offset delta, Offset localPosition) async {
