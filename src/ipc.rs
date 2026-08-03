@@ -1450,7 +1450,7 @@ where
 {
     pub fn new(conn: T) -> Self {
         Self {
-            inner: Framed::new(conn, BytesCodec::new()),
+            inner: Framed::new(conn, BytesCodec::for_ipc()),
         }
     }
 
@@ -2126,11 +2126,45 @@ pub async fn set_install_option(k: String, v: String) -> ResultType<()> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use camellia_remote_protocol::{
+        bytes::{BufMut, BytesMut},
+        bytes_codec::{DEFAULT_MAX_PACKET_LENGTH, IPC_MAX_PACKET_LENGTH},
+        tokio_util::codec::Decoder,
+    };
 
     #[test]
     fn verify_ffi_enum_data_size() {
         println!("{}", std::mem::size_of::<Data>());
         assert!(std::mem::size_of::<Data>() <= 120);
+    }
+
+    #[test]
+    fn ipc_connection_uses_the_explicit_frame_budget() {
+        fn frame_header(len: usize) -> BytesMut {
+            let mut header = BytesMut::new();
+            header.put_u32_le((len << 2) as u32 | 0x3);
+            header
+        }
+
+        let (_, stream) = tokio::io::duplex(64);
+        let mut connection = ConnectionTmpl::new(stream);
+        let mut above_default = frame_header(DEFAULT_MAX_PACKET_LENGTH + 1);
+        assert!(connection
+            .inner
+            .codec_mut()
+            .decode(&mut above_default)
+            .unwrap()
+            .is_none());
+
+        let (_, stream) = tokio::io::duplex(64);
+        let mut connection = ConnectionTmpl::new(stream);
+        let mut above_ipc_budget = frame_header(IPC_MAX_PACKET_LENGTH + 1);
+        let err = connection
+            .inner
+            .codec_mut()
+            .decode(&mut above_ipc_budget)
+            .unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
