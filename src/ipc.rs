@@ -470,6 +470,30 @@ pub enum Data {
     FileTransferEnabledState(Option<bool>),
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[derive(Debug, Eq, PartialEq)]
+enum ServiceSyncFrameAuthorization {
+    Authorized,
+    Unauthorized,
+    Unsupported,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[inline]
+fn authorize_service_sync_frame(
+    data: &Data,
+    authorize: impl FnOnce() -> bool,
+) -> ServiceSyncFrameAuthorization {
+    if !matches!(data, Data::SyncConfig(_)) {
+        return ServiceSyncFrameAuthorization::Unsupported;
+    }
+    if authorize() {
+        ServiceSyncFrameAuthorization::Authorized
+    } else {
+        ServiceSyncFrameAuthorization::Unauthorized
+    }
+}
+
 #[tokio::main(flavor = "current_thread")]
 pub async fn start(postfix: &str) -> ResultType<()> {
     let mut incoming = new_listener(postfix).await?;
@@ -516,18 +540,29 @@ pub async fn start(postfix: &str) -> ResultType<()> {
                                     // uinput IPC paths while still minimizing exposed message surface here.
                                     #[cfg(any(target_os = "linux", target_os = "macos"))]
                                     if postfix == crate::POSTFIX_SERVICE {
-                                        if matches!(&data, Data::SyncConfig(_)) {
-                                            handle(data, &mut stream).await;
-                                        } else {
-                                            log::warn!(
-                                                "Rejected non-sync data on protected _service IPC channel: postfix={}, data_kind={:?}, peer_uid={:?}",
-                                                postfix,
-                                                std::mem::discriminant(&data),
-                                                stream.peer_uid()
-                                            );
-                                            // Close the connection to avoid keeping a protected channel
-                                            // alive while repeatedly receiving invalid traffic.
-                                            break;
+                                        // The active console user can change while this connection is
+                                        // open. Re-authorize every SyncConfig frame so a previously active
+                                        // user's connection loses authority after switch-user.
+                                        match authorize_service_sync_frame(&data, || {
+                                            authorize_service_scoped_ipc_connection(
+                                                &stream, &postfix,
+                                            )
+                                        }) {
+                                            ServiceSyncFrameAuthorization::Authorized => {
+                                                handle(data, &mut stream).await;
+                                            }
+                                            ServiceSyncFrameAuthorization::Unauthorized => break,
+                                            ServiceSyncFrameAuthorization::Unsupported => {
+                                                log::warn!(
+                                                    "Rejected non-sync data on protected _service IPC channel: postfix={}, data_kind={:?}, peer_uid={:?}",
+                                                    postfix,
+                                                    std::mem::discriminant(&data),
+                                                    stream.peer_uid()
+                                                );
+                                                // Close the connection to avoid keeping a protected channel
+                                                // alive while repeatedly receiving invalid traffic.
+                                                break;
+                                            }
                                         }
                                         continue;
                                     }
@@ -2105,6 +2140,35 @@ mod test {
             Config::ipc_path_for_uid(0, crate::POSTFIX_SERVICE),
             Config::ipc_path_for_uid(501, crate::POSTFIX_SERVICE)
         );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn test_service_sync_frame_reauthorizes_after_user_switch() {
+        let active_uid = Cell::new(Some(501));
+        let authorization_calls = Cell::new(0);
+        let data = Data::SyncConfig(None);
+        let authorize = || {
+            authorization_calls.set(authorization_calls.get() + 1);
+            is_allowed_service_peer_uid(501, active_uid.get())
+        };
+
+        assert_eq!(
+            authorize_service_sync_frame(&data, authorize),
+            ServiceSyncFrameAuthorization::Authorized
+        );
+        active_uid.set(Some(502));
+        assert_eq!(
+            authorize_service_sync_frame(&data, authorize),
+            ServiceSyncFrameAuthorization::Unauthorized
+        );
+        assert_eq!(authorization_calls.get(), 2);
+
+        assert_eq!(
+            authorize_service_sync_frame(&Data::Test, authorize),
+            ServiceSyncFrameAuthorization::Unsupported
+        );
+        assert_eq!(authorization_calls.get(), 2);
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]

@@ -156,7 +156,7 @@ fn active_uid_strict() -> Option<u32> {
 #[cfg(target_os = "linux")]
 #[inline]
 fn active_uid_strict() -> Option<u32> {
-    let reported_uid_raw = crate::platform::linux::get_active_userid();
+    let reported_uid_raw = crate::platform::linux::get_active_userid_fresh();
     let trimmed = reported_uid_raw.trim();
     if let Ok(uid) = trimmed.parse::<u32>() {
         return Some(uid);
@@ -693,8 +693,8 @@ where
 
     fn service_authorization_status(&self) -> (bool, Option<u32>, Option<u32>) {
         let peer_uid = self.peer_uid();
-        // On Linux, `_service` can use the cached active UID from the service loop for
-        // stable config sync. Uinput does a fresh active-UID lookup in its own authorizer.
+        // Resolve the active Linux UID afresh at every authorization boundary. A cached
+        // service-loop snapshot can outlive a switch-user transition.
         let active_uid = active_uid();
         let authorized = peer_uid.is_some_and(|uid| is_allowed_service_peer_uid(uid, active_uid));
         (authorized, peer_uid, active_uid)
@@ -854,6 +854,7 @@ mod tests {
         assert!(super::is_allowed_service_peer_uid(501, Some(501)));
         assert!(!super::is_allowed_service_peer_uid(502, Some(501)));
         assert!(!super::is_allowed_service_peer_uid(501, None));
+        assert!(!super::is_allowed_service_peer_uid(501, Some(502)));
     }
 
     #[test]
