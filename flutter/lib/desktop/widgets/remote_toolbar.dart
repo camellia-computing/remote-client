@@ -27,6 +27,7 @@ import '../../models/platform_model.dart';
 import '../../common/shared_state.dart';
 import './popup_menu.dart';
 import './kb_layout_type_chooser.dart';
+import './remote_toolbar_overlay.dart';
 import 'package:camellia_remote_app/utils/scale.dart';
 import 'package:camellia_remote_app/common/widgets/custom_scale_base.dart';
 
@@ -559,34 +560,28 @@ class _RemoteToolbarState extends State<RemoteToolbar> {
         }
       });
 
-      final toolbar = Align(
-        alignment: _alignmentForEdge(edge, _fraction.value),
-        child: KeyedSubtree(
-          key: _toolbarKey,
-          child: collapse.isFalse
-              ? _buildToolbar(context, edge, isHorizontal)
-              : _buildDraggableCollapse(context, edge, isHorizontal),
-        ),
+      final toolbar = KeyedSubtree(
+        key: _toolbarKey,
+        child: collapse.isFalse
+            ? _buildToolbar(context, edge, isHorizontal)
+            : _buildDraggableCollapse(context, edge, isHorizontal),
       );
 
-      // Always return the Stack — even when not dragging — so the toolbar's
-      // position in the Element tree stays stable. Wrapping/unwrapping it
-      // mid-drag was killing the Draggable's gesture state.
-      return Stack(
-        fit: StackFit.expand,
-        children: [
-          IgnorePointer(
-            child: Obx(() {
-              final pe = _previewEdge.value;
-              final pf = _previewFraction.value;
-              if (!_dragging.isTrue || pe == null || pf == null) {
-                return const SizedBox.shrink();
-              }
-              return _buildDragPreview(context, pe, pf, _toolbarSize.value);
-            }),
-          ),
-          toolbar,
-        ],
+      // Keep the full-viewport docking layer stable during a drag, but place
+      // the fallible toolbar subtree behind a strict cross-axis boundary. A
+      // release ErrorWidget from a toolbar child must never cover the canvas.
+      return RemoteToolbarOverlaySurface(
+        edge: edge,
+        fraction: _fraction.value,
+        toolbar: toolbar,
+        preview: Obx(() {
+          final pe = _previewEdge.value;
+          final pf = _previewFraction.value;
+          if (!_dragging.isTrue || pe == null || pf == null) {
+            return const SizedBox.shrink();
+          }
+          return _buildDragPreview(context, pe, pf, _toolbarSize.value);
+        }),
       );
     });
   }
