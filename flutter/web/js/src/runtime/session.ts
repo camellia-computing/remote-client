@@ -12,6 +12,7 @@ import { concatBytes, sha256, utf8ToBytes } from './hash';
 import { MessageInbox } from './inbox';
 import { ProtoRoots, decodeProtoObject, loadProtos } from './proto';
 import { ConnectionRoute, RelayInfo, RendezvousClient } from './rendezvous';
+import { assertPeerAuthenticatedRoute } from './direct_access_policy';
 import { WebSocketTransport } from './transport';
 import { ConnectRequest, ConnectionState, SessionContext, SessionMode } from './types';
 import {
@@ -329,42 +330,7 @@ export class WebSession {
         `Session context: version=${context.version || '-'}, buildDate=${context.buildDate || '-'}`
       );
 
-      const directTarget = this.isDirectAccessTarget(this.request.id);
-      const directEndpoint = this.resolveDirectAccessEndpoint(context);
-      if (directEndpoint) {
-        this.attachTransportMessageHandler();
-        try {
-          await this.connectDirectIpAccess(directEndpoint);
-        } catch {
-          this.transport.close();
-          throw new Error(
-            directEndpoint.startsWith('wss://')
-              ? 'Direct IP access failed. Ensure target WSS endpoint is reachable and certificate is trusted.'
-              : 'Direct IP access failed. Web client requires a reachable WS/WSS endpoint on target host.'
-          );
-        }
-        this.state = 'connected';
-        this.events.emit({ name: 'conn_status', status: 'connected' });
-        this.events.emit({
-          name: 'connection_ready',
-          secure: 'false',
-          direct: 'true',
-          stream_type: 'TCP'
-        });
-        this.startKeepalive();
-        this.startInitialVideoRefreshLoop();
-        if (this.requestedDisplays.length > 0) {
-          this.switchDisplay(this.requestedDisplays);
-        }
-        this.reconnectAttempts = 0;
-        this.logger.info('Connected in direct IP access mode (unencrypted)');
-        return;
-      }
-      if (directTarget && !context.allowDirectIpAccess) {
-        throw new Error(
-          'Direct IP access is disabled. Enable "Enable direct IP access" first.'
-        );
-      }
+      assertPeerAuthenticatedRoute(this.request.id);
 
       if (!context.rendezvousServer) {
         throw new Error('Rendezvous server not configured');
@@ -436,119 +402,6 @@ export class WebSession {
       this.state = 'idle';
       throw err;
     }
-  }
-
-  private resolveDirectAccessEndpoint(context: SessionContext): string | null {
-    if (!context.allowDirectIpAccess) {
-      return null;
-    }
-    const target = this.request.id.trim();
-    if (!target || /^\d+$/.test(target)) {
-      return null;
-    }
-    if (target.startsWith('ws://') || target.startsWith('wss://')) {
-      return target;
-    }
-    if (target.includes('/') || target.includes('?') || target.includes('#')) {
-      return null;
-    }
-    if (target.startsWith('[')) {
-      const end = target.indexOf(']');
-      if (end <= 0) {
-        return null;
-      }
-      const host = target.slice(1, end);
-      const rest = target.slice(end + 1);
-      if (!host || !host.includes(':')) {
-        return null;
-      }
-      if (!rest) {
-        return `ws://[${host}]:${context.directAccessPort}`;
-      }
-      if (!rest.startsWith(':')) {
-        return null;
-      }
-      const port = Number.parseInt(rest.slice(1), 10);
-      if (!Number.isInteger(port) || port <= 0 || port > 65535) {
-        return null;
-      }
-      return `ws://[${host}]:${port}`;
-    }
-    const colonCount = (target.match(/:/g) ?? []).length;
-    if (colonCount === 0) {
-      if (isIpv4(target)) {
-        return `ws://${target}:${context.directAccessPort}`;
-      }
-      return null;
-    }
-    if (colonCount === 1) {
-      const lastColon = target.lastIndexOf(':');
-      const host = target.slice(0, lastColon);
-      const portRaw = target.slice(lastColon + 1);
-      const port = Number.parseInt(portRaw, 10);
-      if (!host || !Number.isInteger(port) || port <= 0 || port > 65535) {
-        return null;
-      }
-      if (!isIpv4(host) && !isDomain(host)) {
-        return null;
-      }
-      return `ws://${host}:${port}`;
-    }
-    return null;
-  }
-
-  private isDirectAccessTarget(rawId: string): boolean {
-    const target = rawId.trim();
-    if (!target || /^\d+$/.test(target)) {
-      return false;
-    }
-    if (target.startsWith('ws://') || target.startsWith('wss://')) {
-      return true;
-    }
-    if (target.includes('/') || target.includes('?') || target.includes('#')) {
-      return false;
-    }
-    if (target.startsWith('[')) {
-      const end = target.indexOf(']');
-      if (end <= 0) {
-        return false;
-      }
-      const host = target.slice(1, end);
-      const rest = target.slice(end + 1);
-      if (!host || !host.includes(':')) {
-        return false;
-      }
-      if (!rest) {
-        return true;
-      }
-      if (!rest.startsWith(':')) {
-        return false;
-      }
-      const port = Number.parseInt(rest.slice(1), 10);
-      return Number.isInteger(port) && port > 0 && port <= 65535;
-    }
-    const colonCount = (target.match(/:/g) ?? []).length;
-    if (colonCount === 0) {
-      return isIpv4(target);
-    }
-    if (colonCount === 1) {
-      const lastColon = target.lastIndexOf(':');
-      const host = target.slice(0, lastColon);
-      const portRaw = target.slice(lastColon + 1);
-      const port = Number.parseInt(portRaw, 10);
-      if (!host || !Number.isInteger(port) || port <= 0 || port > 65535) {
-        return false;
-      }
-      return isIpv4(host) || isDomain(host);
-    }
-    return false;
-  }
-
-  private async connectDirectIpAccess(endpoint: string): Promise<void> {
-    await this.transport.connect(endpoint);
-    this.isSecure = false;
-    // Keep behavior aligned with native direct-IP mode (non-secure path).
-    this.sendMessage({});
   }
 
   private async connectWithRoute(
@@ -3572,30 +3425,6 @@ function parsePeerEncoding(value: unknown): PeerEncoding {
     h264: Boolean(enc.h264),
     h265: Boolean(enc.h265)
   };
-}
-
-function isIpv4(value: string): boolean {
-  const parts = value.split('.');
-  if (parts.length !== 4) {
-    return false;
-  }
-  return parts.every((part) => {
-    if (!/^\d+$/.test(part)) {
-      return false;
-    }
-    const num = Number.parseInt(part, 10);
-    return num >= 0 && num <= 255;
-  });
-}
-
-function isDomain(value: string): boolean {
-  if (!value || value.length > 253) {
-    return false;
-  }
-  if (value.includes('..') || value.startsWith('-') || value.endsWith('-')) {
-    return false;
-  }
-  return /^[A-Za-z0-9.-]+$/.test(value);
 }
 
 function permissionName(value: unknown): string | null {

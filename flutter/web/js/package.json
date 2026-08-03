@@ -11,7 +11,8 @@
     "check:build": "node tools/check-web-build.mjs",
     "dev": "vite",
     "generate:proto": "node tools/generate-proto.mjs",
-    "lint": "tsc -p tsconfig.json --noEmit"
+    "lint": "npm run test:security && tsc -p tsconfig.json --noEmit",
+    "test:security": "node --test test/direct_access_policy.test.ts"
   },
   "dependencies": {
     "fzstd": "^0.1.1",
