@@ -12,7 +12,7 @@
     "dev": "vite",
     "generate:proto": "node tools/generate-proto.mjs",
     "lint": "npm run test:security && tsc -p tsconfig.json --noEmit",
-    "test:security": "node --test test/direct_access_policy.test.ts"
+    "test:security": "node --test test/direct_access_policy.test.ts test/secretbox_direction.test.ts"
   },
   "dependencies": {
     "fzstd": "^0.1.1",

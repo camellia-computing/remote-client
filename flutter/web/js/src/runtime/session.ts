@@ -1333,7 +1333,7 @@ export class WebSession {
         symmetricValue: sealed
       }
     });
-    this.transport.setCipher(new SecretBoxCipher(symmetricKey));
+    this.transport.setCipher(new SecretBoxCipher(symmetricKey, 'initiator'));
     this.isSecure = true;
   }
 

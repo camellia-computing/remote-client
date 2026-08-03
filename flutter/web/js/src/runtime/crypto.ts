@@ -4,6 +4,11 @@ const localSecretEncoder = new TextEncoder();
 const localSecretDecoder = new TextDecoder();
 const LOCAL_SECRET_PREFIX = 'enc00:';
 const LOCAL_SECRET_CONTEXT = 'camellia.web.local-secret';
+const SESSION_CIPHER_VERSION = 1;
+const SESSION_NONCE_DOMAIN = localSecretEncoder.encode('camellia-rem-v1');
+
+export type SessionCipherRole = 'initiator' | 'responder';
+type Sequence = readonly [low: number, high: number];
 
 export class CryptoError extends Error {
   constructor(message: string) {
@@ -103,8 +108,11 @@ export function createSymmetricKey(theirPublicKey: Uint8Array): {
   }
   const keyPair = nacl.box.keyPair();
   const symmetricKey = nacl.randomBytes(nacl.secretbox.keyLength);
+  const keyEnvelope = new Uint8Array(1 + symmetricKey.length);
+  keyEnvelope[0] = SESSION_CIPHER_VERSION;
+  keyEnvelope.set(symmetricKey, 1);
   const nonce = new Uint8Array(nacl.box.nonceLength);
-  const sealed = nacl.box(symmetricKey, nonce, theirPublicKey, keyPair.secretKey);
+  const sealed = nacl.box(keyEnvelope, nonce, theirPublicKey, keyPair.secretKey);
   return { publicKey: keyPair.publicKey, symmetricKey, sealed };
 }
 
@@ -121,50 +129,77 @@ export function decodeSymmetricKey(
   if (!opened) {
     throw new CryptoError('Failed to decrypt symmetric key');
   }
-  if (opened.length !== nacl.secretbox.keyLength) {
-    throw new CryptoError(`Invalid symmetric key length: ${opened.length}`);
+  if (opened.length !== nacl.secretbox.keyLength + 1) {
+    throw new CryptoError(`Invalid session-key envelope length: ${opened.length}`);
   }
-  return opened;
+  if (opened[0] !== SESSION_CIPHER_VERSION) {
+    throw new CryptoError(`Unsupported session cipher version: ${opened[0]}`);
+  }
+  return opened.slice(1);
 }
 
 export class SecretBoxCipher {
   private readonly key: Uint8Array;
-  private sendSeq = 0;
-  private recvSeq = 0;
+  private readonly role: SessionCipherRole;
+  private sendSeq: Sequence = [0, 0];
+  private recvSeq: Sequence = [0, 0];
 
-  constructor(key: Uint8Array) {
+  constructor(key: Uint8Array, role: SessionCipherRole) {
     if (key.length !== nacl.secretbox.keyLength) {
       throw new CryptoError(`Invalid secretbox key length: ${key.length}`);
     }
-    this.key = key;
+    this.key = key.slice();
+    this.role = role;
   }
 
   encrypt(payload: Uint8Array): Uint8Array {
-    this.sendSeq += 1;
-    const nonce = this.makeNonce(this.sendSeq);
-    return nacl.secretbox(payload, nonce, this.key);
+    const next = this.increment(this.sendSeq, 'send');
+    const nonce = this.makeNonce(next, this.sendDirection());
+    const ciphertext = nacl.secretbox(payload, nonce, this.key);
+    this.sendSeq = next;
+    return ciphertext;
   }
 
   decrypt(payload: Uint8Array): Uint8Array {
-    if (payload.length <= 1) {
-      return payload;
+    if (payload.length < nacl.secretbox.overheadLength) {
+      throw new CryptoError('Encrypted frame is shorter than its authentication tag');
     }
-    this.recvSeq += 1;
-    const nonce = this.makeNonce(this.recvSeq);
+    const next = this.increment(this.recvSeq, 'receive');
+    const nonce = this.makeNonce(next, this.receiveDirection());
     const opened = nacl.secretbox.open(payload, nonce, this.key);
     if (!opened) {
       throw new CryptoError('Secretbox decryption failed');
     }
+    this.recvSeq = next;
     return opened;
   }
 
-  private makeNonce(seq: number): Uint8Array {
-    const nonce = new Uint8Array(nacl.secretbox.nonceLength);
-    let value = seq;
-    for (let i = 0; i < 8; i += 1) {
-      nonce[i] = value & 0xff;
-      value = Math.floor(value / 256);
+  private increment(sequence: Sequence, label: string): Sequence {
+    const [low, high] = sequence;
+    if (low === 0xffffffff && high === 0xffffffff) {
+      throw new CryptoError(`${label} sequence exhausted`);
     }
+    const nextLow = (low + 1) >>> 0;
+    const nextHigh = nextLow === 0 ? (high + 1) >>> 0 : high;
+    return [nextLow, nextHigh];
+  }
+
+  private sendDirection(): number {
+    return this.role === 'initiator' ? 0x49 : 0x52;
+  }
+
+  private receiveDirection(): number {
+    return this.role === 'initiator' ? 0x52 : 0x49;
+  }
+
+  private makeNonce(sequence: Sequence, direction: number): Uint8Array {
+    const nonce = new Uint8Array(nacl.secretbox.nonceLength);
+    for (let i = 0; i < 4; i += 1) {
+      nonce[i] = (sequence[0] >>> (i * 8)) & 0xff;
+      nonce[i + 4] = (sequence[1] >>> (i * 8)) & 0xff;
+    }
+    nonce.set(SESSION_NONCE_DOMAIN, 8);
+    nonce[23] = direction;
     return nonce;
   }
 }

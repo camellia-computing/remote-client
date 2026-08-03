@@ -449,7 +449,7 @@ export async function secureRendezvousTransport(
   if (!transport.send(reply)) {
     throw new Error('Unable to send rendezvous key exchange response');
   }
-  transport.setCipher(new SecretBoxCipher(symmetricKey));
+  transport.setCipher(new SecretBoxCipher(symmetricKey, 'initiator'));
   logger?.info('Rendezvous secure channel established');
 }
 

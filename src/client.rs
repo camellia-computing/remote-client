@@ -57,6 +57,7 @@ use camellia_remote_protocol::{
     rendezvous_proto::*,
     sha2::{Digest, Sha256},
     socket_client::{connect_tcp, connect_tcp_local, ipv4_to_ipv6, new_direct_udp_for},
+    tcp::CipherRole,
     timeout,
     tokio::{
         self,
@@ -782,7 +783,7 @@ impl Client {
             ..Default::default()
         });
         timeout(CONNECT_TIMEOUT, conn.send(&msg_out)).await??;
-        conn.set_key(key);
+        conn.set_key(key, CipherRole::Initiator);
         if !conn.is_secured() {
             bail!("Handshake failed: encrypted transport was not activated");
         }

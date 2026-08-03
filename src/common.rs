@@ -25,7 +25,9 @@ use camellia_remote_protocol::{
     message_proto::*,
     protobuf::{Enum, Message as _},
     rendezvous_proto::*,
-    socket_client, timeout,
+    socket_client,
+    tcp::{CipherRole, Encrypt},
+    timeout,
     tls::{get_cached_tls_type, upsert_tls_cache, TlsType},
     tokio::{
         self,
@@ -749,7 +751,10 @@ pub fn run_me<T: AsRef<std::ffi::OsStr>>(args: Vec<T>) -> std::io::Result<std::p
 pub fn username() -> String {
     // fix bug of whoami
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    return whoami::username().trim_end_matches('\0').to_owned();
+    return whoami::username()
+        .unwrap_or_default()
+        .trim_end_matches('\0')
+        .to_owned();
     #[cfg(any(target_os = "android", target_os = "ios"))]
     return DEVICE_NAME.lock().unwrap().clone();
 }
@@ -759,7 +764,7 @@ pub fn username() -> String {
 #[inline(always)]
 #[cfg(not(target_os = "ios"))]
 pub fn whoami_hostname() -> String {
-    let mut hostname = whoami::fallible::hostname().unwrap_or_else(|_| "localhost".to_string());
+    let mut hostname = whoami::hostname().unwrap_or_else(|_| "localhost".to_string());
     hostname.make_ascii_lowercase();
     hostname
 }
@@ -1708,7 +1713,7 @@ async fn secure_tcp_impl(conn: &mut Stream, key: &str, log_on_success: bool) -> 
         ..Default::default()
     });
     timeout(CONNECT_TIMEOUT, conn.send(&msg_out)).await??;
-    conn.set_key(key);
+    conn.set_key(key, CipherRole::Initiator);
     if !conn.is_secured() {
         bail!("Handshake failed: secure channel was not activated");
     }
@@ -1764,7 +1769,8 @@ pub fn create_symmetric_key_msg(
     let (our_pk_b, out_sk_b) = box_::gen_keypair();
     let key = secretbox::gen_key();
     let nonce = box_::Nonce([0u8; box_::NONCEBYTES]);
-    let sealed_key = box_::seal(&key.0, &nonce, &their_pk_b, &out_sk_b)
+    let key_envelope = Encrypt::encode_session_key(&key);
+    let sealed_key = box_::seal(&key_envelope, &nonce, &their_pk_b, &out_sk_b)
         .map_err(|_| anyhow!("Handshake failed: session key encryption failed"))?;
     Ok((Vec::from(our_pk_b.0).into(), sealed_key.into(), key))
 }
