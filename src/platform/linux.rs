@@ -1739,7 +1739,7 @@ mod desktop {
             if self.display.is_empty() {
                 self.display = ":0".to_owned();
             }
-            if let Ok(hostname) = camellia_remote_protocol::whoami::fallible::hostname() {
+            if let Ok(hostname) = camellia_remote_protocol::whoami::hostname() {
                 self.display = self.display.replace(&hostname, "");
             }
             self.display = self.display.replace("localhost", "");

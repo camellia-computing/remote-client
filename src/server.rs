@@ -238,11 +238,14 @@ pub async fn create_tcp_connection(
     if peer_key.asymmetric_value.len() != box_::PUBLICKEYBYTES {
         bail!("Handshake failed: invalid peer session-key length");
     }
-    stream.set_key(tcp::Encrypt::decode(
-        &peer_key.symmetric_value,
-        &peer_key.asymmetric_value,
-        &our_sk_b,
-    )?);
+    stream.set_key(
+        tcp::Encrypt::decode(
+            &peer_key.symmetric_value,
+            &peer_key.asymmetric_value,
+            &our_sk_b,
+        )?,
+        tcp::CipherRole::Responder,
+    );
     if !stream.is_secured() {
         bail!("Handshake failed: encrypted transport was not activated");
     }

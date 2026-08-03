@@ -30,8 +30,6 @@ export type SessionContext = {
   apiServer: string;
   key: string;
   token: string;
-  allowDirectIpAccess: boolean;
-  directAccessPort: number;
   myId: string;
   myName: string;
   version: string;

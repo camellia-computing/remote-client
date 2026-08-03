@@ -115,6 +115,7 @@ export class WebSocketTransport {
           }
           this.state = 'closed';
           this.socket = undefined;
+          this.cipher = undefined;
           this.logger.warn(`WebSocket closed: ${url}`);
           for (const handler of this.closeHandlers) {
             handler(event);
@@ -129,6 +130,9 @@ export class WebSocketTransport {
           }
         };
         socket.onmessage = (event) => {
+          if (this.socket !== socket || this.state !== 'open') {
+            return;
+          }
           if (event.data instanceof ArrayBuffer) {
             let payload = new Uint8Array(event.data) as Uint8Array;
             if (this.cipher) {
@@ -136,6 +140,13 @@ export class WebSocketTransport {
                 payload = this.cipher.decrypt(payload) as Uint8Array;
               } catch (err) {
                 this.logger.error('Failed to decrypt WebSocket payload', err);
+                this.state = 'error';
+                this.cipher = undefined;
+                try {
+                  socket.close(1002, 'Encrypted payload authentication failed');
+                } catch {
+                  // noop
+                }
                 return;
               }
             }
@@ -194,7 +205,13 @@ export class WebSocketTransport {
       return true;
     } catch (err) {
       this.state = 'error';
+      this.cipher = undefined;
       this.logger.warn('send() failed', err);
+      try {
+        socket.close(1011, 'Encrypted transport failure');
+      } catch {
+        // noop
+      }
       return false;
     }
   }

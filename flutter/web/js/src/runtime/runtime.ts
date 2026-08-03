@@ -4295,8 +4295,6 @@ export class WebRuntime {
     const apiServer = this.resolveApiServer();
     const key = this.getOption('key') || this.getEnv('RS_PUB_KEY', 'rs_pub_key');
     const token = this.getOption('access_token') || '';
-    const allowDirectIpAccess = this.isOptionEnabled('enable-direct-server');
-    const directAccessPort = this.resolveDirectAccessPort();
     const version =
       this.config.version?.trim() ||
       this.getEnv('APP_VERSION', 'app_version') ||
@@ -4315,8 +4313,6 @@ export class WebRuntime {
       apiServer,
       key,
       token,
-      allowDirectIpAccess,
-      directAccessPort,
       myId: this.store.get('my_id', this.config.profile.id ?? ''),
       myName: this.store.get('my_name', this.config.profile.name ?? 'Web User'),
       version,
@@ -4333,14 +4329,6 @@ export class WebRuntime {
   private isOptionEnabled(key: string): boolean {
     const value = this.getOption(key).trim().toLowerCase();
     return value === 'y' || value === 'yes' || value === '1' || value === 'true';
-  }
-
-  private resolveDirectAccessPort(): number {
-    const raw = Number.parseInt(this.getOption('direct-access-port') || '', 10);
-    if (Number.isInteger(raw) && raw > 0 && raw <= 65535) {
-      return raw;
-    }
-    return this.defaultWsIdPort();
   }
 
   private getDefaultIdPort(): number {
