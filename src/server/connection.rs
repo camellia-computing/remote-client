@@ -932,8 +932,8 @@ impl Connection {
                 }
                 Ok(conns) = hbbs_rx.recv() => {
                     if conns.contains(&id) {
-                        conn.send_close_reason_no_retry("Closed manually by web console").await;
-                        conn.on_close("web console", true).await;
+                        conn.send_close_reason_no_retry("Closed by management policy").await;
+                        conn.on_close("management policy", true).await;
                         break;
                     }
                 }
@@ -1239,7 +1239,7 @@ impl Connection {
                     Ok(conns) = hbbs_rx.recv() => {
                         if conns.contains(&self.inner.id) {
                             // todo: check reconnect
-                            bail!("Closed manually by the web console");
+                            bail!("Closed by management policy");
                         }
                     }
                 }
@@ -1301,6 +1301,11 @@ impl Connection {
 
     async fn on_open(&mut self, addr: SocketAddr) -> bool {
         log::debug!("#{} Connection opened from {}.", self.inner.id, addr);
+        if !crate::hbbs_http::sync::incoming_connections_allowed() {
+            self.send_login_error("Device is disabled by management")
+                .await;
+            return false;
+        }
         if !self.check_whitelist(&addr).await {
             return false;
         }

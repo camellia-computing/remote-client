@@ -137,9 +137,11 @@ impl RendezvousMediator {
         loop {
             let timeout = Arc::new(RwLock::new(CONNECT_TIMEOUT));
             let conn_start_time = Instant::now();
+            let managed_incoming_allowed = crate::hbbs_http::sync::incoming_connections_allowed();
             *SOLVING_PK_MISMATCH.lock().await = "".to_owned();
             if !config::option2bool("stop-service", &Config::get_option("stop-service"))
                 && !crate::platform::installing_service()
+                && managed_incoming_allowed
             {
                 let mut futs = Vec::new();
                 let servers = Config::get_rendezvous_servers();
@@ -169,6 +171,16 @@ impl RendezvousMediator {
                 server.write().unwrap().close_connections();
             }
             Config::reset_online();
+            if !managed_incoming_allowed {
+                // A lease transition uses `restart` to stop active mediators.
+                // Clear its short manual-restart cadence while admission stays
+                // closed, otherwise this outer loop would spin every 33 ms.
+                // Poll once per second so a renewed lease resumes registration
+                // promptly without adding another task or notification channel.
+                MANUAL_RESTARTED.store(false, Ordering::SeqCst);
+                sleep(1.).await;
+                continue;
+            }
             let timeout = *timeout.read().unwrap();
             if !MANUAL_RESTARTED.load(Ordering::SeqCst) {
                 let elapsed = conn_start_time.elapsed().as_millis() as u64;
@@ -725,7 +737,8 @@ async fn direct_server(server: ServerPtr) {
         let disabled = !option2bool(
             OPTION_ENABLE_DIRECT_SERVER,
             &Config::get_option(OPTION_ENABLE_DIRECT_SERVER),
-        ) || option2bool("stop-service", &Config::get_option("stop-service"));
+        ) || option2bool("stop-service", &Config::get_option("stop-service"))
+            || !crate::hbbs_http::sync::incoming_connections_allowed();
         if !disabled && listener.is_none() {
             port = get_direct_port();
             match camellia_remote_protocol::tcp::listen_any(port as _).await {
