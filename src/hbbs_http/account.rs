@@ -21,6 +21,15 @@ const REQUESTING_ACCOUNT_AUTH: &str = "Requesting account auth";
 const WAITING_ACCOUNT_AUTH: &str = "Waiting account auth";
 const LOGIN_ACCOUNT_AUTH: &str = "Login account auth";
 
+fn oidc_query_body(code: &str, id: &str, uuid: &str) -> String {
+    serde_json::json!({
+        "code": code,
+        "id": id,
+        "uuid": uuid,
+    })
+    .to_string()
+}
+
 #[derive(Deserialize, Clone, Debug)]
 pub struct OidcAuthUrl {
     code: String,
@@ -182,20 +191,13 @@ impl OidcSession {
         id: &str,
         uuid: &str,
     ) -> ResultType<HbbHttpResponse<AuthBody>> {
-        let url = Url::parse_with_params(
-            &format!("{}/api/oidc/auth-query", api_server),
-            &[("code", code), ("id", id), ("uuid", uuid)],
-        )?;
         Self::ensure_client(api_server);
-        #[derive(Deserialize)]
-        struct HttpResponseBody {
-            body: String,
-        }
-
-        let resp =
-            crate::http_request_sync(url.to_string(), "GET".to_owned(), None, "{}".to_owned())?;
-        let resp = serde_json::from_str::<HttpResponseBody>(&resp)?;
-        HbbHttpResponse::parse(&resp.body)
+        let resp = crate::post_request_sync(
+            format!("{}/api/oidc/auth-query", api_server),
+            oidc_query_body(code, id, uuid),
+            "",
+        )?;
+        HbbHttpResponse::parse(&resp)
     }
 
     fn reset(&mut self) {
@@ -359,5 +361,21 @@ impl OidcSession {
 
     pub fn get_result() -> AuthResult {
         OIDC_SESSION.read().unwrap().get_result_()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::oidc_query_body;
+
+    #[test]
+    fn oidc_poll_credentials_are_serialized_in_the_post_body() {
+        let body = oidc_query_body("poll-code-canary", "123456789", "device-uuid-canary");
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+        assert_eq!(parsed["code"], "poll-code-canary");
+        assert_eq!(parsed["id"], "123456789");
+        assert_eq!(parsed["uuid"], "device-uuid-canary");
+        assert_eq!(parsed.as_object().unwrap().len(), 3);
     }
 }

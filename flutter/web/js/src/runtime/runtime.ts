@@ -13,6 +13,7 @@ import {
   encryptLocalSecret
 } from './crypto';
 import { MessageInbox } from './inbox';
+import { createOidcPollRequest } from './oidc_poll_request';
 import { decodeProtoObject, loadProtos, ProtoRoots } from './proto';
 import { checkWsEndpoint, secureRendezvousTransport } from './rendezvous';
 import { WebSession } from './session';
@@ -2555,18 +2556,15 @@ export class WebRuntime {
         url_launched: urlLaunched
       });
 
-      const queryUrl = new URL(`${apiServer}/api/oidc/auth-query`);
-      queryUrl.searchParams.set('code', authResponse.code);
-      queryUrl.searchParams.set('id', id);
-      queryUrl.searchParams.set('uuid', uuid);
+      const queryRequest = createOidcPollRequest(apiServer, authResponse.code, id, uuid);
 
       const start = Date.now();
       const timeoutMs = 3 * 60 * 1000;
       while (this.isAccountAuthActive(nonce) && Date.now() - start < timeoutMs) {
         let queryResponse: OidcAuthQueryResponse | null = null;
         try {
-          queryResponse = (await this.fetchJson(queryUrl.toString(), {
-            method: 'GET',
+          queryResponse = (await this.fetchJson(queryRequest.url, {
+            ...queryRequest.init,
             signal
           })) as OidcAuthQueryResponse;
         } catch (err) {
