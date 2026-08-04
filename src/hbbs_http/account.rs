@@ -174,11 +174,14 @@ impl OidcSession {
         uuid: &str,
     ) -> ResultType<HbbHttpResponse<OidcAuthUrl>> {
         Self::ensure_client(api_server);
+        let device_proof =
+            crate::device_identity::request_device_proof(api_server, "oidc", id, uuid, "")?;
         let body = serde_json::json!({
             "op": op,
             "id": id,
             "uuid": uuid,
             "deviceInfo": crate::ui_interface::get_login_device_info(),
+            "device_proof": device_proof,
         })
         .to_string();
         let resp = crate::post_request_sync(format!("{}/api/oidc/auth", api_server), body, "")?;

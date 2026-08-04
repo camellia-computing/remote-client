@@ -9,8 +9,14 @@ import {
   isCanonicalDeviceUuid
 } from '../core/uuid';
 import {
+  decodeBase64,
   decryptLocalSecret,
-  encryptLocalSecret
+  deviceSigningPublicKey,
+  encodeBase64,
+  encryptLocalSecret,
+  generateDeviceSigningKeyPair,
+  signDeviceProof,
+  validateDeviceProofChallenge
 } from './crypto';
 import { MessageInbox } from './inbox';
 import { createOidcPollRequest } from './oidc_poll_request';
@@ -36,6 +42,12 @@ type OidcAuthQueryResponse = {
   type?: string;
   user?: { name?: string; status?: unknown };
   [key: string]: unknown;
+};
+type DeviceProofChallengeResponse = {
+  challenge?: string;
+  message?: string;
+  expires_at?: number;
+  error?: string;
 };
 type BootstrapConfigPayload = {
   appName?: string;
@@ -1036,6 +1048,74 @@ export class WebRuntime {
     const next = generateDeviceUuid();
     this.store.set('uuid', next);
     return next;
+  }
+
+  private ensureDeviceSigningSecret(): Uint8Array {
+    const uuid = this.ensureDeviceUuid();
+    const stored = this.store.get('device_signing_key', '');
+    const decrypted = decryptLocalSecret(stored, uuid);
+    if (decrypted) {
+      try {
+        const secretKey = decodeBase64(decrypted);
+        deviceSigningPublicKey(secretKey);
+        return secretKey;
+      } catch {}
+    }
+    const keyPair = generateDeviceSigningKeyPair();
+    this.store.set(
+      'device_signing_key',
+      encryptLocalSecret(encodeBase64(keyPair.secretKey), uuid)
+    );
+    return keyPair.secretKey;
+  }
+
+  async getDeviceProof(purpose: string, id: string, uuid: string, token = ''): Promise<string> {
+    try {
+      const secretKey = this.ensureDeviceSigningSecret();
+      const publicKey = deviceSigningPublicKey(secretKey);
+      const apiServer = this.resolveApiServer();
+      if (!apiServer) {
+        throw new Error('API server not configured');
+      }
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (token) {
+        headers.Authorization = `Bearer ${token}`;
+      }
+      const response = (await this.fetchJson(
+        `${apiServer}/api/devices/proof-challenge`,
+        {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ purpose, id, uuid, pk: encodeBase64(publicKey) })
+        }
+      )) as DeviceProofChallengeResponse;
+      if (
+        response.error ||
+        !response.challenge ||
+        !response.message ||
+        !Number.isSafeInteger(response.expires_at)
+      ) {
+        throw new Error(response.error || 'Invalid device proof challenge');
+      }
+      const message = await validateDeviceProofChallenge(
+        response.challenge,
+        response.message,
+        response.expires_at as number,
+        purpose,
+        id,
+        uuid,
+        publicKey
+      );
+      return JSON.stringify({
+        challenge: response.challenge,
+        public_key: encodeBase64(publicKey),
+        signature: encodeBase64(signDeviceProof(message, secretKey))
+      });
+    } catch (err) {
+      return JSON.stringify({
+        error: err instanceof Error ? err.message : 'Device proof failed'
+      });
+    }
   }
 
   private encryptLocalPasswordValue(value: string): string {
@@ -2508,6 +2588,11 @@ export class WebRuntime {
     let authUrl = '';
     let urlLaunched = false;
     try {
+      const deviceProofBody = await this.getDeviceProof('oidc', id, uuid);
+      const deviceProof = this.safeJson(deviceProofBody) as Record<string, unknown>;
+      if (deviceProof.error) {
+        throw new Error(String(deviceProof.error));
+      }
       const authResponse = (await this.fetchJson(
         `${apiServer}/api/oidc/auth`,
         {
@@ -2517,7 +2602,8 @@ export class WebRuntime {
             op,
             id,
             uuid,
-            deviceInfo
+            deviceInfo,
+            device_proof: deviceProof
           }),
           signal
         }

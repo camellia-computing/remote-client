@@ -1051,10 +1051,21 @@ pub fn deploy_device(token: String, new_id: Option<String>) -> DeployResult {
     let id_to_deploy = new_id.clone().unwrap_or_else(|| local_id.clone());
     let uuid = crate::encode64(camellia_remote_protocol::get_uuid());
     let pk = crate::encode64(Config::get_key_pair().1);
+    let proof = match crate::device_identity::request_device_proof(
+        &get_api_server(),
+        "deploy",
+        &id_to_deploy,
+        &uuid,
+        token,
+    ) {
+        Ok(proof) => proof,
+        Err(err) => return DeployResult::Error(format!("Device proof failed: {}", err)),
+    };
     let body = serde_json::json!({
         "id": id_to_deploy,
         "uuid": uuid,
         "pk": pk,
+        "device_proof": proof,
     });
     let header = "Authorization: Bearer ".to_owned() + token;
     let url = get_api_server() + "/api/devices/deploy";

@@ -619,6 +619,17 @@ class RustdeskImpl {
   Future<bool> mainIsUsingPublicServer() => ffi.mainIsUsingPublicServer();
   Future<void> mainDiscover() => ffi.mainDiscover();
   Future<String> mainGetApiServer() => ffi.mainGetApiServer();
+  Future<String> mainGetDeviceProof({
+    required String purpose,
+    required String id,
+    required String uuid,
+    required String token,
+  }) => ffi.mainGetDeviceProof(
+    purpose: purpose,
+    id: id,
+    uuid: uuid,
+    token: token,
+  );
   Future<String> mainDeployDevice({
     required String token,
     required String id,

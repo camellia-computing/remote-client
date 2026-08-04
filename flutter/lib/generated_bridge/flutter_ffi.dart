@@ -915,6 +915,19 @@ Future<void> mainDiscover() =>
 Future<String> mainGetApiServer() =>
     RustLib.instance.api.crateFlutterFfiMainGetApiServer();
 
+/// Obtain and sign a one-use Management device proof challenge.
+Future<String> mainGetDeviceProof({
+  required String purpose,
+  required String id,
+  required String uuid,
+  required String token,
+}) => RustLib.instance.api.crateFlutterFfiMainGetDeviceProof(
+  purpose: purpose,
+  id: id,
+  uuid: uuid,
+  token: token,
+);
+
 /// Registers this device against the configured API server.
 ///
 /// `deploy_device` already handles every platform - desktop reads and rewrites

@@ -1165,6 +1165,16 @@ class RustdeskImpl {
     return Future(() => js.context.callMethod('getByName', ['api_server']));
   }
 
+  Future<String> mainGetDeviceProof({
+    required String purpose,
+    required String id,
+    required String uuid,
+    required String token,
+    dynamic hint,
+  }) {
+    return js.getDeviceProof(purpose, id, uuid, token);
+  }
+
   Future<void> mainPostRequest({
     required String url,
     required String body,

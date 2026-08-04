@@ -1165,6 +1165,20 @@ pub fn main_get_api_server() -> String {
     get_api_server()
 }
 
+/// Obtain and sign a one-use Management device proof challenge.
+pub fn main_get_device_proof(purpose: String, id: String, uuid: String, token: String) -> String {
+    match crate::device_identity::request_device_proof(
+        &get_api_server(),
+        purpose.trim(),
+        id.trim(),
+        uuid.trim(),
+        token.trim(),
+    ) {
+        Ok(proof) => proof.to_string(),
+        Err(err) => serde_json::json!({"error": err.to_string()}).to_string(),
+    }
+}
+
 /// Registers this device against the configured API server.
 ///
 /// `deploy_device` already handles every platform - desktop reads and rewrites

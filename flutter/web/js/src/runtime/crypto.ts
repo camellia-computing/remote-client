@@ -39,6 +39,64 @@ export function encodeBase64(data: Uint8Array): string {
   return btoa(binary);
 }
 
+export function generateDeviceSigningKeyPair(): nacl.SignKeyPair {
+  return nacl.sign.keyPair();
+}
+
+export function deviceSigningPublicKey(secretKey: Uint8Array): Uint8Array {
+  if (secretKey.length !== nacl.sign.secretKeyLength) {
+    throw new CryptoError('Invalid device signing secret key');
+  }
+  return nacl.sign.keyPair.fromSecretKey(secretKey).publicKey;
+}
+
+export function signDeviceProof(message: string, secretKey: Uint8Array): Uint8Array {
+  if (secretKey.length !== nacl.sign.secretKeyLength) {
+    throw new CryptoError('Invalid device signing secret key');
+  }
+  return nacl.sign.detached(localSecretEncoder.encode(message), secretKey);
+}
+
+export async function validateDeviceProofChallenge(
+  challenge: string,
+  message: string,
+  expiresAt: number,
+  purpose: string,
+  id: string,
+  uuid: string,
+  publicKey: Uint8Array,
+  now = Math.floor(Date.now() / 1000)
+): Promise<string> {
+  const fields = message.split('\n');
+  const publicKeyBytes = Uint8Array.from(publicKey);
+  const digest = new Uint8Array(
+    await globalThis.crypto.subtle.digest('SHA-256', publicKeyBytes.buffer)
+  );
+  const publicKeyHash = Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  const generation = fields.length === 8 && /^\d+$/.test(fields[5]) ? Number(fields[5]) : NaN;
+  const canonicalGeneration = Number.isSafeInteger(generation) && String(generation) === fields[5];
+  if (
+    !challenge ||
+    challenge.length > 128 ||
+    message.length > 1024 ||
+    fields.length !== 8 ||
+    fields[0] !== 'camellia-device-proof-v1' ||
+    fields[1] !== purpose ||
+    fields[2] !== challenge ||
+    fields[3] !== id ||
+    fields[4] !== uuid ||
+    !canonicalGeneration ||
+    fields[6] !== publicKeyHash ||
+    !Number.isSafeInteger(expiresAt) ||
+    fields[7] !== String(expiresAt) ||
+    expiresAt < now - 30 ||
+    expiresAt > now + 600
+  ) {
+    throw new CryptoError('Management returned a mismatched device proof challenge');
+  }
+  return message;
+}
+
 function deriveLocalSecretKey(seed: string): Uint8Array {
   const stableSeed = `${LOCAL_SECRET_CONTEXT}:${String(seed ?? '')}`;
   const digest = nacl.hash(localSecretEncoder.encode(stableSeed));
