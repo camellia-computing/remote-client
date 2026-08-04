@@ -70,6 +70,8 @@ pub mod display_service;
 mod login_failure_check;
 #[cfg(windows)]
 pub mod portable_service;
+#[cfg(any(windows, test))]
+mod portable_service_sync;
 mod service;
 mod video_qos;
 pub mod video_service;
