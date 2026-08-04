@@ -274,6 +274,52 @@ pub(super) struct PendingPasteFile {
     display_parent: PathBuf,
 }
 
+#[derive(Debug)]
+pub(super) struct CommittedPasteFile {
+    file: std::fs::File,
+    path: PathBuf,
+}
+
+impl CommittedPasteFile {
+    pub(super) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(super) fn finish(
+        self,
+        apply_metadata: impl FnOnce(&std::fs::File, &Path) -> Result<(), CliprdrError>,
+    ) -> Result<(), CliprdrError> {
+        self.finish_with_hook(apply_metadata, |_| Ok(()))
+    }
+
+    fn finish_with_hook(
+        self,
+        apply_metadata: impl FnOnce(&std::fs::File, &Path) -> Result<(), CliprdrError>,
+        mut hook: impl FnMut(FinalizeStep) -> Result<(), CliprdrError>,
+    ) -> Result<(), CliprdrError> {
+        hook(FinalizeStep::Metadata)?;
+        apply_metadata(&self.file, &self.path)?;
+        hook(FinalizeStep::FileSync)?;
+        self.file
+            .sync_all()
+            .map_err(|err| file_error(&self.path, err))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommitStep {
+    Flush,
+    FileSync,
+    Rename,
+    DirectorySync,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FinalizeStep {
+    Metadata,
+    FileSync,
+}
+
 impl PendingPasteFile {
     pub(super) fn writer_mut(&mut self) -> Result<&mut BufWriter<std::fs::File>, CliprdrError> {
         self.writer
@@ -310,20 +356,31 @@ impl PendingPasteFile {
         }
     }
 
-    pub(super) fn commit(mut self) -> Result<PathBuf, CliprdrError> {
+    pub(super) fn commit(self) -> Result<CommittedPasteFile, CliprdrError> {
+        self.commit_with_hook(|_| Ok(()))
+    }
+
+    fn commit_with_hook(
+        mut self,
+        mut hook: impl FnMut(CommitStep) -> Result<(), CliprdrError>,
+    ) -> Result<CommittedPasteFile, CliprdrError> {
         let Some(mut writer) = self.writer.take() else {
             return Err(CliprdrError::CommonError {
                 description: "clipboard staging file is already closed".to_owned(),
             });
         };
+        hook(CommitStep::Flush)?;
         writer
             .flush()
             .map_err(|err| file_error(&self.display_parent, err))?;
+        hook(CommitStep::FileSync)?;
         writer
             .get_ref()
             .sync_all()
             .map_err(|err| file_error(&self.display_parent, err))?;
-        drop(writer);
+        let file = writer
+            .into_inner()
+            .map_err(|err| file_error(&self.display_parent, err.into_error()))?;
 
         let temp_name = self
             .temp_name
@@ -333,6 +390,7 @@ impl PendingPasteFile {
             })?;
         for attempt in 0..FINAL_NAME_ATTEMPTS {
             let candidate = self.candidate_name(attempt);
+            hook(CommitStep::Rename)?;
             match rustix::fs::renameat_with(
                 &self.parent,
                 temp_name,
@@ -342,13 +400,18 @@ impl PendingPasteFile {
             ) {
                 Ok(()) => {
                     self.temp_name = None;
+                    let final_path = self.display_parent.join(&candidate);
+                    hook(CommitStep::DirectorySync)?;
                     let mut options = OpenOptions::new();
                     options.read(true).follow(FollowSymlinks::No);
                     self.parent
                         .open_with(".", &options)
                         .and_then(|directory| directory.sync_all())
-                        .map_err(|err| file_error(&self.display_parent, err))?;
-                    return Ok(self.display_parent.join(candidate));
+                        .map_err(|err| file_error(&final_path, err))?;
+                    return Ok(CommittedPasteFile {
+                        file,
+                        path: final_path,
+                    });
                 }
                 Err(err) if err == rustix::io::Errno::EXIST => continue,
                 Err(err) => return Err(file_error(&self.display_parent, err.into())),
@@ -366,7 +429,13 @@ impl PendingPasteFile {
 impl Drop for PendingPasteFile {
     fn drop(&mut self) {
         if let Some(temp_name) = self.temp_name.as_ref() {
-            let _ = self.parent.remove_file_or_symlink(temp_name);
+            if let Err(err) = self.parent.remove_file_or_symlink(temp_name) {
+                camellia_remote_protocol::log::warn!(
+                    "Failed to remove abandoned clipboard staging file under {}: {}",
+                    self.display_parent.display(),
+                    err
+                );
+            }
         }
     }
 }
@@ -488,10 +557,12 @@ mod tests {
         let mut pending = storage.begin_file(Path::new("report.txt"), 64)?;
         pending.writer_mut()?.write_all(b"safe")?;
         let committed = pending.commit()?;
+        let committed_path = committed.path().to_path_buf();
+        committed.finish(|_, _| Ok(()))?;
 
         assert_eq!(fs::read(&sentinel)?, b"must remain");
-        assert_eq!(committed, target.join("report.txt"));
-        assert_eq!(fs::read(committed)?, b"safe");
+        assert_eq!(committed_path, target.join("report.txt"));
+        assert_eq!(fs::read(committed_path)?, b"safe");
         assert!(target
             .join("report.txt.rddownload")
             .symlink_metadata()?
@@ -534,8 +605,8 @@ mod tests {
 
         let committed = pending.commit()?;
         assert_eq!(fs::read(target.join("report.txt"))?, b"old");
-        assert_eq!(committed, target.join("report-1.txt"));
-        assert_eq!(fs::read(committed)?, b"new");
+        assert_eq!(committed.path(), target.join("report-1.txt"));
+        assert_eq!(fs::read(committed.path())?, b"new");
         Ok(())
     }
 
@@ -558,8 +629,109 @@ mod tests {
             .symlink_metadata()?
             .file_type()
             .is_symlink());
-        assert_eq!(committed, target.join("report-1.txt"));
-        assert_eq!(fs::read(committed)?, b"new");
+        assert_eq!(committed.path(), target.join("report-1.txt"));
+        assert_eq!(fs::read(committed.path())?, b"new");
+        Ok(())
+    }
+
+    #[test]
+    fn commit_failures_before_rename_are_propagated_and_cleaned(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        for step in [CommitStep::Flush, CommitStep::FileSync, CommitStep::Rename] {
+            let temp = TestDir::new("commit-failure")?;
+            let target = temp.join("target");
+            fs::create_dir(&target)?;
+            let storage = PasteStorage::open(&target)?;
+            let mut pending = storage.begin_file(Path::new("report.txt"), 64)?;
+            pending.writer_mut()?.write_all(b"new")?;
+
+            let result = pending.commit_with_hook(|current| {
+                if current == step {
+                    Err(CliprdrError::CommonError {
+                        description: format!("injected {step:?} failure"),
+                    })
+                } else {
+                    Ok(())
+                }
+            });
+            assert!(result.is_err(), "{step:?}");
+            assert!(!target.join("report.txt").exists(), "{step:?}");
+            assert!(fs::read_dir(&target)?.next().is_none(), "{step:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn directory_sync_failure_is_reported_after_atomic_rename(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp = TestDir::new("directory-sync-failure")?;
+        let target = temp.join("target");
+        fs::create_dir(&target)?;
+        let storage = PasteStorage::open(&target)?;
+        let mut pending = storage.begin_file(Path::new("report.txt"), 64)?;
+        pending.writer_mut()?.write_all(b"new")?;
+
+        let result = pending.commit_with_hook(|step| {
+            if step == CommitStep::DirectorySync {
+                Err(CliprdrError::CommonError {
+                    description: "injected directory sync failure".to_owned(),
+                })
+            } else {
+                Ok(())
+            }
+        });
+        assert!(result.is_err());
+        assert_eq!(fs::read(target.join("report.txt"))?, b"new");
+        assert_eq!(fs::read_dir(&target)?.count(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn metadata_failure_after_rename_is_propagated() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = TestDir::new("metadata-failure")?;
+        let target = temp.join("target");
+        fs::create_dir(&target)?;
+        let storage = PasteStorage::open(&target)?;
+        let mut pending = storage.begin_file(Path::new("report.txt"), 64)?;
+        pending.writer_mut()?.write_all(b"new")?;
+        let committed = pending.commit()?;
+
+        let result = committed.finish(|_, _| {
+            Err(CliprdrError::CommonError {
+                description: "injected metadata failure".to_owned(),
+            })
+        });
+        assert!(result.is_err());
+        assert_eq!(fs::read(target.join("report.txt"))?, b"new");
+        assert_eq!(fs::read_dir(&target)?.count(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn final_sync_failure_after_metadata_is_propagated() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = TestDir::new("final-sync-failure")?;
+        let target = temp.join("target");
+        fs::create_dir(&target)?;
+        let storage = PasteStorage::open(&target)?;
+        let mut pending = storage.begin_file(Path::new("report.txt"), 64)?;
+        pending.writer_mut()?.write_all(b"new")?;
+        let committed = pending.commit()?;
+
+        let result = committed.finish_with_hook(
+            |_, _| Ok(()),
+            |step| {
+                if step == FinalizeStep::FileSync {
+                    Err(CliprdrError::CommonError {
+                        description: "injected final sync failure".to_owned(),
+                    })
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(fs::read(target.join("report.txt"))?, b"new");
+        assert_eq!(fs::read_dir(&target)?.count(), 1);
         Ok(())
     }
 

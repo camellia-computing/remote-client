@@ -8,8 +8,13 @@ pub use filetype::{FileDescription, FileType};
 pub mod fuse;
 #[cfg(target_os = "macos")]
 pub mod macos;
+#[cfg(all(test, not(target_os = "macos")))]
+#[path = "macos/paste_task.rs"]
+mod macos_paste_task_compile_test;
 
 pub mod local_file;
+#[cfg(any(target_os = "macos", test))]
+mod paste_state;
 #[cfg(any(target_os = "macos", test))]
 mod paste_storage;
 pub mod serv_files;
