@@ -115,7 +115,7 @@ impl ClipFiles {
                     .file_list
                     .iter()
                     .filter_map(|f| {
-                        if f.path.is_file() {
+                        if !f.is_dir {
                             Some((f.path.to_string_lossy().to_string(), f.size))
                         } else {
                             None
