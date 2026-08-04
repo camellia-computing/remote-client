@@ -15,6 +15,13 @@ use crate::{
 // Restart msgbox text is kept as a legacy UI fallback; Flutter handles the type as a control event.
 const RESTART_REMOTE_DEVICE_NO_DATA_TIMEOUT: Duration = Duration::from_secs(5);
 const KCP_CLOSE_REASON_FLUSH_DELAY: Duration = Duration::from_millis(30);
+
+fn remove_local_empty_dir_result(id: i32, path: String) -> Data {
+    let err = fs::remove_all_empty_dir(&fs::get_path(&path))
+        .err()
+        .map(|err| err.to_string());
+    Data::RemoveDirResult((id, err))
+}
 #[cfg(feature = "unix-file-copy-paste")]
 use crate::{clipboard::try_empty_clipboard_files, clipboard_file::unix_file_clip};
 #[cfg(not(target_os = "ios"))]
@@ -907,18 +914,26 @@ impl<T: InvokeUiSession> Remote<T> {
             Data::CancelJob(id) => {
                 self.cancel_transfer_job(id, peer).await;
             }
-            Data::RemoveDir((id, path)) => {
-                let mut msg_out = Message::new();
-                let mut file_action = FileAction::new();
-                file_action.set_remove_dir(FileRemoveDir {
-                    id,
-                    path,
-                    recursive: true,
-                    ..Default::default()
-                });
-                msg_out.set_file_action(file_action);
-                allow_err!(peer.send(&msg_out).await);
+            Data::RemoveDir((id, path, is_remote)) => {
+                if is_remote {
+                    let mut msg_out = Message::new();
+                    let mut file_action = FileAction::new();
+                    file_action.set_remove_dir(FileRemoveDir {
+                        id,
+                        path,
+                        recursive: true,
+                        ..Default::default()
+                    });
+                    msg_out.set_file_action(file_action);
+                    allow_err!(peer.send(&msg_out).await);
+                } else {
+                    let sender = self.sender.clone();
+                    drop(tokio::task::spawn_blocking(move || {
+                        allow_err!(sender.send(remove_local_empty_dir_result(id, path)));
+                    }));
+                }
             }
+            Data::RemoveDirResult((id, err)) => self.handle_job_status(id, -1, err),
             Data::RemoveFile((id, path, file_num, is_remote)) => {
                 if is_remote {
                     let mut msg_out = Message::new();
@@ -1949,20 +1964,28 @@ impl<T: InvokeUiSession> Remote<T> {
                                 }
                             }
                         }
-                        Some(file_response::Union::Error(e)) => {
-                            let job_type = fs::remove_job(e.id, &mut self.write_jobs)
-                                .or_else(|| fs::remove_job(e.id, &mut self.read_jobs))
-                                .map(|j| j.r#type)
-                                .unwrap_or(fs::JobType::Generic);
-                            match job_type {
-                                fs::JobType::Generic => {
-                                    self.handle_job_status(e.id, e.file_num, Some(e.error));
-                                }
-                                fs::JobType::Printer => {
-                                    log::error!("Printer job error: {}", e.error);
+                        Some(file_response::Union::Error(e)) => match e.operation.enum_value() {
+                            Ok(FileErrorOperation::ReadDir) => {
+                                self.handler.file_listing_error(e.path, e.error, false);
+                            }
+                            Ok(FileErrorOperation::ReadEmptyDirs) => {
+                                self.handler.file_listing_error(e.path, e.error, true);
+                            }
+                            _ => {
+                                let job_type = fs::remove_job(e.id, &mut self.write_jobs)
+                                    .or_else(|| fs::remove_job(e.id, &mut self.read_jobs))
+                                    .map(|j| j.r#type)
+                                    .unwrap_or(fs::JobType::Generic);
+                                match job_type {
+                                    fs::JobType::Generic => {
+                                        self.handle_job_status(e.id, e.file_num, Some(e.error));
+                                    }
+                                    fs::JobType::Printer => {
+                                        log::error!("Printer job error: {}", e.error);
+                                    }
                                 }
                             }
-                        }
+                        },
                         _ => {}
                     }
                 }
@@ -2684,5 +2707,37 @@ impl Drop for VideoThread {
     fn drop(&mut self) {
         // since channels are buffered, messages sent before the disconnect will still be properly received.
         *self.discard_queue.write().unwrap() = true;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn local_recursive_directory_removal_preserves_failure_result() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "camellia-local-remove-error-{}-{unique}",
+            std::process::id()
+        ));
+        let nested = root.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("payload.txt"), b"must remain").unwrap();
+
+        let result = remove_local_empty_dir_result(701, root.to_string_lossy().into_owned());
+        match result {
+            Data::RemoveDirResult((id, Some(err))) => {
+                assert_eq!(id, 701);
+                assert!(err.contains("nested"), "unexpected removal error: {err}");
+            }
+            _ => panic!("expected a failed local recursive removal result"),
+        }
+        assert!(nested.join("payload.txt").is_file());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

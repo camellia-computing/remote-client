@@ -21,7 +21,9 @@ unix-file-copy-paste = [
 "dep:percent-encoding",
 "dep:utf16string",
 "dep:once_cell",
-"dep:cacao"
+"dep:cacao",
+"dep:cap-std",
+"dep:cap-fs-ext"
 ]
 
 [dependencies]
@@ -38,6 +40,8 @@ libc = {version = "0.2", optional = true}
 dashmap = {version ="5.5", optional = true}
 utf16string = {version = "0.2", optional = true}
 once_cell = {version = "1.18", optional = true}
+cap-std = {version = "3.4.5", optional = true}
+cap-fs-ext = {version = "3.4.5", optional = true}
 
 [target.'cfg(target_os = "linux")'.dependencies]
 percent-encoding = {version  ="2.3", optional = true}

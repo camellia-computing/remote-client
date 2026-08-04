@@ -757,6 +757,18 @@ impl InvokeUiSession for FlutterHandler {
         );
     }
 
+    fn file_listing_error(&self, path: String, err: String, empty_dirs: bool) {
+        self.push_event(
+            "file_listing_error",
+            &[
+                ("path", &path),
+                ("err", &err),
+                ("empty_dirs", &empty_dirs.to_string()),
+            ],
+            &[],
+        );
+    }
+
     // unused in flutter
     fn clear_all_jobs(&self) {}
 

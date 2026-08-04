@@ -94,6 +94,75 @@ pub enum CliprdrError {
     Unknown(u32),
 }
 
+pub const FILE_CONTENTS_SIZE_FLAG: u32 = 0x1;
+pub const FILE_CONTENTS_RANGE_FLAG: u32 = 0x2;
+pub const FILE_CONTENTS_SIZE_BYTES: u32 = 8;
+pub const FILE_CONTENTS_MAX_REQUEST_BYTES: u32 = 4 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValidatedFileContentsRequest {
+    Size,
+    Range { offset: u64, length: u32, end: u64 },
+}
+
+pub fn validate_file_contents_request(
+    dw_flags: u32,
+    n_position_low: u32,
+    n_position_high: u32,
+    cb_requested: u32,
+) -> Result<ValidatedFileContentsRequest, CliprdrError> {
+    match dw_flags {
+        FILE_CONTENTS_SIZE_FLAG => {
+            if n_position_low != 0
+                || n_position_high != 0
+                || cb_requested != FILE_CONTENTS_SIZE_BYTES
+            {
+                return Err(CliprdrError::InvalidRequest {
+                    description: "non-canonical file size request".to_owned(),
+                });
+            }
+            Ok(ValidatedFileContentsRequest::Size)
+        }
+        FILE_CONTENTS_RANGE_FLAG => {
+            if cb_requested == 0 || cb_requested > FILE_CONTENTS_MAX_REQUEST_BYTES {
+                return Err(CliprdrError::InvalidRequest {
+                    description: format!(
+                        "file content request length {cb_requested} is outside 1..={FILE_CONTENTS_MAX_REQUEST_BYTES}"
+                    ),
+                });
+            }
+            let offset = (u64::from(n_position_high) << 32) | u64::from(n_position_low);
+            let end = offset.checked_add(u64::from(cb_requested)).ok_or_else(|| {
+                CliprdrError::InvalidRequest {
+                    description: "file content request offset overflow".to_owned(),
+                }
+            })?;
+            Ok(ValidatedFileContentsRequest::Range {
+                offset,
+                length: cb_requested,
+                end,
+            })
+        }
+        _ => Err(CliprdrError::InvalidRequest {
+            description: format!("invalid file content request flags: {dw_flags}"),
+        }),
+    }
+}
+
+pub fn validate_file_contents_payload_len(length: usize) -> Result<u32, CliprdrError> {
+    let length = u32::try_from(length).map_err(|_| CliprdrError::InvalidRequest {
+        description: "file content response length is not representable".to_owned(),
+    })?;
+    if length > FILE_CONTENTS_MAX_REQUEST_BYTES {
+        return Err(CliprdrError::InvalidRequest {
+            description: format!(
+                "file content response length {length} exceeds {FILE_CONTENTS_MAX_REQUEST_BYTES}"
+            ),
+        });
+    }
+    Ok(length)
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "t", content = "c")]
 pub enum ClipboardFile {
@@ -117,18 +186,18 @@ pub enum ClipboardFile {
         format_data: Vec<u8>,
     },
     FileContentsRequest {
-        stream_id: i32,
-        list_index: i32,
-        dw_flags: i32,
-        n_position_low: i32,
-        n_position_high: i32,
-        cb_requested: i32,
+        stream_id: u32,
+        list_index: u32,
+        dw_flags: u32,
+        n_position_low: u32,
+        n_position_high: u32,
+        cb_requested: u32,
         have_clip_data_id: bool,
-        clip_data_id: i32,
+        clip_data_id: u32,
     },
     FileContentsResponse {
-        msg_flags: i32,
-        stream_id: i32,
+        msg_flags: u32,
+        stream_id: u32,
         requested_data: Vec<u8>,
     },
     TryEmpty,
@@ -291,8 +360,76 @@ fn send_data_to_all(data: ClipboardFile) {
 
 #[cfg(test)]
 mod tests {
-    // #[test]
-    // fn test_cliprdr_run() {
-    //     super::cliprdr_run();
-    // }
+    use super::*;
+
+    #[test]
+    fn file_contents_size_request_requires_canonical_fields() {
+        assert_eq!(
+            validate_file_contents_request(FILE_CONTENTS_SIZE_FLAG, 0, 0, 8).unwrap(),
+            ValidatedFileContentsRequest::Size
+        );
+
+        for (low, high, length) in [(1, 0, 8), (0, 1, 8), (0, 0, 7), (0, 0, 9)] {
+            assert!(
+                validate_file_contents_request(FILE_CONTENTS_SIZE_FLAG, low, high, length).is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn file_contents_range_request_enforces_offset_and_allocation_budget() {
+        assert_eq!(
+            validate_file_contents_request(FILE_CONTENTS_RANGE_FLAG, 0, 0, 1).unwrap(),
+            ValidatedFileContentsRequest::Range {
+                offset: 0,
+                length: 1,
+                end: 1,
+            }
+        );
+        assert_eq!(
+            validate_file_contents_request(
+                FILE_CONTENTS_RANGE_FLAG,
+                u32::MAX,
+                0,
+                FILE_CONTENTS_MAX_REQUEST_BYTES,
+            )
+            .unwrap(),
+            ValidatedFileContentsRequest::Range {
+                offset: u64::from(u32::MAX),
+                length: FILE_CONTENTS_MAX_REQUEST_BYTES,
+                end: u64::from(u32::MAX) + u64::from(FILE_CONTENTS_MAX_REQUEST_BYTES),
+            }
+        );
+
+        for length in [
+            0,
+            FILE_CONTENTS_MAX_REQUEST_BYTES + 1,
+            i32::MAX as u32,
+            i32::MIN as u32,
+            u32::MAX,
+        ] {
+            assert!(
+                validate_file_contents_request(FILE_CONTENTS_RANGE_FLAG, 0, 0, length).is_err()
+            );
+        }
+        assert!(
+            validate_file_contents_request(FILE_CONTENTS_RANGE_FLAG, u32::MAX, u32::MAX, 1,)
+                .is_err()
+        );
+        assert!(validate_file_contents_request(0, 0, 0, 1).is_err());
+        assert!(validate_file_contents_request(3, 0, 0, 1).is_err());
+    }
+
+    #[test]
+    fn file_contents_response_payload_enforces_allocation_budget() {
+        assert_eq!(validate_file_contents_payload_len(0).unwrap(), 0);
+        assert_eq!(
+            validate_file_contents_payload_len(FILE_CONTENTS_MAX_REQUEST_BYTES as usize).unwrap(),
+            FILE_CONTENTS_MAX_REQUEST_BYTES
+        );
+        assert!(
+            validate_file_contents_payload_len(FILE_CONTENTS_MAX_REQUEST_BYTES as usize + 1)
+                .is_err()
+        );
+    }
 }

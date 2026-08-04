@@ -1,5 +1,8 @@
 use super::local_file::LocalFile;
-use crate::{platform::unix::local_file::construct_file_list, ClipboardFile, CliprdrError};
+use crate::{
+    platform::unix::local_file::construct_file_list, validate_file_contents_request, ClipboardFile,
+    CliprdrError, ValidatedFileContentsRequest,
+};
 use camellia_remote_protocol::{
     bytes::{BufMut, BytesMut},
     log,
@@ -18,15 +21,15 @@ lazy_static::lazy_static! {
 #[derive(Debug)]
 enum FileContentsRequest {
     Size {
-        stream_id: i32,
+        stream_id: u32,
         file_idx: usize,
     },
 
     Range {
-        stream_id: i32,
+        stream_id: u32,
         file_idx: usize,
         offset: u64,
-        length: u64,
+        length: u32,
     },
 }
 
@@ -112,7 +115,7 @@ impl ClipFiles {
                     .file_list
                     .iter()
                     .filter_map(|f| {
-                        if f.path.is_file() {
+                        if !f.is_dir {
                             Some((f.path.to_string_lossy().to_string(), f.size))
                         } else {
                             None
@@ -212,13 +215,13 @@ impl ClipFiles {
                         ),
                     });
                 }
-                let read_size = if offset + length > file.size {
-                    file.size - offset
-                } else {
-                    length
-                };
+                let read_size = u64::from(length).min(file.size - offset);
+                let read_size =
+                    usize::try_from(read_size).map_err(|_| CliprdrError::InvalidRequest {
+                        description: "file content response length is not representable".to_owned(),
+                    })?;
 
-                let mut buf = vec![0u8; read_size as usize];
+                let mut buf = vec![0u8; read_size];
 
                 file.read_exact_at(&mut buf, offset)?;
 
@@ -252,32 +255,23 @@ pub fn clear_files() {
 
 pub fn read_file_contents(
     conn_id: i32,
-    stream_id: i32,
-    list_index: i32,
-    dw_flags: i32,
-    n_position_low: i32,
-    n_position_high: i32,
-    cb_requested: i32,
+    stream_id: u32,
+    list_index: u32,
+    dw_flags: u32,
+    n_position_low: u32,
+    n_position_high: u32,
+    cb_requested: u32,
 ) -> Vec<Result<ClipboardFile, CliprdrError>> {
-    let fcr = if dw_flags == 0x1 {
-        FileContentsRequest::Size {
-            stream_id,
-            file_idx: list_index as usize,
-        }
-    } else if dw_flags == 0x2 {
-        let offset = (n_position_high as u64) << 32 | n_position_low as u64;
-        let length = cb_requested as u64;
-
-        FileContentsRequest::Range {
-            stream_id,
-            file_idx: list_index as usize,
-            offset,
-            length,
-        }
-    } else {
-        return vec![Err(CliprdrError::InvalidRequest {
-            description: format!("got invalid FileContentsRequest, dw_flats: {dw_flags}"),
-        })];
+    let fcr = match parse_file_contents_request(
+        stream_id,
+        list_index,
+        dw_flags,
+        n_position_low,
+        n_position_high,
+        cb_requested,
+    ) {
+        Ok(request) => request,
+        Err(err) => return vec![Err(err)],
     };
 
     let mut clip_files = CLIP_FILES.lock();
@@ -287,6 +281,33 @@ pub fn read_file_contents(
     }
     res.push(clip_files.serve_file_contents(conn_id, fcr));
     res
+}
+
+fn parse_file_contents_request(
+    stream_id: u32,
+    list_index: u32,
+    dw_flags: u32,
+    n_position_low: u32,
+    n_position_high: u32,
+    cb_requested: u32,
+) -> Result<FileContentsRequest, CliprdrError> {
+    let file_idx = usize::try_from(list_index).map_err(|_| CliprdrError::InvalidRequest {
+        description: format!("file list index {list_index} is not representable"),
+    })?;
+    match validate_file_contents_request(dw_flags, n_position_low, n_position_high, cb_requested)? {
+        ValidatedFileContentsRequest::Size => Ok(FileContentsRequest::Size {
+            stream_id,
+            file_idx,
+        }),
+        ValidatedFileContentsRequest::Range { offset, length, .. } => {
+            Ok(FileContentsRequest::Range {
+                stream_id,
+                file_idx,
+                offset,
+                length,
+            })
+        }
+    }
 }
 
 pub fn sync_files(files: &[String]) -> Result<(), CliprdrError> {
@@ -413,5 +434,38 @@ mod sig_test {
         }
 
         clear_files(); // leave the global clean for other tests
+    }
+}
+
+#[cfg(test)]
+mod request_validation_test {
+    use super::*;
+    use crate::platform::unix::BLOCK_SIZE;
+
+    #[test]
+    fn range_rejects_signed_length_bit_patterns() {
+        for cb_requested in [i32::MIN as u32, (-1_i32) as u32, i32::MAX as u32] {
+            assert!(parse_file_contents_request(1, 0, 2, 0, 0, cb_requested).is_err());
+        }
+    }
+
+    #[test]
+    fn range_rejects_zero_and_values_above_the_block_budget() {
+        for cb_requested in [0, BLOCK_SIZE + 1] {
+            assert!(parse_file_contents_request(1, 0, 2, 0, 0, cb_requested).is_err());
+        }
+        assert!(parse_file_contents_request(1, 0, 2, 0, 0, BLOCK_SIZE).is_ok());
+    }
+
+    #[test]
+    fn range_rejects_offset_plus_length_overflow() {
+        assert!(parse_file_contents_request(1, 0, 2, u32::MAX - 1, u32::MAX, 4).is_err());
+    }
+
+    #[test]
+    fn size_request_requires_canonical_offset_and_length() {
+        assert!(parse_file_contents_request(1, 0, 1, 1, 0, 8).is_err());
+        assert!(parse_file_contents_request(1, 0, 1, 0, 1, 8).is_err());
+        assert!(parse_file_contents_request(1, 0, 1, 0, 0, 7).is_err());
     }
 }

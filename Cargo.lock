@@ -1489,6 +1489,8 @@ version = "0.1.0"
 dependencies = [
  "cacao",
  "camellia-remote-protocol",
+ "cap-fs-ext",
+ "cap-std",
  "cc",
  "dashmap 5.5.3",
  "dirs 5.0.1",

@@ -1,4 +1,6 @@
-use camellia_remote_protocol::{fs, log, message_proto::*};
+#[cfg(not(any(target_os = "android", target_os = "ios", feature = "flutter")))]
+use camellia_remote_protocol::fs;
+use camellia_remote_protocol::{log, message_proto::*};
 
 use super::{Data, Interface};
 
@@ -65,11 +67,7 @@ pub trait FileManager: Interface {
     }
 
     fn remove_dir(&self, id: i32, path: String, is_remote: bool) {
-        if is_remote {
-            self.send(Data::RemoveDir((id, path)));
-        } else {
-            fs::remove_all_empty_dir(&fs::get_path(&path)).ok();
-        }
+        self.send(Data::RemoveDir((id, path, is_remote)));
     }
 
     fn create_dir(&self, id: i32, path: String, is_remote: bool) {
