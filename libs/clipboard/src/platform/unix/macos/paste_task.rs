@@ -1,8 +1,8 @@
 use crate::{
     platform::unix::{FileDescription, FileType, BLOCK_SIZE},
-    send_data, ClipboardFile, CliprdrError, ProgressPercent,
+    send_data, validate_file_contents_request, ClipboardFile, CliprdrError, ProgressPercent,
 };
-use camellia_remote_protocol::{allow_err, log, tokio::time::Instant};
+use camellia_remote_protocol::{log, tokio::time::Instant};
 use std::{
     cmp::min,
     fs::{File, FileTimes},
@@ -29,8 +29,8 @@ const ATTR_PROGRESS_FRACTION_COMPLETED: &str = "com.apple.progress.fractionCompl
 
 pub struct FileContentsResponse {
     pub conn_id: i32,
-    pub msg_flags: i32,
-    pub stream_id: i32,
+    pub msg_flags: u32,
+    pub stream_id: u32,
     pub requested_data: Vec<u8>,
 }
 
@@ -47,6 +47,8 @@ struct PasteTaskProgress {
     download_file_size: u64,
     download_file_path: String,
     download_file_current_size: u64,
+    request_stream_id: u32,
+    expected_response_bytes: u32,
     file_handle: Option<BufWriter<File>>,
     error: Option<CliprdrError>,
     is_canceled: bool,
@@ -110,6 +112,10 @@ impl PasteTask {
                 download_file_size: 0,
                 download_file_path: "".to_owned(),
                 download_file_current_size: 0,
+                // Keep a new paste task away from the deterministic stream-id prefix of a
+                // previous task while retaining at least half the u32 space before exhaustion.
+                request_stream_id: rand::random::<u32>() & (u32::MAX >> 1),
+                expected_response_bytes: 0,
                 file_handle: None,
                 error: None,
                 is_canceled: false,
@@ -159,7 +165,7 @@ impl PasteTask {
                             continue;
                         }
 
-                        if file_contents.stream_id != task_handle.progress.list_index {
+                        if file_contents.stream_id != task_handle.progress.request_stream_id {
                             // ignore invalid stream id
                             continue;
                         } else if file_contents.msg_flags != 0x01 {
@@ -174,9 +180,14 @@ impl PasteTask {
                                 });
                             }
                         } else {
-                            let resp_list_index = file_contents.stream_id;
-                            let Some(file) = &task_handle.files.get(resp_list_index as usize)
-                            else {
+                            let resp_list_index = task_handle.progress.list_index;
+                            let Ok(resp_list_index) = usize::try_from(resp_list_index) else {
+                                task_handle.on_error(CliprdrError::InvalidRequest {
+                                    description: "negative response list index".to_owned(),
+                                });
+                                continue;
+                            };
+                            let Some(file) = &task_handle.files.get(resp_list_index) else {
                                 // unreachable
                                 // Because `task_handle.progress.list_index >= task_handle.files.len()` should always be false
                                 log::warn!(
@@ -254,10 +265,23 @@ impl PasteTaskHandle {
         if self.is_finished() {
             return Ok(());
         }
-        self.progress.current_size += size;
+        self.progress.current_size =
+            self.progress
+                .current_size
+                .checked_add(size)
+                .ok_or_else(|| CliprdrError::InvalidRequest {
+                    description: "clipboard paste total progress overflow".to_owned(),
+                })?;
 
         let is_start = self.progress.list_index == -1;
-        if is_start || (self.progress.offset + size) >= self.progress.download_file_size {
+        let next_offset =
+            self.progress
+                .offset
+                .checked_add(size)
+                .ok_or_else(|| CliprdrError::InvalidRequest {
+                    description: "clipboard paste file offset overflow".to_owned(),
+                })?;
+        if is_start || next_offset >= self.progress.download_file_size {
             if !is_start {
                 self.on_done();
             }
@@ -297,8 +321,14 @@ impl PasteTaskHandle {
                 }
             }
         } else {
-            self.progress.offset += size;
-            self.progress.download_file_current_size += size;
+            self.progress.offset = next_offset;
+            self.progress.download_file_current_size = self
+                .progress
+                .download_file_current_size
+                .checked_add(size)
+                .ok_or_else(|| CliprdrError::InvalidRequest {
+                    description: "clipboard paste file progress overflow".to_owned(),
+                })?;
             self.update_progress_completed(None);
         }
         if self.progress.file_handle.is_none() {
@@ -576,32 +606,53 @@ impl PasteTaskHandle {
             return Ok(());
         }
 
-        let stream_id = self.progress.list_index;
-        let list_index = self.progress.list_index;
+        let list_index =
+            u32::try_from(self.progress.list_index).map_err(|_| CliprdrError::InvalidRequest {
+                description: format!("Invalid file index: {}", self.progress.list_index),
+            })?;
         let Some(file) = &self.files.get(list_index as usize) else {
             // unreachable
             return Err(CliprdrError::InvalidRequest {
                 description: format!("Invalid file index: {}", list_index),
             });
         };
-        let cb_requested = min(BLOCK_SIZE as u64, file.size - self.progress.offset);
+        let remaining = file.size.checked_sub(self.progress.offset).ok_or_else(|| {
+            CliprdrError::InvalidRequest {
+                description: "clipboard paste offset exceeds file size".to_owned(),
+            }
+        })?;
+        let cb_requested = u32::try_from(min(BLOCK_SIZE as u64, remaining)).map_err(|_| {
+            CliprdrError::InvalidRequest {
+                description: "clipboard paste request length is not representable".to_owned(),
+            }
+        })?;
         let conn_id = file.conn_id;
 
         let (n_position_high, n_position_low) = (
-            (self.progress.offset >> 32) as i32,
-            (self.progress.offset & (u32::MAX as u64)) as i32,
+            (self.progress.offset >> 32) as u32,
+            self.progress.offset as u32,
         );
+        validate_file_contents_request(2, n_position_low, n_position_high, cb_requested)?;
+        let stream_id = self
+            .progress
+            .request_stream_id
+            .checked_add(1)
+            .ok_or_else(|| CliprdrError::InvalidRequest {
+                description: "clipboard paste request stream id exhausted".to_owned(),
+            })?;
         let request = ClipboardFile::FileContentsRequest {
             stream_id,
             list_index,
             dw_flags: 2,
             n_position_low,
             n_position_high,
-            cb_requested: cb_requested as _,
+            cb_requested,
             have_clip_data_id: false,
             clip_data_id: 0,
         };
-        allow_err!(send_data(conn_id, request));
+        send_data(conn_id, request)?;
+        self.progress.request_stream_id = stream_id;
+        self.progress.expected_response_bytes = cb_requested;
         self.progress.last_sent_time = Instant::now();
 
         Ok(())
@@ -613,6 +664,15 @@ impl PasteTaskHandle {
     ) -> Result<(), CliprdrError> {
         if let Some(file) = self.progress.file_handle.as_mut() {
             let data = file_contents.requested_data.as_slice();
+            if data.is_empty() || data.len() > self.progress.expected_response_bytes as usize {
+                return Err(CliprdrError::InvalidRequest {
+                    description: format!(
+                        "file content response length {} does not match outstanding budget {}",
+                        data.len(),
+                        self.progress.expected_response_bytes
+                    ),
+                });
+            }
             let mut write_len = 0;
             while write_len < data.len() {
                 match file.write(&data[write_len..]) {

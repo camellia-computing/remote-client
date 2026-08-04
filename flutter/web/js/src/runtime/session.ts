@@ -69,7 +69,10 @@ type PeerInfoSnapshot = {
   features: { privacyMode: boolean; terminal: boolean };
   resolutions: unknown;
   platformAdditions?: unknown;
+  fileTransferProtocolVersion: number;
 };
+
+const FILE_TRANSFER_PROTOCOL_VERSION = 2;
 
 type FileEntryInfo = {
   entryType: number;
@@ -211,7 +214,8 @@ export class WebSession {
     currentDisplay: 0,
     displays: [],
     features: { privacyMode: false, terminal: false },
-    resolutions: {}
+    resolutions: {},
+    fileTransferProtocolVersion: 0
   };
   private qualityTickTs = Date.now();
   private displayIds: number[] = [0];
@@ -307,6 +311,7 @@ export class WebSession {
   async connect(context: SessionContext, reconnecting = false): Promise<void> {
     this.manualClose = false;
     this.closeNotified = false;
+    this.peerInfoSnapshot.fileTransferProtocolVersion = 0;
     this.firstDecodedVideoFrameSeen = false;
     this.initialVideoRefreshAttempts = 0;
     this.stopInitialVideoRefreshLoop();
@@ -486,7 +491,7 @@ export class WebSession {
     includeHidden: boolean,
     fileNum = 0
   ): void {
-    if (!this.proto) {
+    if (!this.proto || !this.ensureFileTransferProtocol(id)) {
       return;
     }
     if (!path) {
@@ -520,7 +525,7 @@ export class WebSession {
   }
 
   startUpload(id: number, file: File, remotePath: string): void {
-    if (!this.proto) {
+    if (!this.proto || !this.ensureFileTransferProtocol(id)) {
       return;
     }
     if (!file || !remotePath) {
@@ -1094,7 +1099,7 @@ export class WebSession {
   }
 
   readAllFiles(id: number, path: string, includeHidden: boolean): void {
-    if (!this.proto) {
+    if (!this.proto || !this.ensureFileTransferProtocol(id)) {
       return;
     }
     this.sendMessage({
@@ -1109,7 +1114,7 @@ export class WebSession {
   }
 
   readEmptyDirs(path: string, includeHidden: boolean): void {
-    if (!this.proto) {
+    if (!this.proto || !this.ensureFileTransferProtocol()) {
       return;
     }
     this.sendMessage({
@@ -1137,6 +1142,9 @@ export class WebSession {
       this.clearDownloadConfirmRetry(download);
       this.downloadJobs.delete(id);
     }
+    if (!this.ensureFileTransferProtocol(id)) {
+      return;
+    }
     this.sendMessage({
       fileAction: {
         cancel: { id }
@@ -1145,7 +1153,7 @@ export class WebSession {
   }
 
   createDir(id: number, path: string): void {
-    if (!this.proto) {
+    if (!this.proto || !this.ensureFileTransferProtocol(id)) {
       return;
     }
     this.sendMessage({
@@ -1156,7 +1164,7 @@ export class WebSession {
   }
 
   removeFile(id: number, path: string, fileNum: number): void {
-    if (!this.proto) {
+    if (!this.proto || !this.ensureFileTransferProtocol(id)) {
       return;
     }
     this.sendMessage({
@@ -1171,7 +1179,7 @@ export class WebSession {
   }
 
   removeDir(id: number, path: string, recursive: boolean): void {
-    if (!this.proto) {
+    if (!this.proto || !this.ensureFileTransferProtocol(id)) {
       return;
     }
     this.sendMessage({
@@ -1186,7 +1194,7 @@ export class WebSession {
   }
 
   renameFile(id: number, path: string, newName: string): void {
-    if (!this.proto) {
+    if (!this.proto || !this.ensureFileTransferProtocol(id)) {
       return;
     }
     this.sendMessage({
@@ -1201,7 +1209,7 @@ export class WebSession {
   }
 
   confirmOverrideFile(id: number, fileNum: number, needOverride: boolean): void {
-    if (!this.proto) {
+    if (!this.proto || !this.ensureFileTransferProtocol(id)) {
       return;
     }
     const skip = !needOverride;
@@ -1238,7 +1246,7 @@ export class WebSession {
   }
 
   readRemoteDir(path: string, includeHidden: boolean): void {
-    if (!this.proto) {
+    if (!this.proto || !this.ensureFileTransferProtocol()) {
       return;
     }
     const fileAction = { readDir: { path, includeHidden } };
@@ -1454,7 +1462,8 @@ export class WebSession {
       osLogin: {
         username: osUsername,
         password: osPassword
-      }
+      },
+      fileTransferProtocolVersion: FILE_TRANSFER_PROTOCOL_VERSION
     };
     this.attachSessionMode(loginRequest);
     this.sendMessage({ loginRequest });
@@ -1608,6 +1617,12 @@ export class WebSession {
     if (pi.platformAdditions !== undefined) {
       this.peerInfoSnapshot.platformAdditions = pi.platformAdditions;
     }
+    if (pi.fileTransferProtocolVersion !== undefined) {
+      this.peerInfoSnapshot.fileTransferProtocolVersion = this.toFiniteNumber(
+        pi.fileTransferProtocolVersion,
+        0
+      );
+    }
     const platformAdditions = this.peerInfoSnapshot.platformAdditions;
     this.events.emit({
       name: 'peer_info',
@@ -1626,7 +1641,10 @@ export class WebSession {
       platform_additions:
         platformAdditions !== undefined && platformAdditions !== null
           ? JSON.stringify(platformAdditions)
-        : ''
+        : '',
+      file_transfer_protocol_version: String(
+        this.peerInfoSnapshot.fileTransferProtocolVersion
+      )
     });
     if (pi.windowsSessions && Array.isArray(pi.windowsSessions.sessions)) {
       const sessions = pi.windowsSessions.sessions.map((s: any) => ({
@@ -1673,6 +1691,12 @@ export class WebSession {
         name: 'sync_platform_additions',
         platform_additions: pi.platformAdditions
       });
+    }
+    if (pi.fileTransferProtocolVersion !== undefined) {
+      this.peerInfoSnapshot.fileTransferProtocolVersion = this.toFiniteNumber(
+        pi.fileTransferProtocolVersion,
+        0
+      );
     }
   }
 
@@ -2099,17 +2123,17 @@ export class WebSession {
   private sendFileSendConfirm(
     id: number,
     fileNum: number,
-    offsetBlk?: number,
+    offsetBytes?: number,
     skip?: boolean
   ): void {
-    if (!this.proto) {
+    if (!this.proto || !this.isFileTransferProtocolCompatible()) {
       return;
     }
     const payload: Record<string, unknown> = { id, fileNum };
     if (skip) {
       payload.skip = true;
-    } else if (typeof offsetBlk === 'number') {
-      payload.offsetBlk = offsetBlk;
+    } else if (typeof offsetBytes === 'number') {
+      payload.offsetBytes = offsetBytes;
     }
     this.sendMessage({
       fileAction: {
@@ -2624,6 +2648,25 @@ export class WebSession {
     }
     const bytes = this.proto.messageType.encode(payload).finish();
     this.sendTransport(bytes);
+  }
+
+  private isFileTransferProtocolCompatible(): boolean {
+    return (
+      this.peerInfoSnapshot.fileTransferProtocolVersion ===
+      FILE_TRANSFER_PROTOCOL_VERSION
+    );
+  }
+
+  private ensureFileTransferProtocol(id?: number): boolean {
+    if (this.isFileTransferProtocolCompatible()) {
+      return true;
+    }
+    this.events.emit({
+      name: 'job_error',
+      id: id === undefined ? '' : String(id),
+      err: `Incompatible file transfer protocol: expected ${FILE_TRANSFER_PROTOCOL_VERSION}, got ${this.peerInfoSnapshot.fileTransferProtocolVersion}`
+    });
+    return false;
   }
 
   private startKeepalive(): void {
