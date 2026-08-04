@@ -1818,12 +1818,16 @@ impl TerminalServiceProxy {
         terminal_data.terminal_id = terminal_id;
 
         if data.len() > COMPRESS_THRESHOLD {
-            let compressed = compress::compress(&data);
-            if compressed.len() < data.len() {
-                terminal_data.data = bytes::Bytes::from(compressed);
-                terminal_data.compressed = true;
-            } else {
-                terminal_data.data = bytes::Bytes::from(data);
+            match compress::compress(&data) {
+                Ok(compressed) if compressed.len() < data.len() => {
+                    terminal_data.data = bytes::Bytes::from(compressed);
+                    terminal_data.compressed = true;
+                }
+                Ok(_) => terminal_data.data = bytes::Bytes::from(data),
+                Err(err) => {
+                    log::warn!("Failed to compress terminal output, sending raw data: {err}");
+                    terminal_data.data = bytes::Bytes::from(data);
+                }
             }
         } else {
             terminal_data.data = bytes::Bytes::from(data);

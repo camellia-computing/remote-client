@@ -137,8 +137,13 @@ fn decode_text_clipboard(clipboard: &Clipboard) -> Option<String> {
         return None;
     }
     if clipboard.compress {
-        let bytes = camellia_remote_protocol::compress::decompress(&clipboard.content);
-        return decode_utf8_prefix(&bytes);
+        return match camellia_remote_protocol::compress::decompress(&clipboard.content) {
+            Ok(bytes) => decode_utf8_prefix(&bytes),
+            Err(err) => {
+                log::warn!("Dropping malformed compressed clipboard payload: {err}");
+                None
+            }
+        };
     }
     decode_utf8_prefix(&clipboard.content)
 }
