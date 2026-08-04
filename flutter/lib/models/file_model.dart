@@ -114,6 +114,14 @@ class FileModel {
     fileFetcher.tryCompleteEmptyDirsTask(evt['value'], evt['is_local']);
   }
 
+  void receiveFileListingError(Map<String, dynamic> evt) {
+    fileFetcher.tryCompleteListingTaskWithError(
+      evt['path']?.toString() ?? '',
+      evt['err']?.toString() ?? 'Unknown error',
+      evt['empty_dirs'] == 'true',
+    );
+  }
+
   // This method fixes a deadlock that occurred when the previous code directly
   // called jobController.jobError(evt) in the job_error event handler.
   //
@@ -1527,6 +1535,15 @@ class FileFetcher {
     }
   }
 
+  void tryCompleteListingTaskWithError(
+      String path, String error, bool emptyDirs) {
+    final tasks = emptyDirs ? remoteEmptyDirsTasks : remoteTasks;
+    final completer = tasks.remove(path);
+    if (completer != null && !completer.isCompleted) {
+      completer.completeError(error);
+    }
+  }
+
   Future<List<FileDirectory>> readEmptyDirs(
       String path, bool isLocal, bool showHidden) async {
     try {
@@ -1540,9 +1557,14 @@ class FileFetcher {
             fdJsons.map((fdJson) => FileDirectory.fromJson(fdJson)).toList();
         return fds;
       } else {
-        await bind.sessionReadRemoteEmptyDirsRecursiveSync(
-            sessionId: sessionId, path: path, includeHidden: showHidden);
-        return registerReadEmptyDirsTask(isLocal, path);
+        final result = registerReadEmptyDirsTask(isLocal, path);
+        try {
+          await bind.sessionReadRemoteEmptyDirsRecursiveSync(
+              sessionId: sessionId, path: path, includeHidden: showHidden);
+        } catch (e) {
+          tryCompleteListingTaskWithError(path, e.toString(), true);
+        }
+        return result;
       }
     } catch (e) {
       return Future.error(e);
@@ -1558,9 +1580,14 @@ class FileFetcher {
         final fd = FileDirectory.fromJson(jsonDecode(res));
         return fd;
       } else {
-        await bind.sessionReadRemoteDir(
-            sessionId: sessionId, path: path, includeHidden: showHidden);
-        return registerReadTask(isLocal, path);
+        final result = registerReadTask(isLocal, path);
+        try {
+          await bind.sessionReadRemoteDir(
+              sessionId: sessionId, path: path, includeHidden: showHidden);
+        } catch (e) {
+          tryCompleteListingTaskWithError(path, e.toString(), false);
+        }
+        return result;
       }
     } catch (e) {
       return Future.error(e);
@@ -1570,6 +1597,7 @@ class FileFetcher {
   Future<FileDirectory> fetchDirectoryRecursiveToRemove(
       int actID, String path, bool isLocal, bool showHidden) async {
     // TODO test Recursive is show hidden default?
+    final result = registerReadRecursiveTask(actID);
     try {
       await bind.sessionReadDirToRemoveRecursive(
           sessionId: sessionId,
@@ -1577,10 +1605,10 @@ class FileFetcher {
           path: path,
           isRemote: !isLocal,
           showHidden: showHidden);
-      return registerReadRecursiveTask(actID);
     } catch (e) {
-      return Future.error(e);
+      tryCompleteRecursiveTaskWithError(actID, e.toString());
     }
+    return result;
   }
 }
 

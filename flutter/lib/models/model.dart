@@ -401,6 +401,8 @@ class FfiModel with ChangeNotifier {
         parent.target?.fileModel.receiveFileDir(evt);
       } else if (name == 'empty_dirs') {
         parent.target?.fileModel.receiveEmptyDirs(evt);
+      } else if (name == 'file_listing_error') {
+        parent.target?.fileModel.receiveFileListingError(evt);
       } else if (name == 'job_progress') {
         parent.target?.fileModel.jobController.tryUpdateJobProgress(evt);
       } else if (name == 'job_done') {

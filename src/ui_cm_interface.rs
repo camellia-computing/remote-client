@@ -1628,23 +1628,33 @@ async fn read_empty_dirs(dir: &str, include_hidden: bool, tx: &UnboundedSender<D
     let path = dir.to_owned();
     let path_clone = dir.to_owned();
 
-    if let Ok(Ok(fds)) =
-        spawn_blocking(move || fs::get_empty_dirs_recursive(&path, include_hidden)).await
+    let msg_out = match spawn_blocking(move || fs::get_empty_dirs_recursive(&path, include_hidden))
+        .await
     {
-        let mut msg_out = Message::new();
-        let mut file_response = FileResponse::new();
-        file_response.set_empty_dirs(ReadEmptyDirsResponse {
-            path: path_clone,
-            empty_dirs: fds,
-            ..Default::default()
-        });
-        msg_out.set_file_response(file_response);
-        send_raw(msg_out, tx);
-    }
+        Ok(Ok(fds)) => {
+            let mut msg_out = Message::new();
+            let mut file_response = FileResponse::new();
+            file_response.set_empty_dirs(ReadEmptyDirsResponse {
+                path: path_clone,
+                empty_dirs: fds,
+                ..Default::default()
+            });
+            msg_out.set_file_response(file_response);
+            msg_out
+        }
+        Ok(Err(err)) => fs::new_listing_error(path_clone, err, FileErrorOperation::ReadEmptyDirs),
+        Err(err) => fs::new_listing_error(
+            path_clone,
+            format!("directory scan task failed: {err}"),
+            FileErrorOperation::ReadEmptyDirs,
+        ),
+    };
+    send_raw(msg_out, tx);
 }
 
 #[cfg(not(any(target_os = "ios")))]
 async fn read_dir(dir: &str, include_hidden: bool, tx: &UnboundedSender<Data>) {
+    let request_path = dir.to_owned();
     let path = {
         if dir.is_empty() {
             Config::get_home()
@@ -1652,13 +1662,22 @@ async fn read_dir(dir: &str, include_hidden: bool, tx: &UnboundedSender<Data>) {
             fs::get_path(dir)
         }
     };
-    if let Ok(Ok(fd)) = spawn_blocking(move || fs::read_dir(&path, include_hidden)).await {
-        let mut msg_out = Message::new();
-        let mut file_response = FileResponse::new();
-        file_response.set_dir(fd);
-        msg_out.set_file_response(file_response);
-        send_raw(msg_out, tx);
-    }
+    let msg_out = match spawn_blocking(move || fs::read_dir(&path, include_hidden)).await {
+        Ok(Ok(fd)) => {
+            let mut msg_out = Message::new();
+            let mut file_response = FileResponse::new();
+            file_response.set_dir(fd);
+            msg_out.set_file_response(file_response);
+            msg_out
+        }
+        Ok(Err(err)) => fs::new_listing_error(request_path, err, FileErrorOperation::ReadDir),
+        Err(err) => fs::new_listing_error(
+            request_path,
+            format!("directory listing task failed: {err}"),
+            FileErrorOperation::ReadDir,
+        ),
+    };
+    send_raw(msg_out, tx);
 }
 
 #[cfg(not(any(target_os = "ios")))]
@@ -1830,15 +1849,19 @@ mod tests {
         ))
     }
 
-    fn assert_file_error(data: Data) {
+    fn file_error(data: Data) -> FileTransferError {
         let Data::RawMessage(bytes) = data else {
             panic!("expected raw file response");
         };
         let message = Message::parse_from_bytes(&bytes).unwrap();
-        assert!(matches!(
-            message.file_response().union,
-            Some(file_response::Union::Error(_))
-        ));
+        match message.file_response().union.clone() {
+            Some(file_response::Union::Error(error)) => error,
+            _ => panic!("expected file error response"),
+        }
+    }
+
+    fn assert_file_error(data: Data) {
+        let _ = file_error(data);
     }
 
     #[test]
@@ -2097,6 +2120,50 @@ mod tests {
                 _ => panic!("unexpected data"),
             }
             let _ = fs::remove_dir_all(&dir);
+        });
+    }
+
+    #[test]
+    #[cfg(not(any(target_os = "ios")))]
+    fn read_dir_failure_is_forwarded() {
+        Runtime::new().unwrap().block_on(async {
+            let (tx, mut rx) = unbounded_channel();
+            let missing = unique_transfer_dir("read-dir-error");
+            assert!(!missing.exists());
+
+            super::read_dir(&missing.to_string_lossy(), false, &tx).await;
+
+            let error = file_error(
+                rx.try_recv()
+                    .expect("a directory listing failure must be forwarded"),
+            );
+            assert_eq!(error.path, missing.to_string_lossy());
+            assert_eq!(
+                error.operation.enum_value(),
+                Ok(FileErrorOperation::ReadDir)
+            );
+        });
+    }
+
+    #[test]
+    #[cfg(not(any(target_os = "ios")))]
+    fn read_empty_dirs_failure_is_forwarded() {
+        Runtime::new().unwrap().block_on(async {
+            let (tx, mut rx) = unbounded_channel();
+            let missing = unique_transfer_dir("read-empty-dirs-error");
+            assert!(!missing.exists());
+
+            super::read_empty_dirs(&missing.to_string_lossy(), false, &tx).await;
+
+            let error = file_error(
+                rx.try_recv()
+                    .expect("an empty-directory scan failure must be forwarded"),
+            );
+            assert_eq!(error.path, missing.to_string_lossy());
+            assert_eq!(
+                error.operation.enum_value(),
+                Ok(FileErrorOperation::ReadEmptyDirs)
+            );
         });
     }
 
