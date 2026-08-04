@@ -1716,6 +1716,7 @@ pub struct LoginConfigHandler {
     config: PeerConfig,
     pub port_forward: (String, i32),
     pub version: i64,
+    pub file_transfer_protocol_version: u32,
     features: Option<Features>,
     pub session_id: u64, // used for local <-> server communication
     pub supported_encoding: SupportedEncoding,
@@ -2515,6 +2516,7 @@ impl LoginConfigHandler {
         if !pi.version.is_empty() {
             self.version = camellia_remote_protocol::get_version_number(&pi.version);
         }
+        self.file_transfer_protocol_version = pi.file_transfer_protocol_version;
         self.features = pi.features.clone().into_option();
         let serde = PeerInfoSerde {
             username: pi.username.clone(),
@@ -2701,6 +2703,8 @@ impl LoginConfigHandler {
             option: self.get_option_message(true).into(),
             session_id: self.session_id,
             version: crate::VERSION.to_string(),
+            file_transfer_protocol_version:
+                camellia_remote_protocol::fs::FILE_TRANSFER_PROTOCOL_VERSION,
             os_login: Some(OSLogin {
                 username: os_username,
                 password: os_password,

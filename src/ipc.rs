@@ -118,6 +118,13 @@ pub async fn connect_service(ms_timeout: u64) -> ResultType<ConnectionTmpl<ConnC
     connect(ms_timeout, crate::POSTFIX_SERVICE).await
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct FileTransferEntry {
+    pub name: String,
+    pub size: u64,
+    pub modified_time: u64,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "t", content = "c")]
 pub enum FS {
@@ -147,7 +154,7 @@ pub enum FS {
         path: String,
         id: i32,
         file_num: i32,
-        files: Vec<(String, u64)>,
+        files: Vec<FileTransferEntry>,
         overwrite_detection: bool,
         total_size: u64,
         conn_id: i32,
@@ -158,6 +165,7 @@ pub enum FS {
     WriteBlock {
         id: i32,
         file_num: i32,
+        blk_id: u32,
         data: Bytes,
         compressed: bool,
     },
@@ -173,7 +181,7 @@ pub enum FS {
     WriteOffset {
         id: i32,
         file_num: i32,
-        offset_blk: u32,
+        offset_bytes: u64,
     },
     CheckDigest {
         id: i32,
@@ -207,7 +215,7 @@ pub enum FS {
         id: i32,
         file_num: i32,
         skip: bool,
-        offset_blk: u32,
+        offset_bytes: u64,
         conn_id: i32,
     },
     ReadAllFiles {
@@ -409,6 +417,7 @@ pub enum Data {
     FileBlockFromCM {
         id: i32,
         file_num: i32,
+        blk_id: u32,
         /// Data is sent separately via `send_raw()` to avoid JSON encoding overhead.
         /// This field is skipped during serialization; sender must call `send_raw()` after sending.
         /// Receiver must call `next_raw()` and populate this field manually.
@@ -2136,6 +2145,95 @@ mod test {
     fn verify_ffi_enum_data_size() {
         println!("{}", std::mem::size_of::<Data>());
         assert!(std::mem::size_of::<Data>() <= 120);
+    }
+
+    #[test]
+    fn file_transfer_ipc_round_trip_preserves_sizes_block_ids_and_large_offsets() {
+        let entry = FileTransferEntry {
+            name: "large.bin".to_owned(),
+            size: (8u64 << 30) + 17,
+            modified_time: 1_700_000_000,
+        };
+        let new_write = FS::NewWrite {
+            path: "/tmp".to_owned(),
+            id: 1,
+            file_num: 0,
+            files: vec![entry.clone()],
+            overwrite_detection: true,
+            total_size: entry.size,
+            conn_id: 2,
+        };
+        let encoded = serde_json::to_vec(&new_write).unwrap();
+        let decoded: FS = serde_json::from_slice(&encoded).unwrap();
+        let FS::NewWrite { files, .. } = decoded else {
+            panic!("wrong IPC variant");
+        };
+        assert_eq!(files, vec![entry]);
+
+        let offset_bytes = (1u64 << 32) + 1;
+        let confirmation = FS::SendConfirmForRead {
+            id: 1,
+            file_num: 0,
+            skip: false,
+            offset_bytes,
+            conn_id: 2,
+        };
+        let encoded = serde_json::to_vec(&confirmation).unwrap();
+        let decoded: FS = serde_json::from_slice(&encoded).unwrap();
+        let FS::SendConfirmForRead {
+            offset_bytes: decoded_offset,
+            ..
+        } = decoded
+        else {
+            panic!("wrong IPC variant");
+        };
+        assert_eq!(decoded_offset, offset_bytes);
+
+        let write_offset = FS::WriteOffset {
+            id: 1,
+            file_num: 0,
+            offset_bytes,
+        };
+        let encoded = serde_json::to_vec(&write_offset).unwrap();
+        let decoded: FS = serde_json::from_slice(&encoded).unwrap();
+        let FS::WriteOffset {
+            offset_bytes: decoded_offset,
+            ..
+        } = decoded
+        else {
+            panic!("wrong IPC variant");
+        };
+        assert_eq!(decoded_offset, offset_bytes);
+
+        let block = FS::WriteBlock {
+            id: 1,
+            file_num: 0,
+            blk_id: u32::MAX,
+            data: Bytes::new(),
+            compressed: false,
+        };
+        let encoded = serde_json::to_vec(&block).unwrap();
+        let decoded: FS = serde_json::from_slice(&encoded).unwrap();
+        let FS::WriteBlock { blk_id, .. } = decoded else {
+            panic!("wrong IPC variant");
+        };
+        assert_eq!(blk_id, u32::MAX);
+
+        let cm_block = Data::FileBlockFromCM {
+            id: 1,
+            file_num: 0,
+            blk_id: u32::MAX,
+            data: Bytes::from_static(b"sent separately"),
+            compressed: false,
+            conn_id: 2,
+        };
+        let encoded = serde_json::to_vec(&cm_block).unwrap();
+        let decoded: Data = serde_json::from_slice(&encoded).unwrap();
+        let Data::FileBlockFromCM { blk_id, data, .. } = decoded else {
+            panic!("wrong IPC variant");
+        };
+        assert_eq!(blk_id, u32::MAX);
+        assert!(data.is_empty(), "raw block data must remain out-of-band");
     }
 
     #[test]

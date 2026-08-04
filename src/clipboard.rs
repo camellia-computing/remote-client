@@ -626,17 +626,23 @@ mod proto {
     use arboard::ClipboardData;
     use camellia_remote_protocol::{
         compress::{compress as compress_func, decompress},
+        log,
         message_proto::{Clipboard, ClipboardFormat, Message, MultiClipboards},
     };
 
+    fn compress_or_raw(raw: Vec<u8>) -> (bool, Vec<u8>) {
+        match compress_func(&raw) {
+            Ok(compressed) if compressed.len() < raw.len() => (true, compressed),
+            Ok(_) => (false, raw),
+            Err(err) => {
+                log::warn!("Failed to compress clipboard payload, sending raw data: {err}");
+                (false, raw)
+            }
+        }
+    }
+
     fn plain_to_proto(s: String, format: ClipboardFormat) -> Clipboard {
-        let compressed = compress_func(s.as_bytes());
-        let compress = compressed.len() < s.as_bytes().len();
-        let content = if compress {
-            compressed
-        } else {
-            s.bytes().collect::<Vec<u8>>()
-        };
+        let (compress, content) = compress_or_raw(s.into_bytes());
         Clipboard {
             compress,
             content: content.into(),
@@ -649,13 +655,7 @@ mod proto {
     fn image_to_proto(a: arboard::ImageData) -> Clipboard {
         match &a {
             arboard::ImageData::Rgba(rgba) => {
-                let compressed = compress_func(&a.bytes());
-                let compress = compressed.len() < a.bytes().len();
-                let content = if compress {
-                    compressed
-                } else {
-                    a.bytes().to_vec()
-                };
+                let (compress, content) = compress_or_raw(a.bytes().to_vec());
                 Clipboard {
                     compress,
                     content: content.into(),
@@ -672,13 +672,7 @@ mod proto {
                 ..Default::default()
             },
             arboard::ImageData::Svg(_) => {
-                let compressed = compress_func(&a.bytes());
-                let compress = compressed.len() < a.bytes().len();
-                let content = if compress {
-                    compressed
-                } else {
-                    a.bytes().to_vec()
-                };
+                let (compress, content) = compress_or_raw(a.bytes().to_vec());
                 Clipboard {
                     compress,
                     content: content.into(),
@@ -689,21 +683,27 @@ mod proto {
         }
     }
 
-    fn special_to_proto(d: Vec<u8>, s: String) -> Clipboard {
-        let compressed = compress_func(&d);
+    fn special_to_proto(d: Vec<u8>, s: String) -> Option<Clipboard> {
+        let compressed = match compress_func(&d) {
+            Ok(compressed) => compressed,
+            Err(err) => {
+                log::warn!("Dropping special clipboard payload after compression failure: {err}");
+                return None;
+            }
+        };
         let compress = compressed.len() < d.len();
         let content = if compress {
             compressed
         } else {
             s.bytes().collect::<Vec<u8>>()
         };
-        Clipboard {
+        Some(Clipboard {
             compress,
             content: content.into(),
             format: ClipboardFormat::Special.into(),
             special_name: s,
             ..Default::default()
-        }
+        })
     }
 
     #[cfg(not(target_os = "android"))]
@@ -713,7 +713,7 @@ mod proto {
             ClipboardData::Rtf(s) => plain_to_proto(s, ClipboardFormat::Rtf),
             ClipboardData::Html(s) => plain_to_proto(s, ClipboardFormat::Html),
             ClipboardData::Image(a) => image_to_proto(a),
-            ClipboardData::Special((s, d)) => special_to_proto(d, s),
+            ClipboardData::Special((s, d)) => return special_to_proto(d, s),
             _ => return None,
         };
         Some(d)
@@ -733,9 +733,15 @@ mod proto {
     #[cfg(not(target_os = "android"))]
     fn from_clipboard(clipboard: Clipboard) -> Option<ClipboardData> {
         let data = if clipboard.compress {
-            decompress(&clipboard.content)
+            match decompress(&clipboard.content) {
+                Ok(data) => data,
+                Err(err) => {
+                    log::warn!("Dropping malformed compressed clipboard payload: {err}");
+                    return None;
+                }
+            }
         } else {
-            clipboard.content.into()
+            clipboard.content.to_vec()
         };
         match clipboard.format.enum_value() {
             Ok(ClipboardFormat::Text) => String::from_utf8(data).ok().map(ClipboardData::Text),
@@ -791,6 +797,23 @@ mod proto {
                 msg
             })
     }
+
+    #[cfg(all(test, not(target_os = "android")))]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn malformed_compressed_clipboard_is_dropped_instead_of_restored_as_empty() {
+            let clipboard = Clipboard {
+                compress: true,
+                content: b"not a zstd frame".as_slice().into(),
+                format: ClipboardFormat::Text.into(),
+                ..Default::default()
+            };
+
+            assert!(from_clipboard(clipboard).is_none());
+        }
+    }
 }
 
 #[cfg(all(test, not(target_os = "android")))]
@@ -814,8 +837,14 @@ pub fn handle_msg_clipboard(mut cb: Clipboard) {
     use camellia_remote_protocol::protobuf::Message;
 
     if cb.compress {
-        cb.content =
-            bytes::Bytes::from(camellia_remote_protocol::compress::decompress(&cb.content));
+        cb.content = match camellia_remote_protocol::compress::decompress(&cb.content) {
+            Ok(content) => content.into(),
+            Err(err) => {
+                log::warn!("Dropping malformed compressed Android clipboard payload: {err}");
+                return;
+            }
+        };
+        cb.compress = false;
     }
     let multi_clips = MultiClipboards {
         clipboards: vec![cb],
@@ -832,8 +861,16 @@ pub fn handle_msg_multi_clipboards(mut mcb: MultiClipboards) {
 
     for cb in mcb.clipboards.iter_mut() {
         if cb.compress {
-            cb.content =
-                bytes::Bytes::from(camellia_remote_protocol::compress::decompress(&cb.content));
+            cb.content = match camellia_remote_protocol::compress::decompress(&cb.content) {
+                Ok(content) => content.into(),
+                Err(err) => {
+                    log::warn!(
+                        "Dropping multi-clipboard message with malformed compressed payload: {err}"
+                    );
+                    return;
+                }
+            };
+            cb.compress = false;
         }
     }
     if let Ok(bytes) = mcb.write_to_bytes() {
@@ -846,12 +883,17 @@ pub fn get_clipboards_msg(client: bool) -> Option<Message> {
     let mut clipboards = scrap::android::ffi::get_clipboards(client)?;
     let mut msg = Message::new();
     for c in &mut clipboards.clipboards {
-        let compressed = camellia_remote_protocol::compress::compress(&c.content);
-        let compress = compressed.len() < c.content.len();
-        if compress {
-            c.content = compressed.into();
+        match camellia_remote_protocol::compress::compress(&c.content) {
+            Ok(compressed) if compressed.len() < c.content.len() => {
+                c.content = compressed.into();
+                c.compress = true;
+            }
+            Ok(_) => c.compress = false,
+            Err(err) => {
+                log::warn!("Failed to compress Android clipboard payload, sending raw data: {err}");
+                c.compress = false;
+            }
         }
-        c.compress = compress;
     }
     msg.set_multi_clipboards(clipboards);
     Some(msg)

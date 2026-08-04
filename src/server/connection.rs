@@ -855,9 +855,9 @@ impl Connection {
                                 conn.handle_read_job_init_result(id, file_num, include_hidden, result).await;
                             }
                         }
-                        ipc::Data::FileBlockFromCM { id, file_num, data, compressed, conn_id } => {
+                        ipc::Data::FileBlockFromCM { id, file_num, blk_id, data, compressed, conn_id } => {
                             if conn_id == conn.inner.id() {
-                                conn.handle_file_block_from_cm(id, file_num, data, compressed).await;
+                                conn.handle_file_block_from_cm(id, file_num, blk_id, data, compressed).await;
                             }
                         }
                         ipc::Data::FileReadDone { id, file_num, conn_id } => {
@@ -1622,6 +1622,7 @@ impl Connection {
         let mut pi = PeerInfo {
             username: username.clone(),
             version: VERSION.to_owned(),
+            file_transfer_protocol_version: fs::FILE_TRANSFER_PROTOCOL_VERSION,
             ..Default::default()
         };
 
@@ -2442,8 +2443,16 @@ impl Connection {
                 return true;
             }
             self.reset_session_scope_for_login();
+            let file_transfer_protocol_version = lr.file_transfer_protocol_version;
             match lr.union {
                 Some(login_request::Union::FileTransfer(ft)) => {
+                    if let Err(err) =
+                        fs::validate_file_transfer_protocol_version(file_transfer_protocol_version)
+                    {
+                        self.send_login_error(&err.to_string()).await;
+                        sleep(1.).await;
+                        return false;
+                    }
                     if !Self::permission(
                         keys::OPTION_ENABLE_FILE_TRANSFER,
                         &self.control_permissions,
@@ -2965,7 +2974,15 @@ impl Connection {
                         #[cfg(target_os = "ios")]
                         {
                             let content = if cb.compress {
-                                camellia_remote_protocol::compress::decompress(&cb.content)
+                                match camellia_remote_protocol::compress::decompress(&cb.content) {
+                                    Ok(content) => content,
+                                    Err(err) => {
+                                        log::warn!(
+                                            "Dropping malformed compressed clipboard payload: {err}"
+                                        );
+                                        return true;
+                                    }
+                                }
                             } else {
                                 cb.content.into()
                             };
@@ -3150,6 +3167,12 @@ impl Connection {
                             Some(file_action::Union::Send(s)) => {
                                 // server to client
                                 let id = s.id;
+                                if let Err(err) = fs::validate_file_transfer_protocol_version(
+                                    self.lr.file_transfer_protocol_version,
+                                ) {
+                                    self.send(fs::new_error(id, err, s.file_num)).await;
+                                    return true;
+                                }
                                 let path = s.path.clone();
                                 let job_type = JobType::from_proto(s.file_type);
                                 match job_type {
@@ -3217,6 +3240,12 @@ impl Connection {
                             }
                             Some(file_action::Union::Receive(r)) => {
                                 // client to server
+                                if let Err(err) = fs::validate_file_transfer_protocol_version(
+                                    self.lr.file_transfer_protocol_version,
+                                ) {
+                                    self.send(fs::new_error(r.id, err, r.file_num)).await;
+                                    return true;
+                                }
                                 // note: 1.1.10 introduced identical file detection, which breaks original logic of send/recv files
                                 // whenever got send/recv request, check peer version to ensure old version of rustdesk
                                 let od = can_enable_overwrite_detection(get_version_number(
@@ -3230,7 +3259,11 @@ impl Connection {
                                         .files
                                         .to_vec()
                                         .drain(..)
-                                        .map(|f| (f.name, f.modified_time))
+                                        .map(|f| ipc::FileTransferEntry {
+                                            name: f.name,
+                                            size: f.size,
+                                            modified_time: f.modified_time,
+                                        })
                                         .collect(),
                                     overwrite_detection: od,
                                     total_size: r.total_size,
@@ -3291,20 +3324,37 @@ impl Connection {
                                 }
                             }
                             Some(file_action::Union::SendConfirm(r)) => {
-                                if let Some(job) = fs::get_job(r.id, &mut self.read_jobs) {
-                                    job.confirm(&r).await;
-                                } else if self.cm_read_job_ids.contains(&r.id) {
-                                    // Forward to CM for CM-read jobs
-                                    self.send_fs(ipc::FS::SendConfirmForRead {
-                                        id: r.id,
-                                        file_num: r.file_num,
-                                        skip: r.skip(),
-                                        offset_blk: r.offset_blk(),
-                                        conn_id: self.inner.id(),
-                                    });
-                                } else {
-                                    if let Ok(sc) = r.write_to_bytes() {
-                                        self.send_fs(ipc::FS::SendConfirm(sc));
+                                let direct_confirmation =
+                                    if let Some(job) = fs::get_job(r.id, &mut self.read_jobs) {
+                                        if job.confirm(&r).await {
+                                            Some(None)
+                                        } else {
+                                            Some(Some(job.job_error().unwrap_or_else(|| {
+                                                "file transfer confirmation failed".to_owned()
+                                            })))
+                                        }
+                                    } else {
+                                        None
+                                    };
+                                match direct_confirmation {
+                                    Some(Some(err)) => {
+                                        let _ = fs::remove_job(r.id, &mut self.read_jobs);
+                                        self.send(fs::new_error(r.id, err, r.file_num)).await;
+                                    }
+                                    Some(None) => {}
+                                    None if self.cm_read_job_ids.contains(&r.id) => {
+                                        self.send_fs(ipc::FS::SendConfirmForRead {
+                                            id: r.id,
+                                            file_num: r.file_num,
+                                            skip: r.skip(),
+                                            offset_bytes: r.offset_bytes(),
+                                            conn_id: self.inner.id(),
+                                        });
+                                    }
+                                    None => {
+                                        if let Ok(sc) = r.write_to_bytes() {
+                                            self.send_fs(ipc::FS::SendConfirm(sc));
+                                        }
                                     }
                                 }
                             }
@@ -3333,6 +3383,7 @@ impl Connection {
                         self.send_fs(ipc::FS::WriteBlock {
                             id: block.id,
                             file_num: block.file_num,
+                            blk_id: block.blk_id,
                             data: block.data,
                             compressed: block.compressed,
                         });
@@ -4852,6 +4903,7 @@ impl Connection {
         &mut self,
         id: i32,
         file_num: i32,
+        blk_id: u32,
         data: bytes::Bytes,
         compressed: bool,
     ) {
@@ -4869,6 +4921,7 @@ impl Connection {
         let mut block = FileTransferBlock::new();
         block.id = id;
         block.file_num = file_num;
+        block.blk_id = blk_id;
         block.data = data.to_vec().into();
         block.compressed = compressed;
 
@@ -5965,11 +6018,12 @@ async fn start_ipc(
                             // Note: Empty data (for empty files) is correctly handled. BytesCodec with
                             // raw=false adds a length prefix, so next_raw() returns empty BytesMut for
                             // zero-length frames. This mirrors the WriteBlock pattern below.
-                            ipc::Data::FileBlockFromCM { id, file_num, data: _, compressed, conn_id } => {
+                            ipc::Data::FileBlockFromCM { id, file_num, blk_id, data: _, compressed, conn_id } => {
                                 let raw_data = stream.next_raw().await?;
                                 tx_from_cm.send(ipc::Data::FileBlockFromCM {
                                     id,
                                     file_num,
+                                    blk_id,
                                     data: raw_data.into(),
                                     compressed,
                                     conn_id,
@@ -5988,9 +6042,10 @@ async fn start_ipc(
                     Some(data) => {
                         if let Data::FS(ipc::FS::WriteBlock{id,
                             file_num,
+                            blk_id,
                             data,
                             compressed}) = data {
-                                stream.send(&Data::FS(ipc::FS::WriteBlock{id, file_num, data: Bytes::new(), compressed})).await?;
+                                stream.send(&Data::FS(ipc::FS::WriteBlock{id, file_num, blk_id, data: Bytes::new(), compressed})).await?;
                                 stream.send_raw(data).await?;
                         } else {
                             stream.send(&data).await?;

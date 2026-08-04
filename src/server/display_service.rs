@@ -305,6 +305,8 @@ pub fn new() -> GenericService {
 
 fn displays_to_msg(displays: Vec<DisplayInfo>) -> Message {
     let mut pi = PeerInfo {
+        file_transfer_protocol_version:
+            camellia_remote_protocol::fs::FILE_TRANSFER_PROTOCOL_VERSION,
         ..Default::default()
     };
     pi.displays = displays.clone();
