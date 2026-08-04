@@ -10,6 +10,8 @@ pub mod fuse;
 pub mod macos;
 
 pub mod local_file;
+#[cfg(any(target_os = "macos", test))]
+mod paste_storage;
 pub mod serv_files;
 
 /// has valid file attributes

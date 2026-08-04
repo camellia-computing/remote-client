@@ -338,8 +338,14 @@ impl PasteboardContext {
         let target_dir = target_dir.to_owned();
         match FileDescription::parse_file_descriptors(format_data, conn_id) {
             Ok(files) => {
-                task_lock.start(target_dir, files);
-                Ok(())
+                let result = task_lock.start(target_dir, files);
+                if result.is_err() {
+                    PASTE_OBSERVER_INFO
+                        .lock()
+                        .unwrap()
+                        .replace(PasteObserverInfo::default());
+                }
+                result
             }
             Err(e) => {
                 PASTE_OBSERVER_INFO
