@@ -1164,8 +1164,12 @@ impl<T: InvokeUiSession> Remote<T> {
         if !self.peer_info.is_support_virtual_display() {
             return;
         }
-        let lc = self.handler.lc.read().unwrap();
-        let displays = lc.get_option("virtual-display");
+        let displays = self
+            .handler
+            .lc
+            .read()
+            .unwrap()
+            .get_option("virtual-display");
         for d in displays.split(',') {
             if let Ok(index) = d.parse::<i32>() {
                 let mut misc = Misc::new();
@@ -1185,11 +1189,15 @@ impl<T: InvokeUiSession> Remote<T> {
         if self.handler.is_view_camera() {
             return;
         }
-        let lc = self.handler.lc.read().unwrap();
-        if lc.version >= camellia_remote_protocol::get_version_number("1.2.4")
-            && lc.get_toggle_option("privacy-mode")
-        {
-            let impl_key = lc.get_option("privacy-mode-impl-key");
+        let (version, enabled, impl_key) = {
+            let lc = self.handler.lc.read().unwrap();
+            (
+                lc.version,
+                lc.get_toggle_option("privacy-mode"),
+                lc.get_option("privacy-mode-impl-key"),
+            )
+        };
+        if version >= camellia_remote_protocol::get_version_number("1.2.4") && enabled {
             if impl_key == crate::privacy_mode::PRIVACY_MODE_IMPL_WIN_VIRTUAL_DISPLAY
                 && !self.peer_info.is_support_virtual_display()
             {
