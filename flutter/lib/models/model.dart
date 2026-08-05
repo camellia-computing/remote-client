@@ -56,6 +56,30 @@ import 'package:camellia_remote_app/native/custom_cursor.dart'
 typedef HandleMsgBox = Function(Map<String, dynamic> evt, String id);
 typedef ReconnectHandle = Function(OverlayDialogManager, SessionID, bool);
 final _constSessionId = Uuid().v4obj();
+final _auditSessionCapabilityPattern = RegExp(
+  r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
+);
+
+@visibleForTesting
+String auditSessionCapabilityFromResponseBody(String body) {
+  try {
+    final payload = jsonDecode(body);
+    if (payload is! Map<String, dynamic> ||
+        payload['version'] != 2 ||
+        payload['revision'] is! int ||
+        (payload['revision'] as int) < 1 ||
+        payload['audit_session_id'] is! String) {
+      return '';
+    }
+    final capability = payload['audit_session_id'] as String;
+    return _auditSessionCapabilityPattern.hasMatch(capability)
+        ? capability
+        : '';
+  } on FormatException {
+    return '';
+  }
+}
+
 // Empirical restart reconnect cadence: keep the last frame briefly and retry quickly.
 const _restartReconnectSilentDelaySecs = 5;
 
@@ -1417,11 +1441,6 @@ class FfiModel with ChangeNotifier {
           .isEmpty) {
         return;
       }
-      if (!mainGetLocalBoolOptionSync(
-        kOptionAllowAskForNoteAtEndOfConnection,
-      )) {
-        return;
-      }
       if (bind.sessionGetAuditGuid(sessionId: sessionId).isNotEmpty) {
         debugPrint('Get cached audit GUID');
         return;
@@ -1447,6 +1466,7 @@ class FfiModel with ChangeNotifier {
       };
 
       const retryIntervals = [1, 1, 2, 2, 3, 3];
+      final auditBindEventId = const Uuid().v4();
 
       for (int attempt = 1; attempt <= retryIntervals.length; attempt++) {
         final currentConnSessionId = bind.sessionGetConnSessionId(
@@ -1458,7 +1478,7 @@ class FfiModel with ChangeNotifier {
         }
 
         final fullUrl =
-            '$url?id=$peerId&session_id=$currentConnSessionId&conn_type=$connType';
+            '$url?version=2&event_id=$auditBindEventId&id=$peerId&session_id=$currentConnSessionId&conn_type=$connType';
 
         debugPrint(
           'Querying audit GUID, attempt $attempt/${retryIntervals.length}',
@@ -1470,9 +1490,14 @@ class FfiModel with ChangeNotifier {
           final response = await http.get(Uri.parse(fullUrl), headers: headers);
 
           if (response.statusCode == 200) {
-            final guid = jsonDecode(response.body) as String?;
-            if (guid != null && guid.isNotEmpty) {
-              bind.sessionSetAuditGuid(sessionId: sessionId, guid: guid);
+            final auditSessionId = auditSessionCapabilityFromResponseBody(
+              response.body,
+            );
+            if (auditSessionId.isNotEmpty) {
+              bind.sessionSetAuditGuid(
+                sessionId: sessionId,
+                guid: auditSessionId,
+              );
               debugPrint('Successfully retrieved audit GUID');
               return;
             }
