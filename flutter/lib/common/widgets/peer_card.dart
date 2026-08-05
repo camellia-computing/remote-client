@@ -1680,7 +1680,7 @@ void connectInPeerTab(
         isSharedPassword = true;
       }
       if (password.isEmpty) {
-        final abPassword = gFFI.abModel.getdefaultSharedPassword();
+        final abPassword = await gFFI.abModel.getDefaultSharedPassword(peer.id);
         if (abPassword != null) {
           password = abPassword;
           isSharedPassword = true;

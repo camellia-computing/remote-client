@@ -14,6 +14,24 @@ import 'package:bot_toast/bot_toast.dart';
 import '../utils/http_service.dart' as http;
 import '../common.dart';
 
+String? parseSharedCredentialResponse(String body, int statusCode) {
+  if (statusCode != 200) {
+    return null;
+  }
+  try {
+    final decoded = jsonDecode(body);
+    if (decoded is! Map<String, dynamic>) {
+      return null;
+    }
+    final password = decoded['password'];
+    return password is String && password.isNotEmpty && password.length <= 60
+        ? password
+        : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 final syncAbOption = 'sync-ab-with-recent-sessions';
 bool shouldSyncAb() {
   return bind.mainGetLocalOption(key: syncAbOption) == 'Y';
@@ -845,24 +863,31 @@ class AbModel {
     _peerIdUpdateListeners.remove(key);
   }
 
-  String? getdefaultSharedPassword() {
+  Future<String?> getDefaultSharedPassword(String rid) async {
     if (current.isPersonal()) {
       return null;
     }
     final profile = current.sharedProfile();
-    if (profile == null) {
+    if (profile == null || rid.trim().isEmpty) {
       return null;
     }
+    int? statusCode;
     try {
-      if (profile.info is Map) {
-        final password = (profile.info as Map)['password'];
-        if (password is String && password.isNotEmpty) {
-          return password;
-        }
-      }
-      return null;
+      final api = "${await bind.mainGetApiServer()}/api/ab/shared/credential";
+      final headers = getHttpHeaders();
+      headers['Content-Type'] = 'application/json';
+      final response = await http.post(
+        Uri.parse(api),
+        headers: headers,
+        body: jsonEncode({'guid': profile.guid, 'id': rid}),
+      );
+      statusCode = response.statusCode;
+      return parseSharedCredentialResponse(
+        decode_http_response(response),
+        response.statusCode,
+      );
     } catch (e) {
-      debugPrint("getdefaultSharedPassword: $e");
+      debugPrint("getDefaultSharedPassword($statusCode): $e");
       return null;
     }
   }
