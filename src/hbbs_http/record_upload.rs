@@ -5,7 +5,10 @@ use camellia_remote_protocol::{
     config::{self, keys, Config},
     log, ResultType,
 };
-use reqwest::blocking::{Body, Client, Response};
+use reqwest::{
+    blocking::{Body, Client, Response},
+    StatusCode,
+};
 use scrap::record::RecordState;
 use serde_derive::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -137,6 +140,7 @@ struct RecordUploader {
     state: Option<PersistedUpload>,
     state_sequence: u64,
     last_send: Instant,
+    retry_not_before: Option<Instant>,
 }
 
 impl RecordUploader {
@@ -149,14 +153,21 @@ impl RecordUploader {
             state: None,
             state_sequence: 0,
             last_send: Instant::now(),
+            retry_not_before: None,
         }
     }
 
-    fn request<Q, B>(&self, query: &Q, body: B) -> ResultType<RemoteUploadState>
+    fn request<Q, B>(&mut self, query: &Q, body: B) -> ResultType<RemoteUploadState>
     where
         Q: serde::Serialize + ?Sized,
         B: Into<Body>,
     {
+        if self
+            .retry_not_before
+            .is_some_and(|deadline| Instant::now() < deadline)
+        {
+            bail!("recording upload is waiting for the server retry window");
+        }
         let Some(access_token) = crate::get_api_access_token() else {
             bail!("API account session required for recording upload");
         };
@@ -169,7 +180,24 @@ impl RecordUploader {
             .timeout(UPLOAD_TIMEOUT)
             .send()
             .map_err(|error| camellia_remote_protocol::anyhow::anyhow!(error.to_string()))?;
+        let status = response.status();
+        if let Some(delay) = retry_delay(
+            status,
+            response
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|value| value.to_str().ok()),
+        ) {
+            self.retry_not_before = Some(Instant::now() + delay);
+        } else if status.is_success() {
+            self.retry_not_before = None;
+        }
         parse_response(response)
+    }
+
+    fn retry_window_active(&self) -> bool {
+        self.retry_not_before
+            .is_some_and(|deadline| Instant::now() < deadline)
     }
 
     fn recover_pending(&mut self, recording_dir: &str) {
@@ -267,6 +295,13 @@ impl RecordUploader {
     }
 
     fn handle_frame(&mut self, flush: bool) -> ResultType<bool> {
+        // Recorded-frame notifications can arrive many times per second. A
+        // retryable server rejection must suppress that hot path as well as
+        // the HTTP request itself, otherwise every frame would still emit an
+        // error and repeat local reconciliation work during Retry-After.
+        if !flush && self.retry_window_active() {
+            return Ok(false);
+        }
         self.ensure_created()?;
         if self.current_state()?.pending_chunk.is_some() {
             self.reconcile_pending_chunk()?;
@@ -342,17 +377,17 @@ impl RecordUploader {
     }
 
     fn send_pending_chunk(
-        &self,
+        &mut self,
         pending: &PendingChunk,
         data: Vec<u8>,
     ) -> ResultType<RemoteUploadState> {
         let state = self.current_state()?;
-        let upload_id = required_upload_id(state)?;
+        let upload_id = required_upload_id(state)?.to_owned();
         self.request(
             &[
                 ("version", PROTOCOL_VERSION.to_string()),
                 ("type", "part".to_owned()),
-                ("upload_id", upload_id.to_owned()),
+                ("upload_id", upload_id),
                 ("offset", pending.offset.to_string()),
                 ("revision", pending.revision.to_string()),
                 ("length", pending.length.to_string()),
@@ -524,6 +559,22 @@ fn parse_response(mut response: Response) -> ResultType<RemoteUploadState> {
     let state: RemoteUploadState = serde_json::from_slice(&body)?;
     validate_remote_state(&state)?;
     Ok(state)
+}
+
+fn retry_delay(status: StatusCode, retry_after: Option<&str>) -> Option<Duration> {
+    if !matches!(
+        status,
+        StatusCode::TOO_MANY_REQUESTS
+            | StatusCode::SERVICE_UNAVAILABLE
+            | StatusCode::INSUFFICIENT_STORAGE
+    ) {
+        return None;
+    }
+    let seconds = retry_after
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(30)
+        .clamp(1, 3600);
+    Some(Duration::from_secs(seconds))
 }
 
 fn validate_remote_state(state: &RemoteUploadState) -> ResultType<()> {
@@ -915,6 +966,28 @@ mod tests {
         state.final_size = Some(0);
         state.final_digest = Some(sha256_hex(b""));
         assert!(validate_remote_state(&state).is_ok());
+    }
+
+    #[test]
+    fn retryable_ingestion_rejections_use_a_bounded_server_retry_window() {
+        assert_eq!(
+            retry_delay(StatusCode::INSUFFICIENT_STORAGE, Some("300")),
+            Some(Duration::from_secs(300))
+        );
+        assert_eq!(
+            retry_delay(StatusCode::TOO_MANY_REQUESTS, Some("0")),
+            Some(Duration::from_secs(1))
+        );
+        assert_eq!(
+            retry_delay(StatusCode::SERVICE_UNAVAILABLE, Some("999999")),
+            Some(Duration::from_secs(3600))
+        );
+        assert_eq!(retry_delay(StatusCode::BAD_REQUEST, Some("30")), None);
+
+        let mut uploader =
+            RecordUploader::new(Client::new(), "https://management.example.test".to_owned());
+        uploader.retry_not_before = Some(Instant::now() + Duration::from_secs(30));
+        assert_eq!(uploader.handle_frame(false).unwrap(), false);
     }
 
     #[test]
