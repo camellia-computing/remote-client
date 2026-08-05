@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     sync::{
         atomic::{AtomicU8, Ordering},
         Arc, Mutex,
@@ -12,11 +12,11 @@ use crate::{ui_interface::get_builtin_option, Connection};
 #[cfg(not(any(target_os = "ios")))]
 use camellia_remote_protocol::tokio::sync::watch;
 use camellia_remote_protocol::{
-    config::{self, keys, Config, LocalConfig},
+    config::{self, keys, Config, ManagedPolicy, ManagedPolicyApplyResult},
     log,
     tokio::{self, sync::broadcast, time::Instant},
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Value};
 #[cfg(not(any(target_os = "ios")))]
 use std::sync::atomic::AtomicBool;
@@ -25,6 +25,7 @@ const TIME_HEARTBEAT: Duration = Duration::from_secs(15);
 const UPLOAD_SYSINFO_TIMEOUT: Duration = Duration::from_secs(120);
 const TIME_CONN: Duration = Duration::from_secs(3);
 const MAX_DEVICE_LEASE_SECONDS: u64 = 60;
+const MAX_HEARTBEAT_RESPONSE_BYTES: usize = 128 * 1024;
 const MANAGED_INCOMING_PENDING: u8 = 0;
 const MANAGED_INCOMING_ACTIVE: u8 = 1;
 const MANAGED_INCOMING_REVOKED: u8 = 2;
@@ -68,14 +69,6 @@ fn start_hbbs_sync() -> broadcast::Sender<Vec<i32>> {
     return tx;
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct StrategyOptions {
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub config_options: HashMap<String, String>,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub extra: HashMap<String, String>,
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DeviceLease {
@@ -89,6 +82,31 @@ struct DeviceLease {
     valid_for_seconds: Option<u64>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManagedPolicyEnvelope {
+    version: u8,
+    id: String,
+    uuid: String,
+    generation: u64,
+    digest: String,
+    config_options: BTreeMap<String, String>,
+}
+
+enum LeaseCandidate {
+    Active {
+        deadline: Instant,
+        deployment_generation: u64,
+        id: String,
+        uuid: String,
+        policy: ManagedPolicy,
+    },
+    Revoked {
+        id: String,
+        uuid: String,
+    },
+}
+
 #[derive(Default)]
 struct ManagedLeaseTracker {
     deadline: Option<Instant>,
@@ -98,13 +116,16 @@ struct ManagedLeaseTracker {
 }
 
 impl ManagedLeaseTracker {
-    fn update_from_response(
-        &mut self,
+    fn candidate_from_response(
+        &self,
         response: &str,
         expected_id: &str,
         expected_uuid: &str,
         now: Instant,
-    ) -> Option<bool> {
+    ) -> Option<LeaseCandidate> {
+        if response.len() > MAX_HEARTBEAT_RESPONSE_BYTES {
+            return None;
+        }
         let body = serde_json::from_str::<Value>(response).ok()?;
         let lease =
             serde_json::from_value::<DeviceLease>(body.get("device_lease")?.clone()).ok()?;
@@ -126,29 +147,98 @@ impl ManagedLeaseTracker {
                 {
                     return None;
                 }
-                self.deadline = now.checked_add(Duration::from_secs(seconds));
-                if self.deadline.is_none() {
+                let deadline = now.checked_add(Duration::from_secs(seconds))?;
+                let envelope = serde_json::from_value::<ManagedPolicyEnvelope>(
+                    body.get("managed_policy")?.clone(),
+                )
+                .ok()?;
+                if envelope.version != 1
+                    || envelope.id != expected_id
+                    || envelope.uuid != expected_uuid
+                {
                     return None;
                 }
-                self.deployment_generation = Some(generation);
-                self.id = Some(lease.id);
-                self.uuid = Some(lease.uuid);
-                Some(true)
+                let policy = ManagedPolicy::from_wire(
+                    envelope.id,
+                    envelope.uuid,
+                    envelope.generation,
+                    envelope.digest,
+                    envelope.config_options,
+                )?;
+                Some(LeaseCandidate::Active {
+                    deadline,
+                    deployment_generation: generation,
+                    id: lease.id,
+                    uuid: lease.uuid,
+                    policy,
+                })
             }
             "revoked"
                 if lease.deployment_generation.is_none() && lease.valid_for_seconds.is_none() =>
             {
+                Some(LeaseCandidate::Revoked {
+                    id: lease.id,
+                    uuid: lease.uuid,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    fn update_from_response_with<F>(
+        &mut self,
+        response: &str,
+        expected_id: &str,
+        expected_uuid: &str,
+        now: Instant,
+        apply_policy: F,
+    ) -> bool
+    where
+        F: FnOnce(ManagedPolicy) -> ManagedPolicyApplyResult,
+    {
+        let Some(candidate) =
+            self.candidate_from_response(response, expected_id, expected_uuid, now)
+        else {
+            self.clear_deadline();
+            log::warn!("Managed heartbeat response is invalid; incoming sessions fail closed");
+            return false;
+        };
+        match candidate {
+            LeaseCandidate::Active {
+                deadline,
+                deployment_generation,
+                id,
+                uuid,
+                policy,
+            } => {
+                let result = apply_policy(policy);
+                if !matches!(
+                    result,
+                    ManagedPolicyApplyResult::Applied | ManagedPolicyApplyResult::Unchanged
+                ) {
+                    self.clear_deadline();
+                    log::error!(
+                        "Managed policy was not persisted ({result:?}); incoming sessions fail closed"
+                    );
+                    return false;
+                }
+                self.deadline = Some(deadline);
+                self.deployment_generation = Some(deployment_generation);
+                self.id = Some(id);
+                self.uuid = Some(uuid);
+                true
+            }
+            LeaseCandidate::Revoked { id, uuid } => {
                 self.deadline = None;
                 if self.id.as_deref() != Some(expected_id)
                     || self.uuid.as_deref() != Some(expected_uuid)
                 {
                     self.deployment_generation = None;
                 }
-                self.id = Some(lease.id);
-                self.uuid = Some(lease.uuid);
-                Some(false)
+                self.id = Some(id);
+                self.uuid = Some(uuid);
+                false
             }
-            _ => None,
         }
     }
 
@@ -466,23 +556,26 @@ async fn start_hbbs_sync_async() {
                 if !conns.is_empty() {
                     v["conns"] = json!(conns);
                 }
-                let modified_at = LocalConfig::get_option("strategy_timestamp").parse::<i64>().unwrap_or(0);
-                v["modified_at"] = json!(modified_at);
                 if let Ok(s) = crate::post_request(url.clone(), v.to_string(), &auth_header).await {
-                    if let Some(allowed) = device_lease.update_from_response(
+                    let mut allowed = device_lease.update_from_response_with(
                         &s,
                         &id,
                         &device_uuid,
                         Instant::now(),
-                    ) {
-                        let watchdog_ready = set_managed_lease_deadline(
-                            &lease_deadline_tx,
-                            if allowed { device_lease.deadline } else { None },
-                        );
-                        publish_managed_incoming_state(allowed && watchdog_ready);
+                        Config::apply_managed_policy,
+                    );
+                    let watchdog_ready = set_managed_lease_deadline(
+                        &lease_deadline_tx,
+                        if allowed { device_lease.deadline } else { None },
+                    );
+                    if !watchdog_ready {
+                        device_lease.clear_deadline();
+                        allowed = false;
                     }
+                    publish_managed_incoming_state(allowed);
                     if let Ok(mut rsp) = serde_json::from_str::<HashMap::<&str, Value>>(&s) {
                         rsp.remove("device_lease");
+                        rsp.remove("managed_policy");
                         if rsp.remove("sysinfo").is_some() {
                             info_uploaded.uploaded = false;
                             config::Status::set("sysinfo_hash", "".to_owned());
@@ -492,19 +585,6 @@ async fn start_hbbs_sync_async() {
                                 if let Ok(conns) = serde_json::from_value::<Vec<i32>>(conns) {
                                     SENDER.lock().unwrap().send(conns).ok();
                                 }
-                        }
-                        if let Some(rsp_modified_at) = rsp.remove("modified_at") {
-                            if let Ok(rsp_modified_at) = serde_json::from_value::<i64>(rsp_modified_at) {
-                                if rsp_modified_at != modified_at {
-                                    LocalConfig::set_option("strategy_timestamp".to_string(), rsp_modified_at.to_string());
-                                }
-                            }
-                        }
-                        if let Some(strategy) = rsp.remove("strategy") {
-                            if let Ok(strategy) = serde_json::from_value::<StrategyOptions>(strategy) {
-                                log::info!("strategy updated");
-                                handle_config_options(strategy.config_options);
-                            }
                         }
                     }
                 }
@@ -524,25 +604,6 @@ fn heartbeat_url() -> String {
     format!("{}/api/heartbeat", url)
 }
 
-fn handle_config_options(config_options: HashMap<String, String>) {
-    let mut options = Config::get_options();
-    let default_settings = config::DEFAULT_SETTINGS.read().unwrap().clone();
-    config_options
-        .iter()
-        .map(|(k, v)| {
-            // Priority: user config > default advanced options.
-            // Only when default advanced options are also empty, remove user option (fallback to built-in default);
-            // otherwise insert an empty value so user config remains present.
-            if v.is_empty() && default_settings.get(k).map_or("", |v| v).is_empty() {
-                options.remove(k);
-            } else {
-                options.insert(k.to_string(), v.to_string());
-            }
-        })
-        .count();
-    Config::set_options(options);
-}
-
 #[allow(unused)]
 #[cfg(not(any(target_os = "ios")))]
 pub fn is_pro() -> bool {
@@ -552,80 +613,74 @@ pub fn is_pro() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
 
     fn active_lease(id: &str, uuid: &str, generation: u64, seconds: u64) -> String {
+        active_policy(id, uuid, generation, seconds, generation, BTreeMap::new())
+    }
+
+    fn active_policy(
+        id: &str,
+        uuid: &str,
+        deployment_generation: u64,
+        seconds: u64,
+        policy_generation: u64,
+        config_options: BTreeMap<String, String>,
+    ) -> String {
+        let digest = ManagedPolicy::canonical_digest(&config_options).unwrap();
         serde_json::json!({
             "device_lease": {
                 "version": 1,
                 "state": "active",
                 "id": id,
                 "uuid": uuid,
-                "deployment_generation": generation,
+                "deployment_generation": deployment_generation,
                 "valid_for_seconds": seconds,
+            },
+            "managed_policy": {
+                "version": 1,
+                "id": id,
+                "uuid": uuid,
+                "generation": policy_generation,
+                "digest": digest,
+                "config_options": config_options,
             }
         })
         .to_string()
+    }
+
+    fn apply_success(_policy: ManagedPolicy) -> ManagedPolicyApplyResult {
+        ManagedPolicyApplyResult::Applied
     }
 
     #[test]
     fn managed_lease_binds_identity_generation_and_monotonic_deadline() {
         let now = Instant::now();
         let mut tracker = ManagedLeaseTracker::default();
-        assert_eq!(
-            tracker.update_from_response(
-                &active_lease("device01", "dXVpZA==", 7, 60),
-                "device01",
-                "dXVpZA==",
-                now,
-            ),
-            Some(true)
-        );
+        assert!(tracker.update_from_response_with(
+            &active_lease("device01", "dXVpZA==", 7, 60),
+            "device01",
+            "dXVpZA==",
+            now,
+            apply_success,
+        ));
         assert!(tracker.is_active(now));
-        assert_eq!(
-            tracker.update_from_response(
-                &active_lease("other", "dXVpZA==", 8, 60),
+        for invalid in [
+            active_lease("other", "dXVpZA==", 8, 60),
+            active_lease("device01", "b3RoZXI=", 8, 60),
+            active_lease("device01", "dXVpZA==", 6, 60),
+            active_lease("device01", "dXVpZA==", 8, 61),
+            active_lease("device01", "dXVpZA==", 8, 0),
+        ] {
+            assert!(!tracker.update_from_response_with(
+                &invalid,
                 "device01",
                 "dXVpZA==",
                 now,
-            ),
-            None
-        );
-        assert_eq!(
-            tracker.update_from_response(
-                &active_lease("device01", "b3RoZXI=", 8, 60),
-                "device01",
-                "dXVpZA==",
-                now,
-            ),
-            None
-        );
-        assert_eq!(
-            tracker.update_from_response(
-                &active_lease("device01", "dXVpZA==", 6, 60),
-                "device01",
-                "dXVpZA==",
-                now,
-            ),
-            None
-        );
-        assert_eq!(
-            tracker.update_from_response(
-                &active_lease("device01", "dXVpZA==", 8, 61),
-                "device01",
-                "dXVpZA==",
-                now,
-            ),
-            None
-        );
-        assert_eq!(
-            tracker.update_from_response(
-                &active_lease("device01", "dXVpZA==", 8, 0),
-                "device01",
-                "dXVpZA==",
-                now,
-            ),
-            None
-        );
+                |_| panic!("invalid lease must not apply a policy"),
+            ));
+            assert!(!tracker.is_active(now));
+        }
         let unknown_field = serde_json::json!({
             "device_lease": {
                 "version": 1,
@@ -638,26 +693,27 @@ mod tests {
             }
         })
         .to_string();
-        assert_eq!(
-            tracker.update_from_response(&unknown_field, "device01", "dXVpZA==", now),
-            None
-        );
-        assert!(tracker.is_active(now));
+        assert!(!tracker.update_from_response_with(
+            &unknown_field,
+            "device01",
+            "dXVpZA==",
+            now,
+            |_| panic!("unknown lease fields must not apply a policy"),
+        ));
+        assert!(!tracker.is_active(now));
     }
 
     #[test]
     fn explicit_revocation_and_lease_expiry_fail_closed() {
         let now = Instant::now();
         let mut tracker = ManagedLeaseTracker::default();
-        assert_eq!(
-            tracker.update_from_response(
-                &active_lease("device01", "dXVpZA==", 1, 1),
-                "device01",
-                "dXVpZA==",
-                now,
-            ),
-            Some(true)
-        );
+        assert!(tracker.update_from_response_with(
+            &active_lease("device01", "dXVpZA==", 1, 1),
+            "device01",
+            "dXVpZA==",
+            now,
+            apply_success,
+        ));
         let malformed_revocation = serde_json::json!({
             "device_lease": {
                 "version": 1,
@@ -668,11 +724,14 @@ mod tests {
             }
         })
         .to_string();
-        assert_eq!(
-            tracker.update_from_response(&malformed_revocation, "device01", "dXVpZA==", now),
-            None
-        );
-        assert!(tracker.is_active(now));
+        assert!(!tracker.update_from_response_with(
+            &malformed_revocation,
+            "device01",
+            "dXVpZA==",
+            now,
+            |_| panic!("revocation must not apply a policy"),
+        ));
+        assert!(!tracker.is_active(now));
         assert!(!tracker.is_active(now + Duration::from_secs(2)));
         let revoked = serde_json::json!({
             "device_lease": {
@@ -683,20 +742,21 @@ mod tests {
             }
         })
         .to_string();
-        assert_eq!(
-            tracker.update_from_response(&revoked, "device01", "dXVpZA==", now),
-            Some(false)
-        );
+        assert!(!tracker.update_from_response_with(
+            &revoked,
+            "device01",
+            "dXVpZA==",
+            now,
+            |_| panic!("revocation must not apply a policy"),
+        ));
         assert!(!tracker.is_active(now));
-        assert_eq!(
-            tracker.update_from_response(
-                &active_lease("device01", "dXVpZA==", 1, 60),
-                "device01",
-                "dXVpZA==",
-                now,
-            ),
-            Some(true)
-        );
+        assert!(tracker.update_from_response_with(
+            &active_lease("device01", "dXVpZA==", 1, 60),
+            "device01",
+            "dXVpZA==",
+            now,
+            apply_success,
+        ));
         assert!(tracker.is_active(now));
     }
 
@@ -704,25 +764,117 @@ mod tests {
     fn a_new_bound_identity_starts_its_own_generation_sequence() {
         let now = Instant::now();
         let mut tracker = ManagedLeaseTracker::default();
-        assert_eq!(
-            tracker.update_from_response(
-                &active_lease("device01", "dXVpZC0x", 7, 60),
-                "device01",
-                "dXVpZC0x",
-                now,
-            ),
-            Some(true)
-        );
-        assert_eq!(
-            tracker.update_from_response(
-                &active_lease("device02", "dXVpZC0y", 1, 60),
-                "device02",
-                "dXVpZC0y",
-                now,
-            ),
-            Some(true)
-        );
+        assert!(tracker.update_from_response_with(
+            &active_lease("device01", "dXVpZC0x", 7, 60),
+            "device01",
+            "dXVpZC0x",
+            now,
+            apply_success,
+        ));
+        assert!(tracker.update_from_response_with(
+            &active_lease("device02", "dXVpZC0y", 1, 60),
+            "device02",
+            "dXVpZC0y",
+            now,
+            apply_success,
+        ));
         assert_eq!(tracker.deployment_generation, Some(1));
+    }
+
+    #[test]
+    fn policy_is_validated_and_persisted_before_the_lease_becomes_active() {
+        let now = Instant::now();
+        let mut tracker = ManagedLeaseTracker::default();
+        let persisted = Cell::new(false);
+        let response = active_policy(
+            "device01",
+            "dXVpZA==",
+            3,
+            60,
+            9,
+            BTreeMap::from([
+                ("approve-mode".to_owned(), "password".to_owned()),
+                ("unicode".to_owned(), "雪/é".to_owned()),
+            ]),
+        );
+
+        assert!(tracker.update_from_response_with(
+            &response,
+            "device01",
+            "dXVpZA==",
+            now,
+            |policy| {
+                assert_eq!(policy.generation(), 9);
+                assert_eq!(
+                    policy.options().get("approve-mode").map(String::as_str),
+                    Some("password")
+                );
+                persisted.set(true);
+                ManagedPolicyApplyResult::Applied
+            },
+        ));
+        assert!(persisted.get());
+        assert!(tracker.is_active(now));
+    }
+
+    #[test]
+    fn malformed_or_unpersisted_policy_fails_closed() {
+        let now = Instant::now();
+        let mut tracker = ManagedLeaseTracker::default();
+        let valid = active_lease("device01", "dXVpZA==", 3, 60);
+        assert!(tracker.update_from_response_with(
+            &valid,
+            "device01",
+            "dXVpZA==",
+            now,
+            apply_success,
+        ));
+
+        let mut wrong_digest = serde_json::from_str::<Value>(&valid).unwrap();
+        wrong_digest["managed_policy"]["digest"] = json!("0".repeat(64));
+        assert!(!tracker.update_from_response_with(
+            &wrong_digest.to_string(),
+            "device01",
+            "dXVpZA==",
+            now,
+            |_| panic!("invalid digest must be rejected before persistence"),
+        ));
+        assert!(!tracker.is_active(now));
+
+        let mut unknown_field = serde_json::from_str::<Value>(&valid).unwrap();
+        unknown_field["managed_policy"]["unexpected"] = json!(true);
+        assert!(!tracker.update_from_response_with(
+            &unknown_field.to_string(),
+            "device01",
+            "dXVpZA==",
+            now,
+            |_| panic!("unknown policy fields must be rejected before persistence"),
+        ));
+
+        for rejected in [
+            ManagedPolicyApplyResult::RejectedInvalid,
+            ManagedPolicyApplyResult::RejectedRollback,
+            ManagedPolicyApplyResult::RejectedConflict,
+            ManagedPolicyApplyResult::StoreFailed,
+        ] {
+            assert!(!tracker.update_from_response_with(
+                &valid,
+                "device01",
+                "dXVpZA==",
+                now,
+                |_| rejected,
+            ));
+            assert!(!tracker.is_active(now));
+        }
+
+        let oversized = "x".repeat(MAX_HEARTBEAT_RESPONSE_BYTES + 1);
+        assert!(!tracker.update_from_response_with(
+            &oversized,
+            "device01",
+            "dXVpZA==",
+            now,
+            |_| panic!("oversized responses must not reach persistence"),
+        ));
     }
 
     #[test]
