@@ -52,7 +52,7 @@ use cidr_utils::cidr::IpCidr;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 use scrap::android::{call_main_service_key_event, call_main_service_pointer_input};
 use scrap::camera;
-use serde_derive::Serialize;
+use serde_derive::{Deserialize, Serialize};
 use serde_json::{json, value::Value};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use std::sync::atomic::Ordering;
@@ -64,6 +64,7 @@ use std::{
     str::FromStr,
     sync::{atomic::AtomicI64, mpsc as std_mpsc},
 };
+use uuid::Uuid;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[cfg(target_os = "windows")]
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
@@ -71,6 +72,28 @@ use windows::Win32::Foundation::{CloseHandle, HANDLE};
 #[cfg(windows)]
 use crate::virtual_display_manager;
 pub type Sender = mpsc::UnboundedSender<(Instant, Arc<Message>)>;
+
+const AUDIT_PROTOCOL_VERSION: u8 = 2;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AuditPostKind {
+    Open,
+    Event,
+}
+
+#[derive(Debug)]
+struct AuditPost {
+    url: String,
+    body: Value,
+    kind: AuditPostKind,
+}
+
+#[derive(Deserialize)]
+struct AuditPostResponse {
+    version: u8,
+    audit_session_id: String,
+    revision: u64,
+}
 
 lazy_static::lazy_static! {
     static ref LOGIN_FAILURES: [Arc::<Mutex<HashMap<String, (i32, i32, i32)>>>; 2] = Default::default();
@@ -342,9 +365,10 @@ pub struct Connection {
     printer_data: Vec<(Instant, String, Vec<u8>)>,
     // For post requests that need to be sent sequentially.
     // eg. post_conn_audit
-    tx_post_seq: mpsc::UnboundedSender<(String, Value)>,
+    tx_post_seq: mpsc::UnboundedSender<AuditPost>,
     conn_audit_primary_auth: ConnAuditPrimaryAuth,
     conn_audit_two_factor: ConnAuditTwoFactor,
+    audit_opened: bool,
     // Tracks read job IDs delegated to CM process.
     // When a read job is delegated to CM (via FS::ReadFile), the job id is added here.
     // Used to filter stale responses (FileBlockFromCM, FileReadDone, etc.) for
@@ -549,6 +573,7 @@ impl Connection {
             terminal_generic_service: None,
             conn_audit_primary_auth: ConnAuditPrimaryAuth::None,
             conn_audit_two_factor: ConnAuditTwoFactor::None,
+            audit_opened: false,
         };
         let addr = camellia_remote_protocol::try_into_v4(addr);
         if !conn.on_open(addr).await {
@@ -1185,9 +1210,98 @@ impl Connection {
         log::debug!("Input thread exited");
     }
 
-    async fn post_seq_loop(mut rx: mpsc::UnboundedReceiver<(String, Value)>) {
-        while let Some((url, v)) = rx.recv().await {
-            allow_err!(Self::post_audit_async(url, v).await);
+    fn parse_audit_post_response(body: &str) -> ResultType<AuditPostResponse> {
+        let response: AuditPostResponse = match serde_json::from_str(body) {
+            Ok(response) => response,
+            Err(_) => bail!("Management returned an invalid audit response"),
+        };
+        if response.version != AUDIT_PROTOCOL_VERSION || response.revision == 0 {
+            bail!("Management returned an incompatible audit response");
+        }
+        let capability = match Uuid::parse_str(&response.audit_session_id) {
+            Ok(capability) => capability,
+            Err(_) => bail!("Management returned an invalid audit session capability"),
+        };
+        if capability.get_version_num() != 4 || capability.to_string() != response.audit_session_id
+        {
+            bail!("Management returned an invalid audit session capability");
+        }
+        Ok(response)
+    }
+
+    fn validate_audit_progress(
+        response: &AuditPostResponse,
+        kind: AuditPostKind,
+        audit_session_id: Option<&str>,
+        revision: u64,
+    ) -> ResultType<()> {
+        match kind {
+            AuditPostKind::Open => {
+                if let Some(existing) = audit_session_id {
+                    if existing != response.audit_session_id.as_str() {
+                        bail!("Management replaced the audit session capability");
+                    }
+                }
+            }
+            AuditPostKind::Event => {
+                if audit_session_id != Some(response.audit_session_id.as_str()) {
+                    bail!("Management returned a mismatched audit session capability");
+                }
+            }
+        }
+        if response.revision <= revision {
+            bail!("Management returned a non-advancing audit session revision");
+        }
+        Ok(())
+    }
+
+    async fn post_seq_loop(mut rx: mpsc::UnboundedReceiver<AuditPost>) {
+        let mut audit_session_id: Option<String> = None;
+        let mut revision = 0;
+        while let Some(mut request) = rx.recv().await {
+            request.body["version"] = json!(AUDIT_PROTOCOL_VERSION);
+            if request
+                .body
+                .get("event_id")
+                .and_then(Value::as_str)
+                .is_none()
+            {
+                request.body["event_id"] = json!(Uuid::new_v4().to_string());
+            }
+            if request.kind == AuditPostKind::Event {
+                let Some(capability) = audit_session_id.as_ref() else {
+                    log::warn!("Dropping audit event because Management did not establish a session capability");
+                    continue;
+                };
+                request.body["audit_session_id"] = json!(capability);
+            }
+            let response_body = match Self::post_audit_async(request.url, request.body).await {
+                Ok(body) => body,
+                Err(error) => {
+                    log::warn!("Failed to post connection audit event: {error}");
+                    continue;
+                }
+            };
+            let response = match Self::parse_audit_post_response(&response_body) {
+                Ok(response) => response,
+                Err(error) => {
+                    log::warn!("Rejected Management audit response: {error}");
+                    continue;
+                }
+            };
+            if let Err(error) = Self::validate_audit_progress(
+                &response,
+                request.kind,
+                audit_session_id.as_deref(),
+                revision,
+            ) {
+                log::warn!("Rejected Management audit progress: {error}");
+                continue;
+            }
+            if request.kind == AuditPostKind::Open && audit_session_id.is_none() {
+                audit_session_id = Some(response.audit_session_id.clone());
+            }
+            revision = response.revision;
         }
         log::debug!("post_seq_loop exited");
     }
@@ -1316,14 +1430,6 @@ impl Connection {
         msg_out.set_hash(self.hash.clone());
         self.send(msg_out).await;
         self.get_api_server();
-        let mut audit = json!({
-            "ip": addr.ip(),
-            "action": "new",
-        });
-        if let Some(audit_ref) = self.conn_audit_ref() {
-            audit["conn_audit_ref"] = json!(audit_ref);
-        }
-        self.post_conn_audit(audit);
         true
     }
 
@@ -1352,17 +1458,28 @@ impl Connection {
         }
     }
 
+    fn enqueue_audit(&self, url: String, mut body: Value, kind: AuditPostKind) {
+        body["version"] = json!(AUDIT_PROTOCOL_VERSION);
+        body["event_id"] = json!(Uuid::new_v4().to_string());
+        allow_err!(self.tx_post_seq.send(AuditPost { url, body, kind }));
+    }
+
     fn post_conn_audit(&self, v: Value) {
         if self.server_audit_conn.is_empty() {
             return;
         }
         let url = self.server_audit_conn.clone();
         let mut v = v;
+        let kind = if v.get("action").and_then(Value::as_str) == Some("new") {
+            AuditPostKind::Open
+        } else {
+            AuditPostKind::Event
+        };
         v["id"] = json!(Config::get_id());
         v["uuid"] = json!(crate::encode64(camellia_remote_protocol::get_uuid()));
         v["conn_id"] = json!(self.inner.id);
         v["session_id"] = json!(self.lr.session_id);
-        allow_err!(self.tx_post_seq.send((url, v)));
+        self.enqueue_audit(url, v, kind);
     }
 
     fn get_files_for_audit(job_type: fs::JobType, mut files: Vec<FileEntry>) -> Vec<(String, i64)> {
@@ -1412,9 +1529,7 @@ impl Connection {
             "is_file":is_file,
             "info":json!(info).to_string(),
         });
-        tokio::spawn(async move {
-            allow_err!(Self::post_audit_async(url, v).await);
-        });
+        self.enqueue_audit(url, v, AuditPostKind::Event);
     }
 
     fn post_alarm_audit(&self, typ: AlarmAuditType, info: Value) {
@@ -1437,9 +1552,7 @@ impl Connection {
                 v["conn_audit_ref"] = json!(audit_ref);
             }
         }
-        tokio::spawn(async move {
-            allow_err!(Self::post_audit_async(url, v).await);
-        });
+        self.enqueue_audit(url, v, AuditPostKind::Event);
     }
 
     fn post_session_scope_violation_alarm(&self, message: &'static str) {
@@ -2362,6 +2475,17 @@ impl Connection {
 
     async fn handle_login_request_without_validation(&mut self, lr: &LoginRequest) {
         self.lr = lr.clone();
+        if !self.audit_opened {
+            let mut audit = json!({
+                "ip": self.ip,
+                "action": "new",
+            });
+            if let Some(audit_ref) = self.conn_audit_ref() {
+                audit["conn_audit_ref"] = json!(audit_ref);
+            }
+            self.post_conn_audit(audit);
+            self.audit_opened = true;
+        }
         self.peer_argb = crate::str2color(&format!("{}{}", &lr.my_id, &lr.my_platform), 0xff);
         if let Some(o) = lr.option.as_ref() {
             self.options_in_login = Some(o.clone());
@@ -6687,6 +6811,60 @@ mod test {
         assert!(Ipv6Addr::from_str("::1").is_ok());
         assert!(Ipv6Addr::from_str("127.0.0.1").is_err());
         assert!(Ipv6Addr::from_str("0").is_err());
+    }
+
+    #[test]
+    fn audit_response_requires_v2_uuid4_capability_and_positive_revision() {
+        let capability = Uuid::new_v4().to_string();
+        let response = Connection::parse_audit_post_response(
+            &json!({
+                "version": AUDIT_PROTOCOL_VERSION,
+                "audit_session_id": capability,
+                "revision": 7,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(response.version, AUDIT_PROTOCOL_VERSION);
+        assert_eq!(response.revision, 7);
+        assert!(
+            Connection::validate_audit_progress(&response, AuditPostKind::Open, None, 0,).is_ok()
+        );
+        assert!(Connection::validate_audit_progress(
+            &response,
+            AuditPostKind::Event,
+            Some(&capability),
+            7,
+        )
+        .is_err());
+        assert!(Connection::validate_audit_progress(
+            &response,
+            AuditPostKind::Event,
+            Some(&Uuid::new_v4().to_string()),
+            6,
+        )
+        .is_err());
+
+        for invalid in [
+            json!({
+                "version": 1,
+                "audit_session_id": Uuid::new_v4().to_string(),
+                "revision": 1,
+            }),
+            json!({
+                "version": AUDIT_PROTOCOL_VERSION,
+                "audit_session_id": Uuid::nil().to_string(),
+                "revision": 1,
+            }),
+            json!({
+                "version": AUDIT_PROTOCOL_VERSION,
+                "audit_session_id": Uuid::new_v4().to_string(),
+                "revision": 0,
+            }),
+            json!({"error": "Connection is closed"}),
+        ] {
+            assert!(Connection::parse_audit_post_response(&invalid.to_string()).is_err());
+        }
     }
 
     fn msg(set: impl FnOnce(&mut Message)) -> Message {
