@@ -49,6 +49,7 @@ Useful component paths:
 
 - Pairing, session, file-transfer, clipboard, input, and proxy inputs are bounded and validated before resource allocation or filesystem access.
 - Secrets and deployment endpoints must be supplied through the documented build/deployment trust channel; never commit private keys, access tokens, or customer configuration.
+- Opt-in incoming-session recording upload uses only Management protocol v2. Before creating or mutating remote state, the Client persists a two-slot, checksummed sidecar containing the create/upload identity, committed offset/revision, and any pending chunk or finalize intent. Sidecars use mode 0600 on Unix and the recording directory's ACL on Windows; they contain no bearer token. Lost responses are resolved from Management status, and an advanced offset is accepted only when the server confirms the exact pending chunk ID, range, revision, length, and SHA-256 receipt. A completed local file is published remotely only after full-size and full-digest finalize succeeds; an interrupted recorder is aborted rather than presented as complete. The legacy header-overwrite `tail` protocol is intentionally unsupported.
 - Desktop application data uses the `com.camellia.remote` identity. No old application directory is scanned or migrated.
 - The application contains no version service or background updater and never
   discovers or downloads releases. Obtain an immutable reviewed Release,
