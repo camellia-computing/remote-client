@@ -1108,9 +1108,10 @@ fn get_recorder(
     let recorder = if record_incoming {
         use crate::hbbs_http::record_upload;
 
+        let recording_dir = crate::ui_interface::video_save_directory(root);
         let tx = if record_upload::is_enable() {
             let (tx, rx) = std::sync::mpsc::channel();
-            record_upload::run(rx);
+            record_upload::run(rx, recording_dir.clone());
             Some(tx)
         } else {
             None
@@ -1118,7 +1119,7 @@ fn get_recorder(
         Recorder::new(RecorderContext {
             server: true,
             id: Config::get_id(),
-            dir: crate::ui_interface::video_save_directory(root),
+            dir: recording_dir,
             display_idx,
             camera,
             tx,
