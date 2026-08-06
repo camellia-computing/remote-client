@@ -960,13 +960,46 @@ pub async fn start_listen<T: InvokeUiCM>(
 }
 
 #[cfg(not(any(target_os = "ios")))]
+fn send_file_transfer_audit(
+    tx: &UnboundedSender<Data>,
+    job: &fs::TransferJob,
+    state: &str,
+    reason: &str,
+    conn_id: i32,
+) {
+    if let Err(err) = tx.send(Data::FileTransferAudit {
+        id: job.id(),
+        total_size: job.total_size(),
+        transferred: job.transferred(),
+        state: state.to_owned(),
+        reason: reason.to_owned(),
+        conn_id,
+    }) {
+        log::error!("error sending file transfer audit via IPC: {err}");
+    }
+}
+
+#[cfg(not(any(target_os = "ios")))]
+fn maybe_send_file_transfer_progress(
+    tx: &UnboundedSender<Data>,
+    job: &fs::TransferJob,
+    before_transferred: u64,
+    conn_id: i32,
+) {
+    const PROGRESS_BYTES: u64 = 1024 * 1024;
+    if job.transferred() / PROGRESS_BYTES > before_transferred / PROGRESS_BYTES {
+        send_file_transfer_audit(tx, job, "progress", "", conn_id);
+    }
+}
+
+#[cfg(not(any(target_os = "ios")))]
 async fn handle_fs(
     fs: ipc::FS,
     write_jobs: &mut Vec<fs::TransferJob>,
     read_jobs: &mut Vec<fs::TransferJob>,
     tx: &UnboundedSender<Data>,
     tx_log: Option<&UnboundedSender<String>>,
-    _conn_id: i32,
+    conn_id: i32,
 ) {
     match fs {
         ipc::FS::ReadEmptyDirs {
@@ -1028,6 +1061,14 @@ async fn handle_fs(
             );
             if let Err(e) = job.set_files(file_entries) {
                 log::warn!("Reject unsafe transfer file list for {}: {}", path, e);
+                let _ = tx.send(Data::FileTransferAudit {
+                    id,
+                    total_size,
+                    transferred: 0,
+                    state: "failed".to_owned(),
+                    reason: "invalid_manifest".to_owned(),
+                    conn_id,
+                });
                 send_raw(fs::new_error(id, e, file_num), tx);
                 return;
             }
@@ -1042,6 +1083,7 @@ async fn handle_fs(
                     path,
                     err
                 );
+                send_file_transfer_audit(tx, &job, "failed", "invalid_total", conn_id);
                 send_raw(fs::new_error(id, err, file_num), tx);
                 return;
             }
@@ -1069,6 +1111,7 @@ async fn handle_fs(
                     log::error!("Failed to clean up cancelled transfer {}: {}", id, err);
                     send_raw(fs::new_error(id, err, job.file_num()), tx);
                 }
+                send_file_transfer_audit(tx, &job, "cancelled", "cancelled_by_peer", conn_id);
             }
         }
         ipc::FS::WriteDone { id, file_num } => {
@@ -1079,6 +1122,7 @@ async fn handle_fs(
             if let Some(job) = fs::remove_job(id, write_jobs) {
                 match finalize_result {
                     Ok(()) => {
+                        send_file_transfer_audit(tx, &job, "completed", "", conn_id);
                         send_raw(fs::new_done(id, file_num), tx);
                         if let Some(tx) = tx_log {
                             let _ = tx.send(serialize_transfer_job(&job, true, false, ""));
@@ -1086,6 +1130,7 @@ async fn handle_fs(
                     }
                     Err(err) => {
                         log::error!("Failed to finalize transfer {}: {}", id, err);
+                        send_file_transfer_audit(tx, &job, "failed", "finalize_error", conn_id);
                         send_raw(fs::new_error(id, &err, file_num), tx);
                         if let Some(tx) = tx_log {
                             let _ = tx.send(serialize_transfer_job(&job, false, false, &err));
@@ -1096,6 +1141,7 @@ async fn handle_fs(
         }
         ipc::FS::WriteError { id, file_num, err } => {
             if let Some(job) = fs::remove_job(id, write_jobs) {
+                send_file_transfer_audit(tx, &job, "failed", "remote_error", conn_id);
                 tx_log.map(|tx| tx.send(serialize_transfer_job(&job, false, false, &err)));
                 send_raw(fs::new_error(job.id(), err, file_num), tx);
             }
@@ -1107,28 +1153,36 @@ async fn handle_fs(
             data,
             compressed,
         } => {
-            let write_error = if let Some(job) = fs::get_job(id, write_jobs) {
-                job.write(FileTransferBlock {
-                    id,
-                    file_num,
-                    blk_id,
-                    data,
-                    compressed,
-                    ..Default::default()
-                })
-                .await
-                .err()
-                .map(|e| e.to_string())
+            let (before_transferred, write_error) = if let Some(job) = fs::get_job(id, write_jobs) {
+                let before_transferred = job.transferred();
+                let error = job
+                    .write(FileTransferBlock {
+                        id,
+                        file_num,
+                        blk_id,
+                        data,
+                        compressed,
+                        ..Default::default()
+                    })
+                    .await
+                    .err()
+                    .map(|e| e.to_string());
+                (Some(before_transferred), error)
             } else {
-                None
+                (None, None)
             };
             if let Some(err) = write_error {
                 if let Some(job) = fs::remove_job(id, write_jobs) {
+                    send_file_transfer_audit(tx, &job, "failed", "write_error", conn_id);
                     if let Some(tx) = tx_log {
                         let _ = tx.send(serialize_transfer_job(&job, false, false, &err));
                     }
                 }
                 send_raw(fs::new_error(id, err, file_num), tx);
+            } else if let (Some(before_transferred), Some(job)) =
+                (before_transferred, fs::get_job(id, write_jobs))
+            {
+                maybe_send_file_transfer_progress(tx, job, before_transferred, conn_id);
             }
         }
         ipc::FS::CheckDigest {
@@ -1213,6 +1267,7 @@ async fn handle_fs(
                 Ok(message) => send_raw(message, tx),
                 Err(err) => {
                     if let Some(job) = fs::remove_job(id, write_jobs) {
+                        send_file_transfer_audit(tx, &job, "failed", "confirmation_error", conn_id);
                         if let Some(tx) = tx_log {
                             let _ = tx.send(serialize_transfer_job(&job, false, false, &err));
                         }
@@ -1231,7 +1286,15 @@ async fn handle_fs(
                             .job_error()
                             .unwrap_or_else(|| "file transfer confirmation failed".to_owned());
                         let _ = job;
-                        let _ = fs::remove_job(id, write_jobs);
+                        if let Some(job) = fs::remove_job(id, write_jobs) {
+                            send_file_transfer_audit(
+                                tx,
+                                &job,
+                                "failed",
+                                "confirmation_error",
+                                conn_id,
+                            );
+                        }
                         send_raw(fs::new_error(id, err, file_num), tx);
                     }
                 }
@@ -1264,8 +1327,18 @@ async fn handle_fs(
         // Note: This only cancels jobs in `read_jobs`. It does NOT cancel `ReadAllFiles`
         // operations, which are one-shot directory scans that complete quickly and don't
         // have persistent job tracking.
-        ipc::FS::CancelRead { id, conn_id: _ } => {
+        ipc::FS::CancelRead {
+            id,
+            conn_id: cancel_conn_id,
+        } => {
             if let Some(job) = fs::remove_job(id, read_jobs) {
+                send_file_transfer_audit(
+                    tx,
+                    &job,
+                    "cancelled",
+                    "cancelled_by_peer",
+                    cancel_conn_id,
+                );
                 if let Some(tx) = tx_log {
                     if let Err(e) = tx.send(serialize_transfer_job(&job, false, true, "")) {
                         log::error!("error sending transfer job log via IPC: {}", e);
@@ -1305,9 +1378,13 @@ async fn handle_fs(
                 None
             };
             if let Some(err) = confirmation_error {
-                let file_num = fs::remove_job(id, read_jobs)
-                    .map(|job| job.file_num())
-                    .unwrap_or_default();
+                let file_num = if let Some(job) = fs::remove_job(id, read_jobs) {
+                    let file_num = job.file_num();
+                    send_file_transfer_audit(tx, &job, "failed", "confirmation_error", conn_id);
+                    file_num
+                } else {
+                    0
+                };
                 let _ = tx.send(Data::FileReadError {
                     id,
                     file_num,
@@ -1468,6 +1545,7 @@ async fn handle_read_jobs_tick(
 
         // Initialize data stream if needed (opens file, sends digest for overwrite detection)
         if let Err(err) = init_read_job_for_cm(job, tx, conn_id).await {
+            send_file_transfer_audit(tx, job, "failed", "source_init_error", conn_id);
             if let Err(e) = tx.send(Data::FileReadError {
                 id: job.id,
                 file_num: job.file_num(),
@@ -1481,8 +1559,10 @@ async fn handle_read_jobs_tick(
         }
 
         // Read a block from the file
+        let before_transferred = job.transferred();
         match job.read().await {
             Err(err) => {
+                send_file_transfer_audit(tx, job, "failed", "source_read_error", conn_id);
                 if let Err(e) = tx.send(Data::FileReadError {
                     id: job.id,
                     file_num: job.file_num(),
@@ -1497,6 +1577,7 @@ async fn handle_read_jobs_tick(
                 finished.push(job.id);
             }
             Ok(Some(block)) => {
+                maybe_send_file_transfer_progress(tx, job, before_transferred, conn_id);
                 if let Err(e) = tx.send(Data::FileBlockFromCM {
                     id: block.id,
                     file_num: block.file_num,
@@ -1513,6 +1594,13 @@ async fn handle_read_jobs_tick(
                     finished.push(job.id);
                     match job.job_error() {
                         Some(err) => {
+                            send_file_transfer_audit(
+                                tx,
+                                job,
+                                "failed",
+                                "source_read_error",
+                                conn_id,
+                            );
                             if let Err(e) = tx.send(Data::FileReadError {
                                 id: job.id,
                                 file_num: job.file_num(),
@@ -1523,6 +1611,7 @@ async fn handle_read_jobs_tick(
                             }
                         }
                         None => {
+                            send_file_transfer_audit(tx, job, "completed", "", conn_id);
                             if let Err(e) = tx.send(Data::FileReadDone {
                                 id: job.id,
                                 file_num: job.file_num(),
@@ -1864,6 +1953,32 @@ mod tests {
         let _ = file_error(data);
     }
 
+    fn assert_file_audit(
+        data: Data,
+        id: i32,
+        expected_transferred: u64,
+        state: &str,
+        reason: &str,
+    ) {
+        let Data::FileTransferAudit {
+            id: audit_id,
+            total_size,
+            transferred: audit_transferred,
+            state: audit_state,
+            reason: audit_reason,
+            conn_id,
+        } = data
+        else {
+            panic!("expected file transfer audit");
+        };
+        assert_eq!(audit_id, id);
+        assert_eq!(total_size, 1);
+        assert_eq!(audit_transferred, expected_transferred);
+        assert_eq!(audit_state, state);
+        assert_eq!(audit_reason, reason);
+        assert_eq!(conn_id, 1);
+    }
+
     #[test]
     #[cfg(not(any(target_os = "ios")))]
     fn cm_rejects_wire_total_mismatch_before_creating_a_write_job() {
@@ -1897,6 +2012,7 @@ mod tests {
             .await;
 
             assert!(write_jobs.is_empty());
+            assert_file_audit(rx.recv().await.unwrap(), 501, 0, "failed", "invalid_total");
             assert_file_error(rx.recv().await.unwrap());
             fs::remove_dir_all(dir).unwrap();
         });
@@ -1950,6 +2066,7 @@ mod tests {
             .await;
 
             assert!(write_jobs.is_empty());
+            assert_file_audit(rx.recv().await.unwrap(), 502, 0, "failed", "write_error");
             assert_file_error(rx.recv().await.unwrap());
             handle_fs(
                 ipc::FS::WriteDone {
@@ -2033,6 +2150,7 @@ mod tests {
             .await;
 
             assert!(write_jobs.is_empty());
+            assert_file_audit(rx.recv().await.unwrap(), 503, 1, "failed", "finalize_error");
             assert_file_error(rx.recv().await.unwrap());
             assert!(rx.try_recv().is_err());
             fs::remove_dir_all(dir).unwrap();
