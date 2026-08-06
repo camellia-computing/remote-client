@@ -386,6 +386,14 @@ pub enum Data {
     #[cfg(windows)]
     SyncWinCpuUsage(Option<f64>),
     FileTransferLog((String, String)),
+    FileTransferAudit {
+        id: i32,
+        total_size: u64,
+        transferred: u64,
+        state: String,
+        reason: String,
+        conn_id: i32,
+    },
     #[cfg(windows)]
     ControlledSessionCount(usize),
     CmErr(String),
@@ -2234,6 +2242,33 @@ mod test {
         };
         assert_eq!(blk_id, u32::MAX);
         assert!(data.is_empty(), "raw block data must remain out-of-band");
+
+        let audit = Data::FileTransferAudit {
+            id: 7,
+            total_size: (8u64 << 30) + 17,
+            transferred: (4u64 << 30) + 9,
+            state: "progress".to_owned(),
+            reason: String::new(),
+            conn_id: 2,
+        };
+        let encoded = serde_json::to_vec(&audit).unwrap();
+        let decoded: Data = serde_json::from_slice(&encoded).unwrap();
+        let Data::FileTransferAudit {
+            id,
+            total_size,
+            transferred,
+            state,
+            reason,
+            conn_id,
+        } = decoded
+        else {
+            panic!("wrong IPC variant");
+        };
+        assert_eq!((id, conn_id), (7, 2));
+        assert_eq!(total_size, (8u64 << 30) + 17);
+        assert_eq!(transferred, (4u64 << 30) + 9);
+        assert_eq!(state, "progress");
+        assert!(reason.is_empty());
     }
 
     #[test]

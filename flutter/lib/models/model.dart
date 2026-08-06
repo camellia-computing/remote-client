@@ -61,13 +61,24 @@ final _auditSessionCapabilityPattern = RegExp(
 );
 
 @visibleForTesting
-String auditSessionCapabilityFromResponseBody(String body) {
+String auditSessionCapabilityFromResponseBody(
+  String body, {
+  required String expectedEventId,
+}) {
   try {
     final payload = jsonDecode(body);
     if (payload is! Map<String, dynamic> ||
-        payload['version'] != 2 ||
-        payload['revision'] is! int ||
-        (payload['revision'] as int) < 1 ||
+        payload['version'] != 3 ||
+        payload['acknowledged_event_id'] != expectedEventId ||
+        payload['event_revision'] is! int ||
+        (payload['event_revision'] as int) < 1 ||
+        payload['state'] != 'active' ||
+        payload['state_revision'] is! int ||
+        (payload['state_revision'] as int) < 1 ||
+        payload['heartbeat_revision'] is! int ||
+        (payload['heartbeat_revision'] as int) < 0 ||
+        payload['lease_remaining_seconds'] is! int ||
+        (payload['lease_remaining_seconds'] as int) < 1 ||
         payload['audit_session_id'] is! String) {
       return '';
     }
@@ -1478,7 +1489,7 @@ class FfiModel with ChangeNotifier {
         }
 
         final fullUrl =
-            '$url?version=2&event_id=$auditBindEventId&id=$peerId&session_id=$currentConnSessionId&conn_type=$connType';
+            '$url?version=3&event_id=$auditBindEventId&id=$peerId&session_id=$currentConnSessionId&conn_type=$connType';
 
         debugPrint(
           'Querying audit GUID, attempt $attempt/${retryIntervals.length}',
@@ -1492,6 +1503,7 @@ class FfiModel with ChangeNotifier {
           if (response.statusCode == 200) {
             final auditSessionId = auditSessionCapabilityFromResponseBody(
               response.body,
+              expectedEventId: auditBindEventId,
             );
             if (auditSessionId.isNotEmpty) {
               bind.sessionSetAuditGuid(
