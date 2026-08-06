@@ -73,12 +73,20 @@ use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use crate::virtual_display_manager;
 pub type Sender = mpsc::UnboundedSender<(Instant, Arc<Message>)>;
 
-const AUDIT_PROTOCOL_VERSION: u8 = 2;
+const AUDIT_PROTOCOL_VERSION: u8 = 3;
+const AUDIT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
+const AUDIT_POST_TIMEOUT: Duration = Duration::from_secs(5);
+const AUDIT_LIFECYCLE_RETRY_WINDOW: Duration = Duration::from_secs(90);
+const AUDIT_QUEUE_CAPACITY: usize = 64;
+const AUDIT_RESERVED_SLOTS: usize = 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AuditPostKind {
     Open,
-    Event,
+    Lifecycle,
+    Heartbeat,
+    Close,
+    Evidence,
 }
 
 #[derive(Debug)]
@@ -86,13 +94,19 @@ struct AuditPost {
     url: String,
     body: Value,
     kind: AuditPostKind,
+    created_at: Instant,
 }
 
 #[derive(Deserialize)]
 struct AuditPostResponse {
     version: u8,
     audit_session_id: String,
-    revision: u64,
+    acknowledged_event_id: String,
+    event_revision: u64,
+    state: String,
+    state_revision: u64,
+    heartbeat_revision: u64,
+    lease_remaining_seconds: u64,
 }
 
 lazy_static::lazy_static! {
@@ -363,12 +377,14 @@ pub struct Connection {
     multi_ui_session: bool,
     tx_from_authed: mpsc::UnboundedSender<ipc::Data>,
     printer_data: Vec<(Instant, String, Vec<u8>)>,
-    // For post requests that need to be sent sequentially.
-    // eg. post_conn_audit
-    tx_post_seq: mpsc::UnboundedSender<AuditPost>,
+    // All audit telemetry stays ordered in one bounded queue. Heartbeat and
+    // evidence producers preserve reserved capacity for the terminal close.
+    tx_audit: mpsc::Sender<AuditPost>,
     conn_audit_primary_auth: ConnAuditPrimaryAuth,
     conn_audit_two_factor: ConnAuditTwoFactor,
     audit_opened: bool,
+    audit_heartbeat_revision: u64,
+    last_audit_heartbeat: Instant,
     // Tracks read job IDs delegated to CM process.
     // When a read job is delegated to CM (via FS::ReadFile), the job id is added here.
     // Used to filter stale responses (FileBlockFromCM, FileReadDone, etc.) for
@@ -469,9 +485,9 @@ impl Connection {
         let linux_headless_handle =
             LinuxHeadlessHandle::new(_rx_cm_stream_ready, _tx_desktop_ready);
 
-        let (tx_post_seq, rx_post_seq) = mpsc::unbounded_channel();
+        let (tx_audit, rx_audit) = mpsc::channel(AUDIT_QUEUE_CAPACITY);
         tokio::spawn(async move {
-            Self::post_seq_loop(rx_post_seq).await;
+            Self::post_seq_loop(rx_audit).await;
         });
 
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -563,7 +579,7 @@ impl Connection {
             retina: Retina::default(),
             tx_from_authed,
             printer_data: Vec::new(),
-            tx_post_seq,
+            tx_audit,
             cm_read_job_ids: HashSet::new(),
             terminal_service_id: "".to_owned(),
             terminal_persistent: false,
@@ -574,6 +590,8 @@ impl Connection {
             conn_audit_primary_auth: ConnAuditPrimaryAuth::None,
             conn_audit_two_factor: ConnAuditTwoFactor::None,
             audit_opened: false,
+            audit_heartbeat_revision: 0,
+            last_audit_heartbeat: Instant::now(),
         };
         let addr = camellia_remote_protocol::try_into_v4(addr);
         if !conn.on_open(addr).await {
@@ -1050,6 +1068,7 @@ impl Connection {
                 _ = second_timer.tick() => {
                     #[cfg(windows)]
                     conn.portable_check();
+                    conn.maybe_post_conn_audit_heartbeat();
                     raii::AuthedConnID::check_wake_lock_on_setting_changed();
                     if let Some((instant, minute)) = conn.auto_disconnect_timer.as_ref() {
                         if instant.elapsed().as_secs() > minute * 60 {
@@ -1118,9 +1137,7 @@ impl Connection {
             raii::AuthedConnID::check_remove_session(conn.inner.id(), conn.session_key());
         }
 
-        conn.post_conn_audit(json!({
-            "action": "close",
-        }));
+        conn.post_conn_close_audit().await;
         if let Some(s) = conn.server.upgrade() {
             let mut s = s.write().unwrap();
             s.remove_connection(&conn.inner);
@@ -1215,27 +1232,44 @@ impl Connection {
             Ok(response) => response,
             Err(_) => bail!("Management returned an invalid audit response"),
         };
-        if response.version != AUDIT_PROTOCOL_VERSION || response.revision == 0 {
+        if response.version != AUDIT_PROTOCOL_VERSION
+            || response.event_revision == 0
+            || response.state_revision == 0
+        {
             bail!("Management returned an incompatible audit response");
         }
-        let capability = match Uuid::parse_str(&response.audit_session_id) {
-            Ok(capability) => capability,
-            Err(_) => bail!("Management returned an invalid audit session capability"),
-        };
-        if capability.get_version_num() != 4 || capability.to_string() != response.audit_session_id
-        {
-            bail!("Management returned an invalid audit session capability");
+        for (value, label) in [
+            (&response.audit_session_id, "audit session capability"),
+            (
+                &response.acknowledged_event_id,
+                "audit event acknowledgement",
+            ),
+        ] {
+            let parsed = match Uuid::parse_str(value) {
+                Ok(parsed) => parsed,
+                Err(_) => bail!("Management returned an invalid {label}"),
+            };
+            if parsed.get_version_num() != 4 || parsed.to_string() != *value {
+                bail!("Management returned an invalid {label}");
+            }
         }
         Ok(response)
     }
 
     fn validate_audit_progress(
         response: &AuditPostResponse,
-        kind: AuditPostKind,
+        request: &AuditPost,
         audit_session_id: Option<&str>,
-        revision: u64,
+        event_revision: u64,
+        state_revision: u64,
+        heartbeat_revision: u64,
     ) -> ResultType<()> {
-        match kind {
+        if request.body.get("event_id").and_then(Value::as_str)
+            != Some(response.acknowledged_event_id.as_str())
+        {
+            bail!("Management acknowledged a different audit event");
+        }
+        match request.kind {
             AuditPostKind::Open => {
                 if let Some(existing) = audit_session_id {
                     if existing != response.audit_session_id.as_str() {
@@ -1243,42 +1277,110 @@ impl Connection {
                     }
                 }
             }
-            AuditPostKind::Event => {
+            _ => {
                 if audit_session_id != Some(response.audit_session_id.as_str()) {
                     bail!("Management returned a mismatched audit session capability");
                 }
             }
         }
-        if response.revision <= revision {
-            bail!("Management returned a non-advancing audit session revision");
+        if response.event_revision < event_revision
+            || response.state_revision < state_revision
+            || response.heartbeat_revision < heartbeat_revision
+        {
+            bail!("Management returned regressing audit progress");
+        }
+        match request.kind {
+            AuditPostKind::Open | AuditPostKind::Lifecycle | AuditPostKind::Heartbeat => {
+                if !matches!(response.state.as_str(), "starting" | "active")
+                    || response.lease_remaining_seconds == 0
+                {
+                    bail!("Management returned a terminal or expired audit lease");
+                }
+            }
+            AuditPostKind::Close => {
+                if !matches!(response.state.as_str(), "closed" | "aborted")
+                    || response.lease_remaining_seconds != 0
+                {
+                    bail!("Management did not acknowledge the audit terminal state");
+                }
+            }
+            AuditPostKind::Evidence => {
+                if response.state != "active" || response.lease_remaining_seconds == 0 {
+                    bail!("Management accepted evidence outside an active audit lease");
+                }
+            }
+        }
+        if request.kind == AuditPostKind::Heartbeat {
+            let Some(requested_revision) = request
+                .body
+                .get("heartbeat_revision")
+                .and_then(Value::as_u64)
+            else {
+                bail!("Audit heartbeat is missing its revision");
+            };
+            if response.heartbeat_revision != requested_revision {
+                bail!("Management acknowledged a different audit heartbeat revision");
+            }
         }
         Ok(())
     }
 
-    async fn post_seq_loop(mut rx: mpsc::UnboundedReceiver<AuditPost>) {
-        let mut audit_session_id: Option<String> = None;
-        let mut revision = 0;
-        while let Some(mut request) = rx.recv().await {
-            request.body["version"] = json!(AUDIT_PROTOCOL_VERSION);
-            if request
-                .body
-                .get("event_id")
-                .and_then(Value::as_str)
-                .is_none()
+    fn audit_response_is_permanent_error(body: &str) -> bool {
+        let Ok(error) = serde_json::from_str::<Value>(body) else {
+            return false;
+        };
+        error.get("required_version").is_some()
+            || matches!(
+                error.get("state").and_then(Value::as_str),
+                Some("closed" | "aborted" | "expired")
+            )
+    }
+
+    async fn process_audit_post(
+        mut request: AuditPost,
+        audit_session_id: &mut Option<String>,
+        event_revision: &mut u64,
+        state_revision: &mut u64,
+        heartbeat_revision: &mut u64,
+    ) -> bool {
+        request.body["version"] = json!(AUDIT_PROTOCOL_VERSION);
+        if request.kind != AuditPostKind::Open {
+            let Some(capability) = audit_session_id.as_ref() else {
+                log::warn!("Dropping audit request because Management did not establish a session capability");
+                return false;
+            };
+            request.body["audit_session_id"] = json!(capability);
+        }
+        loop {
+            let response_body = match time::timeout(
+                AUDIT_POST_TIMEOUT,
+                Self::post_audit_async(request.url.clone(), request.body.clone()),
+            )
+            .await
             {
-                request.body["event_id"] = json!(Uuid::new_v4().to_string());
-            }
-            if request.kind == AuditPostKind::Event {
-                let Some(capability) = audit_session_id.as_ref() else {
-                    log::warn!("Dropping audit event because Management did not establish a session capability");
+                Ok(Ok(body)) => body,
+                Ok(Err(error)) => {
+                    log::warn!("Failed to post connection audit request: {error}");
+                    if !matches!(
+                        request.kind,
+                        AuditPostKind::Open | AuditPostKind::Lifecycle | AuditPostKind::Close
+                    ) || request.created_at.elapsed() >= AUDIT_LIFECYCLE_RETRY_WINDOW
+                    {
+                        return false;
+                    }
+                    time::sleep(Duration::from_secs(2)).await;
                     continue;
-                };
-                request.body["audit_session_id"] = json!(capability);
-            }
-            let response_body = match Self::post_audit_async(request.url, request.body).await {
-                Ok(body) => body,
-                Err(error) => {
-                    log::warn!("Failed to post connection audit event: {error}");
+                }
+                Err(_) => {
+                    log::warn!("Connection audit request timed out");
+                    if !matches!(
+                        request.kind,
+                        AuditPostKind::Open | AuditPostKind::Lifecycle | AuditPostKind::Close
+                    ) || request.created_at.elapsed() >= AUDIT_LIFECYCLE_RETRY_WINDOW
+                    {
+                        return false;
+                    }
+                    time::sleep(Duration::from_secs(2)).await;
                     continue;
                 }
             };
@@ -1286,22 +1388,54 @@ impl Connection {
                 Ok(response) => response,
                 Err(error) => {
                     log::warn!("Rejected Management audit response: {error}");
+                    if Self::audit_response_is_permanent_error(&response_body)
+                        || !matches!(
+                            request.kind,
+                            AuditPostKind::Open | AuditPostKind::Lifecycle | AuditPostKind::Close
+                        )
+                        || request.created_at.elapsed() >= AUDIT_LIFECYCLE_RETRY_WINDOW
+                    {
+                        return false;
+                    }
+                    time::sleep(Duration::from_secs(2)).await;
                     continue;
                 }
             };
             if let Err(error) = Self::validate_audit_progress(
                 &response,
-                request.kind,
+                &request,
                 audit_session_id.as_deref(),
-                revision,
+                *event_revision,
+                *state_revision,
+                *heartbeat_revision,
             ) {
                 log::warn!("Rejected Management audit progress: {error}");
-                continue;
+                return false;
             }
             if request.kind == AuditPostKind::Open && audit_session_id.is_none() {
-                audit_session_id = Some(response.audit_session_id.clone());
+                *audit_session_id = Some(response.audit_session_id.clone());
             }
-            revision = response.revision;
+            *event_revision = response.event_revision;
+            *state_revision = response.state_revision;
+            *heartbeat_revision = response.heartbeat_revision;
+            return true;
+        }
+    }
+
+    async fn post_seq_loop(mut rx: mpsc::Receiver<AuditPost>) {
+        let mut audit_session_id: Option<String> = None;
+        let mut event_revision = 0;
+        let mut state_revision = 0;
+        let mut heartbeat_revision = 0;
+        while let Some(request) = rx.recv().await {
+            Self::process_audit_post(
+                request,
+                &mut audit_session_id,
+                &mut event_revision,
+                &mut state_revision,
+                &mut heartbeat_revision,
+            )
+            .await;
         }
         log::debug!("post_seq_loop exited");
     }
@@ -1463,28 +1597,98 @@ impl Connection {
         }
     }
 
-    fn enqueue_audit(&self, url: String, mut body: Value, kind: AuditPostKind) {
+    fn prepare_audit_post(url: String, mut body: Value, kind: AuditPostKind) -> AuditPost {
         body["version"] = json!(AUDIT_PROTOCOL_VERSION);
         body["event_id"] = json!(Uuid::new_v4().to_string());
-        allow_err!(self.tx_post_seq.send(AuditPost { url, body, kind }));
+        AuditPost {
+            url,
+            body,
+            kind,
+            created_at: Instant::now(),
+        }
     }
 
-    fn post_conn_audit(&self, v: Value) {
+    fn try_enqueue_audit(&self, request: AuditPost) -> bool {
+        let kind = request.kind;
+        if matches!(kind, AuditPostKind::Heartbeat | AuditPostKind::Evidence)
+            && self.tx_audit.capacity() <= AUDIT_RESERVED_SLOTS
+        {
+            log::warn!("Dropping {kind:?} audit request to preserve lifecycle queue capacity");
+            return false;
+        }
+        match self.tx_audit.try_send(request) {
+            Ok(()) => true,
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                log::warn!("Dropping {kind:?} audit request because its bounded queue is full");
+                false
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                log::warn!("Dropping {kind:?} audit request because its worker stopped");
+                false
+            }
+        }
+    }
+
+    fn prepare_conn_audit(&self, mut body: Value, kind: AuditPostKind) -> Option<AuditPost> {
         if self.server_audit_conn.is_empty() {
+            return None;
+        }
+        body["id"] = json!(Config::get_id());
+        body["uuid"] = json!(crate::encode64(camellia_remote_protocol::get_uuid()));
+        body["conn_id"] = json!(self.inner.id);
+        body["session_id"] = json!(self.lr.session_id);
+        Some(Self::prepare_audit_post(
+            self.server_audit_conn.clone(),
+            body,
+            kind,
+        ))
+    }
+
+    fn post_conn_audit(&self, body: Value) -> bool {
+        let kind = match body.get("action").and_then(Value::as_str) {
+            Some("new") => AuditPostKind::Open,
+            Some("heartbeat") => AuditPostKind::Heartbeat,
+            Some("close") => AuditPostKind::Close,
+            _ => AuditPostKind::Lifecycle,
+        };
+        self.prepare_conn_audit(body, kind)
+            .map(|request| self.try_enqueue_audit(request))
+            .unwrap_or(false)
+    }
+
+    fn maybe_post_conn_audit_heartbeat(&mut self) {
+        if !self.audit_opened
+            || self.last_audit_heartbeat.elapsed() < AUDIT_HEARTBEAT_INTERVAL
+            || self.tx_audit.capacity() <= AUDIT_RESERVED_SLOTS
+        {
             return;
         }
-        let url = self.server_audit_conn.clone();
-        let mut v = v;
-        let kind = if v.get("action").and_then(Value::as_str) == Some("new") {
-            AuditPostKind::Open
-        } else {
-            AuditPostKind::Event
+        let Some(revision) = self.audit_heartbeat_revision.checked_add(1) else {
+            log::error!("Connection audit heartbeat revision exhausted");
+            return;
         };
-        v["id"] = json!(Config::get_id());
-        v["uuid"] = json!(crate::encode64(camellia_remote_protocol::get_uuid()));
-        v["conn_id"] = json!(self.inner.id);
-        v["session_id"] = json!(self.lr.session_id);
-        self.enqueue_audit(url, v, kind);
+        if self.post_conn_audit(json!({
+            "action": "heartbeat",
+            "heartbeat_revision": revision,
+        })) {
+            self.audit_heartbeat_revision = revision;
+            self.last_audit_heartbeat = Instant::now();
+        }
+    }
+
+    async fn post_conn_close_audit(&self) {
+        let Some(request) =
+            self.prepare_conn_audit(json!({"action": "close"}), AuditPostKind::Close)
+        else {
+            return;
+        };
+        match time::timeout(Duration::from_secs(1), self.tx_audit.send(request)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => {
+                log::warn!("Connection audit worker stopped before close could be queued")
+            }
+            Err(_) => log::warn!("Timed out reserving bounded capacity for connection audit close"),
+        }
     }
 
     fn get_files_for_audit(job_type: fs::JobType, mut files: Vec<FileEntry>) -> Vec<(String, i64)> {
@@ -1534,7 +1738,7 @@ impl Connection {
             "is_file":is_file,
             "info":json!(info).to_string(),
         });
-        self.enqueue_audit(url, v, AuditPostKind::Event);
+        self.try_enqueue_audit(Self::prepare_audit_post(url, v, AuditPostKind::Evidence));
     }
 
     fn post_alarm_audit(&self, typ: AlarmAuditType, info: Value) {
@@ -1557,7 +1761,7 @@ impl Connection {
                 v["conn_audit_ref"] = json!(audit_ref);
             }
         }
-        self.enqueue_audit(url, v, AuditPostKind::Event);
+        self.try_enqueue_audit(Self::prepare_audit_post(url, v, AuditPostKind::Evidence));
     }
 
     fn post_session_scope_violation_alarm(&self, message: &'static str) {
@@ -6874,52 +7078,273 @@ mod test {
     }
 
     #[test]
-    fn audit_response_requires_v2_uuid4_capability_and_positive_revision() {
+    fn audit_response_requires_v3_lease_state_acknowledgement_and_monotonic_revisions() {
         let capability = Uuid::new_v4().to_string();
+        let event_id = Uuid::new_v4().to_string();
+        let request = AuditPost {
+            url: String::new(),
+            body: json!({"event_id": event_id}),
+            kind: AuditPostKind::Open,
+            created_at: Instant::now(),
+        };
         let response = Connection::parse_audit_post_response(
             &json!({
                 "version": AUDIT_PROTOCOL_VERSION,
                 "audit_session_id": capability,
-                "revision": 7,
+                "acknowledged_event_id": event_id,
+                "event_revision": 7,
+                "state": "starting",
+                "state_revision": 1,
+                "heartbeat_revision": 0,
+                "lease_remaining_seconds": 90,
             })
             .to_string(),
         )
         .unwrap();
         assert_eq!(response.version, AUDIT_PROTOCOL_VERSION);
-        assert_eq!(response.revision, 7);
-        assert!(
-            Connection::validate_audit_progress(&response, AuditPostKind::Open, None, 0,).is_ok()
-        );
+        assert_eq!(response.event_revision, 7);
+        assert!(Connection::validate_audit_progress(&response, &request, None, 0, 0, 0).is_ok());
+        let mismatched_event = AuditPost {
+            url: String::new(),
+            body: json!({"event_id": Uuid::new_v4().to_string()}),
+            kind: AuditPostKind::Lifecycle,
+            created_at: Instant::now(),
+        };
         assert!(Connection::validate_audit_progress(
             &response,
-            AuditPostKind::Event,
+            &mismatched_event,
             Some(&capability),
             7,
+            1,
+            0,
         )
         .is_err());
+        let matching_event = AuditPost {
+            url: String::new(),
+            body: json!({"event_id": event_id}),
+            kind: AuditPostKind::Lifecycle,
+            created_at: Instant::now(),
+        };
         assert!(Connection::validate_audit_progress(
             &response,
-            AuditPostKind::Event,
+            &matching_event,
             Some(&Uuid::new_v4().to_string()),
             6,
+            1,
+            0,
         )
         .is_err());
+
+        // A lifecycle POST may be replayed after Management committed it but
+        // its response was lost. Repeating validation of the same event and
+        // server revision must remain acceptable.
+        assert!(Connection::validate_audit_progress(
+            &response,
+            &matching_event,
+            Some(&capability),
+            6,
+            1,
+            0,
+        )
+        .is_ok());
+        assert!(Connection::validate_audit_progress(
+            &response,
+            &matching_event,
+            Some(&capability),
+            6,
+            1,
+            0,
+        )
+        .is_ok());
+
+        let heartbeat_event_id = Uuid::new_v4().to_string();
+        let heartbeat_request = AuditPost {
+            url: String::new(),
+            body: json!({
+                "event_id": heartbeat_event_id,
+                "heartbeat_revision": 2,
+            }),
+            kind: AuditPostKind::Heartbeat,
+            created_at: Instant::now(),
+        };
+        let heartbeat_response = Connection::parse_audit_post_response(
+            &json!({
+                "version": AUDIT_PROTOCOL_VERSION,
+                "audit_session_id": capability,
+                "acknowledged_event_id": heartbeat_event_id,
+                "event_revision": 7,
+                "state": "active",
+                "state_revision": 2,
+                "heartbeat_revision": 2,
+                "lease_remaining_seconds": 89,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(Connection::validate_audit_progress(
+            &heartbeat_response,
+            &heartbeat_request,
+            Some(&capability),
+            7,
+            2,
+            1,
+        )
+        .is_ok());
+        let wrong_heartbeat_response = AuditPostResponse {
+            heartbeat_revision: 3,
+            ..heartbeat_response
+        };
+        assert!(Connection::validate_audit_progress(
+            &wrong_heartbeat_response,
+            &heartbeat_request,
+            Some(&capability),
+            7,
+            2,
+            1,
+        )
+        .is_err());
+
+        for terminal_state in ["closed", "aborted"] {
+            let close_event_id = Uuid::new_v4().to_string();
+            let close_request = AuditPost {
+                url: String::new(),
+                body: json!({"event_id": close_event_id}),
+                kind: AuditPostKind::Close,
+                created_at: Instant::now(),
+            };
+            let close_response = Connection::parse_audit_post_response(
+                &json!({
+                    "version": AUDIT_PROTOCOL_VERSION,
+                    "audit_session_id": capability,
+                    "acknowledged_event_id": close_event_id,
+                    "event_revision": 8,
+                    "state": terminal_state,
+                    "state_revision": 3,
+                    "heartbeat_revision": 2,
+                    "lease_remaining_seconds": 0,
+                })
+                .to_string(),
+            )
+            .unwrap();
+            assert!(Connection::validate_audit_progress(
+                &close_response,
+                &close_request,
+                Some(&capability),
+                7,
+                2,
+                2,
+            )
+            .is_ok());
+        }
+
+        for (terminal_state, lease_remaining_seconds) in
+            [("active", 0), ("closed", 1), ("expired", 0)]
+        {
+            let close_event_id = Uuid::new_v4().to_string();
+            let close_request = AuditPost {
+                url: String::new(),
+                body: json!({"event_id": close_event_id}),
+                kind: AuditPostKind::Close,
+                created_at: Instant::now(),
+            };
+            let invalid_close = Connection::parse_audit_post_response(
+                &json!({
+                    "version": AUDIT_PROTOCOL_VERSION,
+                    "audit_session_id": capability,
+                    "acknowledged_event_id": close_event_id,
+                    "event_revision": 8,
+                    "state": terminal_state,
+                    "state_revision": 3,
+                    "heartbeat_revision": 2,
+                    "lease_remaining_seconds": lease_remaining_seconds,
+                })
+                .to_string(),
+            )
+            .unwrap();
+            assert!(Connection::validate_audit_progress(
+                &invalid_close,
+                &close_request,
+                Some(&capability),
+                7,
+                2,
+                2,
+            )
+            .is_err());
+        }
+
+        let evidence_event_id = Uuid::new_v4().to_string();
+        let evidence_request = AuditPost {
+            url: String::new(),
+            body: json!({"event_id": evidence_event_id}),
+            kind: AuditPostKind::Evidence,
+            created_at: Instant::now(),
+        };
+        for terminal_state in ["closed", "expired"] {
+            let terminal_evidence = Connection::parse_audit_post_response(
+                &json!({
+                    "version": AUDIT_PROTOCOL_VERSION,
+                    "audit_session_id": capability,
+                    "acknowledged_event_id": evidence_event_id,
+                    "event_revision": 8,
+                    "state": terminal_state,
+                    "state_revision": 3,
+                    "heartbeat_revision": 2,
+                    "lease_remaining_seconds": 0,
+                })
+                .to_string(),
+            )
+            .unwrap();
+            assert!(Connection::validate_audit_progress(
+                &terminal_evidence,
+                &evidence_request,
+                Some(&capability),
+                7,
+                2,
+                2,
+            )
+            .is_err());
+        }
 
         for invalid in [
             json!({
                 "version": 1,
                 "audit_session_id": Uuid::new_v4().to_string(),
-                "revision": 1,
+                "acknowledged_event_id": Uuid::new_v4().to_string(),
+                "event_revision": 1,
+                "state": "starting",
+                "state_revision": 1,
+                "heartbeat_revision": 0,
+                "lease_remaining_seconds": 90,
             }),
             json!({
                 "version": AUDIT_PROTOCOL_VERSION,
                 "audit_session_id": Uuid::nil().to_string(),
-                "revision": 1,
+                "acknowledged_event_id": Uuid::new_v4().to_string(),
+                "event_revision": 1,
+                "state": "starting",
+                "state_revision": 1,
+                "heartbeat_revision": 0,
+                "lease_remaining_seconds": 90,
             }),
             json!({
                 "version": AUDIT_PROTOCOL_VERSION,
                 "audit_session_id": Uuid::new_v4().to_string(),
-                "revision": 0,
+                "acknowledged_event_id": Uuid::nil().to_string(),
+                "event_revision": 1,
+                "state": "starting",
+                "state_revision": 1,
+                "heartbeat_revision": 0,
+                "lease_remaining_seconds": 90,
+            }),
+            json!({
+                "version": AUDIT_PROTOCOL_VERSION,
+                "audit_session_id": Uuid::new_v4().to_string(),
+                "acknowledged_event_id": Uuid::new_v4().to_string(),
+                "event_revision": 0,
+                "state": "starting",
+                "state_revision": 1,
+                "heartbeat_revision": 0,
+                "lease_remaining_seconds": 90,
             }),
             json!({"error": "Connection is closed"}),
         ] {

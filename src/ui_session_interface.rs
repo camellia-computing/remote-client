@@ -48,6 +48,7 @@ use crate::keyboard;
 use crate::{client::Data, client::Interface};
 
 const CHANGE_RESOLUTION_VALID_TIMEOUT_SECS: u64 = 15;
+const AUDIT_PROTOCOL_VERSION: u64 = 3;
 
 #[derive(Clone, Default)]
 pub struct Session<T: InvokeUiSession> {
@@ -1955,9 +1956,10 @@ async fn start_one_port_forward<T: InvokeUiSession>(
 
 #[tokio::main(flavor = "current_thread")]
 async fn send_note(url: String, audit_session_id: String, note: String) -> ResultType<()> {
+    let event_id = Uuid::new_v4().to_string();
     let body = serde_json::json!({
-        "version": 2,
-        "event_id": Uuid::new_v4().to_string(),
+        "version": AUDIT_PROTOCOL_VERSION,
+        "event_id": &event_id,
         "audit_session_id": &audit_session_id,
         "note": note,
     });
@@ -1965,14 +1967,37 @@ async fn send_note(url: String, audit_session_id: String, note: String) -> Resul
         bail!("API account session required for an audit note");
     };
     let response = crate::post_request(url, body.to_string(), &auth_header).await?;
-    validate_audit_note_response(&response, &audit_session_id)
+    validate_audit_note_response(&response, &audit_session_id, &event_id)
 }
 
-fn validate_audit_note_response(body: &str, expected_audit_session_id: &str) -> ResultType<()> {
+fn validate_audit_note_response(
+    body: &str,
+    expected_audit_session_id: &str,
+    expected_event_id: &str,
+) -> ResultType<()> {
     let response: serde_json::Value = serde_json::from_str(body)?;
-    if response.get("version").and_then(serde_json::Value::as_u64) != Some(2)
+    if response.get("version").and_then(serde_json::Value::as_u64) != Some(AUDIT_PROTOCOL_VERSION)
         || response
-            .get("revision")
+            .get("acknowledged_event_id")
+            .and_then(serde_json::Value::as_str)
+            != Some(expected_event_id)
+        || response
+            .get("event_revision")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0)
+            == 0
+        || response
+            .get("state_revision")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0)
+            == 0
+        || response
+            .get("heartbeat_revision")
+            .and_then(serde_json::Value::as_u64)
+            .is_none()
+        || response.get("state").and_then(serde_json::Value::as_str) != Some("active")
+        || response
+            .get("lease_remaining_seconds")
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0)
             == 0
@@ -1987,6 +2012,10 @@ fn validate_audit_note_response(body: &str, expected_audit_session_id: &str) -> 
     if capability.get_version_num() != 4 || capability.to_string() != expected_audit_session_id {
         bail!("Management returned an invalid audit session capability");
     }
+    let event_id = Uuid::parse_str(expected_event_id)?;
+    if event_id.get_version_num() != 4 || event_id.to_string() != expected_event_id {
+        bail!("Management returned an invalid audit event acknowledgement");
+    }
     Ok(())
 }
 
@@ -1995,33 +2024,66 @@ mod audit_tests {
     use super::*;
 
     #[test]
-    fn audit_note_response_is_bound_to_the_v2_session_capability() {
+    fn audit_note_response_is_bound_to_the_v3_active_session_lease_and_event() {
         let capability = Uuid::new_v4().to_string();
+        let event_id = Uuid::new_v4().to_string();
         let valid = serde_json::json!({
-            "version": 2,
+            "version": AUDIT_PROTOCOL_VERSION,
             "audit_session_id": capability,
-            "revision": 4,
+            "acknowledged_event_id": event_id,
+            "event_revision": 4,
+            "state": "active",
+            "state_revision": 2,
+            "heartbeat_revision": 1,
+            "lease_remaining_seconds": 89,
         });
-        assert!(validate_audit_note_response(&valid.to_string(), &capability).is_ok());
+        assert!(validate_audit_note_response(&valid.to_string(), &capability, &event_id).is_ok());
 
         for invalid in [
             serde_json::json!({
-                "version": 1,
+                "version": 2,
                 "audit_session_id": capability,
-                "revision": 4,
+                "acknowledged_event_id": event_id,
+                "event_revision": 4,
+                "state": "active",
+                "state_revision": 2,
+                "heartbeat_revision": 1,
+                "lease_remaining_seconds": 89,
             }),
             serde_json::json!({
-                "version": 2,
+                "version": AUDIT_PROTOCOL_VERSION,
                 "audit_session_id": Uuid::new_v4().to_string(),
-                "revision": 4,
+                "acknowledged_event_id": event_id,
+                "event_revision": 4,
+                "state": "active",
+                "state_revision": 2,
+                "heartbeat_revision": 1,
+                "lease_remaining_seconds": 89,
             }),
             serde_json::json!({
-                "version": 2,
+                "version": AUDIT_PROTOCOL_VERSION,
                 "audit_session_id": capability,
-                "revision": 0,
+                "acknowledged_event_id": Uuid::new_v4().to_string(),
+                "event_revision": 4,
+                "state": "active",
+                "state_revision": 2,
+                "heartbeat_revision": 1,
+                "lease_remaining_seconds": 89,
+            }),
+            serde_json::json!({
+                "version": AUDIT_PROTOCOL_VERSION,
+                "audit_session_id": capability,
+                "acknowledged_event_id": event_id,
+                "event_revision": 4,
+                "state": "closed",
+                "state_revision": 3,
+                "heartbeat_revision": 1,
+                "lease_remaining_seconds": 0,
             }),
         ] {
-            assert!(validate_audit_note_response(&invalid.to_string(), &capability).is_err());
+            assert!(
+                validate_audit_note_response(&invalid.to_string(), &capability, &event_id).is_err()
+            );
         }
     }
 }
