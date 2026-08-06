@@ -1523,10 +1523,21 @@ impl Connection {
             };
             request.body["audit_session_id"] = json!(capability);
         }
+        let Some(event_id) = request.body.get("event_id").and_then(Value::as_str) else {
+            log::warn!("Dropping audit request without an operation event ID");
+            return false;
+        };
+        let operation = match crate::common::HttpOperation::from_event_id(event_id) {
+            Ok(operation) => operation,
+            Err(error) => {
+                log::warn!("Dropping audit request with an invalid operation event ID: {error}");
+                return false;
+            }
+        };
         loop {
             let response_body = match time::timeout(
                 AUDIT_POST_TIMEOUT,
-                Self::post_audit_async(request.url.clone(), request.body.clone()),
+                Self::post_audit_async(request.url.clone(), request.body.clone(), &operation),
             )
             .await
             {
@@ -2227,11 +2238,16 @@ impl Connection {
     }
 
     #[inline]
-    async fn post_audit_async(url: String, v: Value) -> ResultType<String> {
+    async fn post_audit_async(
+        url: String,
+        v: Value,
+        operation: &crate::common::HttpOperation,
+    ) -> ResultType<String> {
         let Some(auth_header) = crate::get_api_auth_header() else {
             bail!("API account session required for audit upload");
         };
-        crate::post_request(url, v.to_string(), &auth_header).await
+        crate::common::post_request_with_operation(url, v.to_string(), &auth_header, operation)
+            .await
     }
 
     fn set_conn_audit_primary_auth(&mut self, method: ConnAuditPrimaryAuth) {

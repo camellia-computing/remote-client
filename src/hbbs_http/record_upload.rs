@@ -157,7 +157,12 @@ impl RecordUploader {
         }
     }
 
-    fn request<Q, B>(&mut self, query: &Q, body: B) -> ResultType<RemoteUploadState>
+    fn request<Q, B>(
+        &mut self,
+        operation_event_id: &str,
+        query: &Q,
+        body: B,
+    ) -> ResultType<RemoteUploadState>
     where
         Q: serde::Serialize + ?Sized,
         B: Into<Body>,
@@ -171,13 +176,18 @@ impl RecordUploader {
         let Some(access_token) = crate::get_api_access_token() else {
             bail!("API account session required for recording upload");
         };
-        let response = self
+        let operation = crate::common::HttpOperation::from_event_id(operation_event_id)?;
+        let mut request = self
             .client
             .post(format!("{}/api/record", self.api_server))
             .bearer_auth(access_token)
             .query(query)
             .body(body)
-            .timeout(UPLOAD_TIMEOUT)
+            .timeout(UPLOAD_TIMEOUT);
+        for (name, value) in operation.correlation_headers() {
+            request = request.header(name, value);
+        }
+        let response = request
             .send()
             .map_err(|error| camellia_remote_protocol::anyhow::anyhow!(error.to_string()))?;
         let status = response.status();
@@ -277,6 +287,7 @@ impl RecordUploader {
             return Ok(());
         }
         let response = self.request(
+            &state.create_id,
             &[
                 ("version", PROTOCOL_VERSION.to_string()),
                 ("type", "new".to_owned()),
@@ -351,6 +362,7 @@ impl RecordUploader {
         };
         let upload_id = required_upload_id(&state)?;
         let response = self.request(
+            &pending.chunk_id,
             &[
                 ("version", PROTOCOL_VERSION.to_string()),
                 ("type", "status".to_owned()),
@@ -384,6 +396,7 @@ impl RecordUploader {
         let state = self.current_state()?;
         let upload_id = required_upload_id(state)?.to_owned();
         self.request(
+            &pending.chunk_id,
             &[
                 ("version", PROTOCOL_VERSION.to_string()),
                 ("type", "part".to_owned()),
@@ -456,6 +469,7 @@ impl RecordUploader {
         }
         let upload_id = required_upload_id(&state)?;
         let response = self.request(
+            upload_id,
             &[
                 ("version", PROTOCOL_VERSION.to_string()),
                 ("type", "finalize".to_owned()),
@@ -497,6 +511,7 @@ impl RecordUploader {
         state = self.current_state()?.clone();
         let upload_id = required_upload_id(&state)?;
         let response = self.request(
+            upload_id,
             &[
                 ("version", PROTOCOL_VERSION.to_string()),
                 ("type", "abort".to_owned()),

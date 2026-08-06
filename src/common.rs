@@ -64,6 +64,49 @@ pub const TIMER_OUT: Duration = Duration::from_secs(1);
 pub const DEFAULT_KEEP_ALIVE: i32 = 60_000;
 
 const MIN_VER_MULTI_UI_SESSION: &str = "1.2.4";
+const TRACEPARENT_HEADER: &str = "traceparent";
+const CAMELLIA_EVENT_ID_HEADER: &str = "X-Camellia-Event-ID";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct HttpOperation {
+    trace_id: String,
+    event_id: String,
+}
+
+impl HttpOperation {
+    pub(crate) fn new() -> Self {
+        let event_id = uuid::Uuid::new_v4();
+        Self {
+            trace_id: event_id.simple().to_string(),
+            event_id: event_id.to_string(),
+        }
+    }
+
+    pub(crate) fn from_event_id(event_id: &str) -> ResultType<Self> {
+        let parsed = uuid::Uuid::parse_str(event_id)?;
+        if parsed.get_version_num() != 4
+            || parsed.get_variant() != uuid::Variant::RFC4122
+            || parsed.to_string() != event_id
+        {
+            bail!("HTTP operation event ID must be a canonical UUIDv4");
+        }
+        Ok(Self {
+            trace_id: parsed.simple().to_string(),
+            event_id: event_id.to_owned(),
+        })
+    }
+
+    pub(crate) fn correlation_headers(&self) -> [(String, String); 2] {
+        let span_id = format!("{:016x}", uuid::Uuid::new_v4().as_u128() as u64);
+        [
+            (
+                TRACEPARENT_HEADER.to_owned(),
+                format!("00-{}-{span_id}-01", self.trace_id),
+            ),
+            (CAMELLIA_EVENT_ID_HEADER.to_owned(), self.event_id.clone()),
+        ]
+    }
+}
 
 pub mod input {
     pub const MOUSE_TYPE_MOVE: i32 = 0;
@@ -1171,9 +1214,33 @@ fn parse_simple_header(header: &str) -> Vec<HeaderEntry> {
     entries
 }
 
+fn post_header_entries(header: &str, operation: &HttpOperation) -> Vec<HeaderEntry> {
+    let mut entries = parse_simple_header(header);
+    entries.retain(|entry| {
+        !entry.name.eq_ignore_ascii_case(TRACEPARENT_HEADER)
+            && !entry.name.eq_ignore_ascii_case(CAMELLIA_EVENT_ID_HEADER)
+    });
+    entries.extend(
+        operation
+            .correlation_headers()
+            .into_iter()
+            .map(|(name, value)| HeaderEntry {
+                name,
+                value,
+                ..Default::default()
+            }),
+    );
+    entries
+}
+
 /// POST request via TCP proxy.
-async fn post_request_via_tcp_proxy(url: &str, body: &str, header: &str) -> ResultType<String> {
-    let headers = parse_simple_header(header);
+async fn post_request_via_tcp_proxy(
+    url: &str,
+    body: &str,
+    header: &str,
+    operation: &HttpOperation,
+) -> ResultType<String> {
+    let headers = post_header_entries(header, operation);
     let resp = tcp_proxy_request("POST", url, body.as_bytes(), headers).await?;
     if !resp.error.is_empty() {
         bail!("TCP proxy error: {}", resp.error);
@@ -1219,11 +1286,23 @@ fn parse_json_header_entries(header: &str) -> ResultType<Vec<HeaderEntry>> {
 }
 
 /// Returns (status_code, body_text). Separating status so the wrapper can decide on fallback.
-async fn post_request_http(url: &str, body: &str, header: &str) -> ResultType<(u16, String)> {
+async fn post_request_http(
+    url: &str,
+    body: &str,
+    header: &str,
+    operation: &HttpOperation,
+) -> ResultType<(u16, String)> {
     let proxy_conf = Config::get_socks();
     let tls_url = get_url_for_tls(url, &proxy_conf);
     let tls_type = get_cached_tls_type(tls_url);
-    let response = post_request_(url, tls_url, body.to_owned(), header, tls_type).await?;
+    let response = post_request_(
+        url,
+        tls_url,
+        body.to_owned(),
+        post_header_entries(header, operation),
+        tls_type,
+    )
+    .await?;
     let status = response.status().as_u16();
     let text = response.text().await?;
     Ok((status, text))
@@ -1279,11 +1358,21 @@ where
 /// - 4xx responses are returned as-is (server is reachable, business logic error).
 /// - If fallback also fails, returns the original HTTP result (text or error).
 pub async fn post_request(url: String, body: String, header: &str) -> ResultType<String> {
+    let operation = HttpOperation::new();
+    post_request_with_operation(url, body, header, &operation).await
+}
+
+pub(crate) async fn post_request_with_operation(
+    url: String,
+    body: String,
+    header: &str,
+    operation: &HttpOperation,
+) -> ResultType<String> {
     with_tcp_proxy_fallback(
         &url,
         "POST",
-        post_request_http(&url, &body, header),
-        post_request_via_tcp_proxy(&url, &body, header),
+        post_request_http(&url, &body, header, operation),
+        post_request_via_tcp_proxy(&url, &body, header, operation),
     )
     .await
 }
@@ -1292,18 +1381,14 @@ async fn post_request_(
     url: &str,
     tls_url: &str,
     body: String,
-    header: &str,
+    headers: Vec<HeaderEntry>,
     tls_type: Option<TlsType>,
 ) -> ResultType<reqwest::Response> {
     let tls_type = tls_type.unwrap_or(TlsType::Rustls);
     let mut req = create_http_client_async_with_tls(tls_type).post(url);
-    if !header.is_empty() {
-        let tmp: Vec<&str> = header.split(": ").collect();
-        if tmp.len() == 2 {
-            req = req.header(tmp[0], tmp[1]);
-        }
+    for entry in headers {
+        req = req.header(entry.name, entry.value);
     }
-    req = req.header("Content-Type", "application/json");
     let to = std::time::Duration::from_secs(12);
     match req.body(body).timeout(to).send().await {
         Ok(resp) => {
@@ -2710,6 +2795,113 @@ mod tests {
                 .map(|entry| entry.value.as_str()),
             Some("application/json")
         );
+    }
+
+    #[test]
+    fn http_operation_headers_keep_logical_identity_and_rotate_attempt_span() {
+        let event_id = "11111111-1111-4111-8111-111111111111";
+        let operation = HttpOperation::from_event_id(event_id).unwrap();
+        let first = operation.correlation_headers();
+        let second = operation.correlation_headers();
+
+        assert_eq!(
+            first[1],
+            (CAMELLIA_EVENT_ID_HEADER.to_owned(), event_id.to_owned())
+        );
+        assert_eq!(second[1], first[1]);
+        let first_parts = first[0].1.split('-').collect::<Vec<_>>();
+        let second_parts = second[0].1.split('-').collect::<Vec<_>>();
+        assert_eq!(first[0].0, TRACEPARENT_HEADER);
+        assert_eq!(first_parts.len(), 4);
+        assert_eq!(first_parts[0], "00");
+        assert_eq!(first_parts[1], "11111111111141118111111111111111");
+        assert_eq!(first_parts[1], second_parts[1]);
+        assert_eq!(first_parts[3], "01");
+        assert_eq!(first_parts[2].len(), 16);
+        assert!(first_parts[2].bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_ne!(first_parts[2], second_parts[2]);
+    }
+
+    #[test]
+    fn direct_and_tcp_post_headers_share_contract_and_override_caller_correlation() {
+        let operation =
+            HttpOperation::from_event_id("22222222-2222-4222-8222-222222222222").unwrap();
+        let direct = post_header_entries("Authorization: Bearer token", &operation);
+        let tcp = post_header_entries("Authorization: Bearer token", &operation);
+
+        for headers in [&direct, &tcp] {
+            assert_eq!(
+                headers
+                    .iter()
+                    .filter(|entry| entry.name.eq_ignore_ascii_case(TRACEPARENT_HEADER))
+                    .count(),
+                1
+            );
+            assert_eq!(
+                headers
+                    .iter()
+                    .filter(|entry| entry.name.eq_ignore_ascii_case(CAMELLIA_EVENT_ID_HEADER))
+                    .count(),
+                1
+            );
+            assert!(headers.iter().any(|entry| {
+                entry.name.eq_ignore_ascii_case("Authorization")
+                    && entry.value.as_str() == "Bearer token"
+            }));
+            assert!(headers.iter().any(|entry| {
+                entry.name.eq_ignore_ascii_case(CAMELLIA_EVENT_ID_HEADER)
+                    && entry.value.as_str() == "22222222-2222-4222-8222-222222222222"
+            }));
+        }
+        let direct_trace = direct
+            .iter()
+            .find(|entry| entry.name.eq_ignore_ascii_case(TRACEPARENT_HEADER))
+            .unwrap()
+            .value
+            .as_str();
+        let tcp_trace = tcp
+            .iter()
+            .find(|entry| entry.name.eq_ignore_ascii_case(TRACEPARENT_HEADER))
+            .unwrap()
+            .value
+            .as_str();
+        assert_eq!(&direct_trace[3..35], &tcp_trace[3..35]);
+        assert_ne!(&direct_trace[36..52], &tcp_trace[36..52]);
+
+        let overridden = post_header_entries(
+            "traceparent: 00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-00",
+            &operation,
+        );
+        assert_eq!(
+            overridden
+                .iter()
+                .filter(|entry| entry.name.eq_ignore_ascii_case(TRACEPARENT_HEADER))
+                .count(),
+            1
+        );
+        assert!(overridden
+            .iter()
+            .find(|entry| entry.name.eq_ignore_ascii_case(TRACEPARENT_HEADER))
+            .unwrap()
+            .value
+            .starts_with("00-22222222222242228222222222222222-"));
+    }
+
+    #[test]
+    fn http_operation_rejects_noncanonical_event_ids() {
+        for event_id in [
+            "not-a-uuid",
+            "00000000-0000-0000-0000-000000000000",
+            "11111111-1111-4111-1111-111111111111",
+            "11111111-1111-4111-8111-111111111111\r\nInjected: yes",
+            "11111111-1111-4111-8111-111111111111,duplicate",
+            "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA",
+        ] {
+            assert!(
+                HttpOperation::from_event_id(event_id).is_err(),
+                "{event_id}"
+            );
+        }
     }
 
     #[test]
