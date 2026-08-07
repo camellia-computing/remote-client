@@ -1966,7 +1966,10 @@ async fn send_note(url: String, audit_session_id: String, note: String) -> Resul
     let Some(auth_header) = crate::get_api_auth_header() else {
         bail!("API account session required for an audit note");
     };
-    let response = crate::post_request(url, body.to_string(), &auth_header).await?;
+    let operation = crate::common::HttpOperation::from_event_id(&event_id)?;
+    let response =
+        crate::common::post_request_with_operation(url, body.to_string(), &auth_header, &operation)
+            .await?;
     validate_audit_note_response(&response, &audit_session_id, &event_id)
 }
 

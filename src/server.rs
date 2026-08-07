@@ -65,6 +65,7 @@ pub mod input_service {
     pub const NAME_WINDOW_FOCUS: &'static str = "";
 }
 
+mod audit_outbox;
 mod connection;
 pub mod display_service;
 mod login_failure_check;
@@ -559,6 +560,7 @@ pub fn check_zombie() {
 #[cfg(any(target_os = "android", target_os = "ios"))]
 #[tokio::main]
 pub async fn start_server(_is_server: bool) {
+    Connection::spawn_pending_audit_replay();
     crate::RendezvousMediator::start_all().await;
 }
 
@@ -604,6 +606,7 @@ pub async fn start_server(is_server: bool, no_server: bool) {
         }
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         wait_initial_config_sync().await;
+        Connection::spawn_pending_audit_replay();
         #[cfg(target_os = "windows")]
         crate::platform::try_kill_broker();
         #[cfg(feature = "hwcodec")]
