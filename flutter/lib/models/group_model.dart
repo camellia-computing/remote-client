@@ -9,6 +9,59 @@ import 'package:get/get.dart';
 import 'dart:convert';
 import '../utils/http_service.dart' as http;
 
+class PeerPaginationState {
+  PeerPaginationState({required this.pageSize});
+
+  static const maxCursorLength = 2048;
+
+  final int pageSize;
+  final Set<String> _seenCursors = {};
+  int current = 0;
+  int total = 0;
+  bool _cursorContractSeen = false;
+  String _cursor = '';
+
+  Map<String, String> nextQueryParameters() {
+    current += 1;
+    return {
+      'current': current.toString(),
+      'pageSize': pageSize.toString(),
+      if (_cursorContractSeen && _cursor.isNotEmpty) 'cursor': _cursor,
+    };
+  }
+
+  void accept(Map<String, dynamic> response) {
+    final responseTotal = response['total'];
+    if (responseTotal is! int || responseTotal < 0) {
+      throw const FormatException('Invalid peer inventory total');
+    }
+    total = responseTotal;
+
+    if (!response.containsKey('nextCursor')) {
+      if (_cursorContractSeen) {
+        throw const FormatException('Peer inventory cursor disappeared');
+      }
+      return;
+    }
+    final nextCursor = response['nextCursor'];
+    if (nextCursor is! String ||
+        nextCursor.length > maxCursorLength ||
+        nextCursor.codeUnits.any(
+          (codeUnit) => codeUnit < 33 || codeUnit > 126,
+        )) {
+      throw const FormatException('Invalid peer inventory cursor');
+    }
+    _cursorContractSeen = true;
+    if (nextCursor.isNotEmpty && !_seenCursors.add(nextCursor)) {
+      throw const FormatException('Peer inventory cursor repeated');
+    }
+    _cursor = nextCursor;
+  }
+
+  bool get hasMore =>
+      _cursorContractSeen ? _cursor.isNotEmpty : current * pageSize < total;
+}
+
 class GroupModel {
   final RxBool groupLoading = false.obs;
   final RxString groupLoadError = "".obs;
@@ -231,14 +284,10 @@ class GroupModel {
     try {
       final api = "${await bind.mainGetApiServer()}/api/peers";
       var uri0 = Uri.parse(api);
-      final pageSize = 100;
-      var total = 0;
-      int current = 0;
+      final pagination = PeerPaginationState(pageSize: 100);
       do {
-        current += 1;
         var queryParameters = {
-          'current': current.toString(),
-          'pageSize': pageSize.toString(),
+          ...pagination.nextQueryParameters(),
           'accessible': '',
           'status': '1',
         };
@@ -262,25 +311,23 @@ class GroupModel {
         if (resp.statusCode != 200) {
           throw 'HTTP ${resp.statusCode}';
         }
-        if (json.containsKey('total')) {
-          if (total == 0) total = json['total'];
-          if (json.containsKey('data')) {
-            final data = json['data'];
-            if (data is List) {
-              for (final p in data) {
-                final peerPayload = PeerPayload.fromJson(p);
-                final peer = PeerPayload.toPeer(peerPayload);
-                int index = tmpPeers.indexWhere((e) => e.id == peer.id);
-                if (index < 0) {
-                  tmpPeers.add(peer);
-                } else {
-                  tmpPeers[index] = peer;
-                }
+        pagination.accept(json);
+        if (json.containsKey('data')) {
+          final data = json['data'];
+          if (data is List) {
+            for (final p in data) {
+              final peerPayload = PeerPayload.fromJson(p);
+              final peer = PeerPayload.toPeer(peerPayload);
+              int index = tmpPeers.indexWhere((e) => e.id == peer.id);
+              if (index < 0) {
+                tmpPeers.add(peer);
+              } else {
+                tmpPeers[index] = peer;
               }
             }
           }
         }
-      } while (current * pageSize < total);
+      } while (pagination.hasMore);
       return true;
     } catch (err) {
       debugPrint('get accessible peers: $err');
