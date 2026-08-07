@@ -1,3 +1,4 @@
+use super::audit_outbox::{self, EvidenceKind, PendingEvidence};
 #[cfg(target_os = "windows")]
 use super::login_failure_check::try_acquire_os_credential_login_gate;
 use super::login_failure_check::{
@@ -62,7 +63,11 @@ use std::{
     num::NonZeroI64,
     path::PathBuf,
     str::FromStr,
-    sync::{atomic::AtomicI64, mpsc as std_mpsc},
+    sync::{
+        atomic::{AtomicBool, AtomicI64},
+        mpsc as std_mpsc,
+    },
+    time::{SystemTime, UNIX_EPOCH},
 };
 use uuid::Uuid;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -75,9 +80,13 @@ pub type Sender = mpsc::UnboundedSender<(Instant, Arc<Message>)>;
 
 const AUDIT_PROTOCOL_VERSION: u8 = 3;
 const FILE_AUDIT_PROTOCOL_VERSION: u8 = 4;
+const AUDIT_EVIDENCE_RECEIPT_VERSION: u8 = 1;
 const AUDIT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
 const AUDIT_POST_TIMEOUT: Duration = Duration::from_secs(5);
 const AUDIT_LIFECYCLE_RETRY_WINDOW: Duration = Duration::from_secs(90);
+const AUDIT_EVIDENCE_INLINE_RETRY_WINDOW: Duration = Duration::from_secs(10);
+const AUDIT_EVIDENCE_DURABLE_RETRY_WINDOW: Duration = Duration::from_secs(90);
+const AUDIT_EVIDENCE_MAX_FUTURE_SKEW: Duration = Duration::from_secs(5);
 const AUDIT_QUEUE_CAPACITY: usize = 64;
 const AUDIT_RESERVED_SLOTS: usize = 2;
 const FILE_AUDIT_TRACKER_CAPACITY: usize = 256;
@@ -113,6 +122,12 @@ struct AuditPostResponse {
     state_revision: u64,
     heartbeat_revision: u64,
     lease_remaining_seconds: u64,
+    #[serde(default)]
+    receipt_version: Option<u8>,
+    #[serde(default)]
+    reporter_sequence: Option<u64>,
+    #[serde(default)]
+    payload_digest: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -124,7 +139,12 @@ struct FileAuditPostResponse {
     transfer_revision: u64,
     transfer_state: String,
     transferred_bytes: u64,
+    receipt_version: u8,
+    reporter_sequence: u64,
+    payload_digest: String,
 }
+
+static AUDIT_OUTBOX_REPLAY_RUNNING: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Debug)]
 struct FileAuditTerminal {
@@ -1366,7 +1386,12 @@ impl Connection {
             Ok(response) => response,
             Err(_) => bail!("Management returned an invalid file audit response"),
         };
-        if response.version != FILE_AUDIT_PROTOCOL_VERSION || response.transfer_revision == 0 {
+        if response.version != FILE_AUDIT_PROTOCOL_VERSION
+            || response.receipt_version != AUDIT_EVIDENCE_RECEIPT_VERSION
+            || response.reporter_sequence == 0
+            || response.transfer_revision == 0
+            || !Self::is_lower_sha256(&response.payload_digest)
+        {
             bail!("Management returned an incompatible file audit response");
         }
         for (value, label) in [
@@ -1417,6 +1442,16 @@ impl Connection {
                 != Some(response.transferred_bytes)
         {
             bail!("Management acknowledged different file audit progress");
+        }
+        if request
+            .body
+            .get("reporter_sequence")
+            .and_then(Value::as_u64)
+            != Some(response.reporter_sequence)
+            || request.body.get("receipt_version").and_then(Value::as_u64)
+                != Some(u64::from(response.receipt_version))
+        {
+            bail!("Management acknowledged a different file audit receipt sequence");
         }
         Ok(())
     }
@@ -1470,7 +1505,19 @@ impl Connection {
                 }
             }
             AuditPostKind::Evidence => {
-                if response.state != "active" || response.lease_remaining_seconds == 0 {
+                if response.state != "active"
+                    || response.lease_remaining_seconds == 0
+                    || response.receipt_version != Some(AUDIT_EVIDENCE_RECEIPT_VERSION)
+                    || response.reporter_sequence
+                        != request
+                            .body
+                            .get("reporter_sequence")
+                            .and_then(Value::as_u64)
+                    || !response
+                        .payload_digest
+                        .as_deref()
+                        .is_some_and(Self::is_lower_sha256)
+                {
                     bail!("Management accepted evidence outside an active audit lease");
                 }
             }
@@ -1493,15 +1540,60 @@ impl Connection {
         Ok(())
     }
 
+    fn is_lower_sha256(value: &str) -> bool {
+        value.len() == 64
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    }
+
     fn audit_response_is_permanent_error(body: &str) -> bool {
         let Ok(error) = serde_json::from_str::<Value>(body) else {
             return false;
         };
         error.get("required_version").is_some()
+            || error.get("required_receipt_version").is_some()
             || matches!(
                 error.get("state").and_then(Value::as_str),
                 Some("closed" | "aborted" | "expired")
             )
+            || matches!(
+                error.get("error").and_then(Value::as_str),
+                Some(
+                    "Audit event identity conflict"
+                        | "Audit reporter sequence is already bound"
+                        | "Connection not found"
+                        | "Connection authority changed"
+                        | "Controller is not bound"
+                        | "Device is not active"
+                )
+            )
+    }
+
+    fn audit_retry_window(kind: AuditPostKind) -> Option<Duration> {
+        match kind {
+            AuditPostKind::Open | AuditPostKind::Lifecycle | AuditPostKind::Close => {
+                Some(AUDIT_LIFECYCLE_RETRY_WINDOW)
+            }
+            AuditPostKind::Evidence | AuditPostKind::FileEvidence => {
+                Some(AUDIT_EVIDENCE_INLINE_RETRY_WINDOW)
+            }
+            AuditPostKind::Heartbeat => None,
+        }
+    }
+
+    fn durable_evidence_kind(kind: AuditPostKind) -> Option<EvidenceKind> {
+        match kind {
+            AuditPostKind::Evidence => Some(EvidenceKind::Alarm),
+            AuditPostKind::FileEvidence => Some(EvidenceKind::File),
+            _ => None,
+        }
+    }
+
+    fn acknowledge_durable_evidence(event_id: &str) {
+        if let Err(error) = audit_outbox::acknowledge(event_id) {
+            log::error!("Failed to remove acknowledged durable audit evidence: {error}");
+        }
     }
 
     async fn process_audit_post(
@@ -1510,6 +1602,7 @@ impl Connection {
         event_revision: &mut u64,
         state_revision: &mut u64,
         heartbeat_revision: &mut u64,
+        reporter_sequence: &mut u64,
     ) -> bool {
         request.body["version"] = json!(if request.kind == AuditPostKind::FileEvidence {
             FILE_AUDIT_PROTOCOL_VERSION
@@ -1523,6 +1616,16 @@ impl Connection {
             };
             request.body["audit_session_id"] = json!(capability);
         }
+        let durable_kind = Self::durable_evidence_kind(request.kind);
+        if durable_kind.is_some() {
+            let Some(next_sequence) = reporter_sequence.checked_add(1) else {
+                log::error!("Audit reporter sequence exhausted");
+                return false;
+            };
+            *reporter_sequence = next_sequence;
+            request.body["receipt_version"] = json!(AUDIT_EVIDENCE_RECEIPT_VERSION);
+            request.body["reporter_sequence"] = json!(next_sequence);
+        }
         let Some(event_id) = request.body.get("event_id").and_then(Value::as_str) else {
             log::warn!("Dropping audit request without an operation event ID");
             return false;
@@ -1534,6 +1637,24 @@ impl Connection {
                 return false;
             }
         };
+        let persisted = if let Some(kind) = durable_kind {
+            match audit_outbox::persist(
+                event_id.to_owned(),
+                request.url.clone(),
+                request.body.clone(),
+                kind,
+            ) {
+                Ok(persisted) => Some(persisted),
+                Err(error) => {
+                    log::error!(
+                        "Refusing to send audit evidence that could not be persisted: {error}"
+                    );
+                    return false;
+                }
+            }
+        } else {
+            None
+        };
         loop {
             let response_body = match time::timeout(
                 AUDIT_POST_TIMEOUT,
@@ -1544,11 +1665,12 @@ impl Connection {
                 Ok(Ok(body)) => body,
                 Ok(Err(error)) => {
                     log::warn!("Failed to post connection audit request: {error}");
-                    if !matches!(
-                        request.kind,
-                        AuditPostKind::Open | AuditPostKind::Lifecycle | AuditPostKind::Close
-                    ) || request.created_at.elapsed() >= AUDIT_LIFECYCLE_RETRY_WINDOW
+                    if !Self::audit_retry_window(request.kind)
+                        .is_some_and(|window| request.created_at.elapsed() < window)
                     {
+                        if persisted.is_some() {
+                            Self::spawn_pending_audit_replay();
+                        }
                         return false;
                     }
                     time::sleep(Duration::from_secs(2)).await;
@@ -1556,11 +1678,12 @@ impl Connection {
                 }
                 Err(_) => {
                     log::warn!("Connection audit request timed out");
-                    if !matches!(
-                        request.kind,
-                        AuditPostKind::Open | AuditPostKind::Lifecycle | AuditPostKind::Close
-                    ) || request.created_at.elapsed() >= AUDIT_LIFECYCLE_RETRY_WINDOW
+                    if !Self::audit_retry_window(request.kind)
+                        .is_some_and(|window| request.created_at.elapsed() < window)
                     {
+                        if persisted.is_some() {
+                            Self::spawn_pending_audit_replay();
+                        }
                         return false;
                     }
                     time::sleep(Duration::from_secs(2)).await;
@@ -1572,6 +1695,15 @@ impl Connection {
                     Ok(response) => response,
                     Err(error) => {
                         log::warn!("Rejected Management file audit response: {error}");
+                        if Self::audit_response_is_permanent_error(&response_body) {
+                            Self::acknowledge_durable_evidence(event_id);
+                            return false;
+                        }
+                        if request.created_at.elapsed() < AUDIT_EVIDENCE_INLINE_RETRY_WINDOW {
+                            time::sleep(Duration::from_secs(2)).await;
+                            continue;
+                        }
+                        Self::spawn_pending_audit_replay();
                         return false;
                     }
                 };
@@ -1581,8 +1713,10 @@ impl Connection {
                     audit_session_id.as_deref(),
                 ) {
                     log::warn!("Rejected Management file audit progress: {error}");
+                    Self::spawn_pending_audit_replay();
                     return false;
                 }
+                Self::acknowledge_durable_evidence(event_id);
                 return true;
             }
             let response = match Self::parse_audit_post_response(&response_body) {
@@ -1590,12 +1724,16 @@ impl Connection {
                 Err(error) => {
                     log::warn!("Rejected Management audit response: {error}");
                     if Self::audit_response_is_permanent_error(&response_body)
-                        || !matches!(
-                            request.kind,
-                            AuditPostKind::Open | AuditPostKind::Lifecycle | AuditPostKind::Close
-                        )
-                        || request.created_at.elapsed() >= AUDIT_LIFECYCLE_RETRY_WINDOW
+                        || !Self::audit_retry_window(request.kind)
+                            .is_some_and(|window| request.created_at.elapsed() < window)
                     {
+                        if persisted.is_some() {
+                            if Self::audit_response_is_permanent_error(&response_body) {
+                                Self::acknowledge_durable_evidence(event_id);
+                            } else {
+                                Self::spawn_pending_audit_replay();
+                            }
+                        }
                         return false;
                     }
                     time::sleep(Duration::from_secs(2)).await;
@@ -1611,6 +1749,9 @@ impl Connection {
                 *heartbeat_revision,
             ) {
                 log::warn!("Rejected Management audit progress: {error}");
+                if persisted.is_some() {
+                    Self::spawn_pending_audit_replay();
+                }
                 return false;
             }
             if request.kind == AuditPostKind::Open && audit_session_id.is_none() {
@@ -1619,6 +1760,9 @@ impl Connection {
             *event_revision = response.event_revision;
             *state_revision = response.state_revision;
             *heartbeat_revision = response.heartbeat_revision;
+            if persisted.is_some() {
+                Self::acknowledge_durable_evidence(event_id);
+            }
             return true;
         }
     }
@@ -1628,6 +1772,8 @@ impl Connection {
         let mut event_revision = 0;
         let mut state_revision = 0;
         let mut heartbeat_revision = 0;
+        let mut reporter_sequence = 0;
+        Self::spawn_pending_audit_replay();
         while let Some(request) = rx.recv().await {
             Self::process_audit_post(
                 request,
@@ -1635,10 +1781,185 @@ impl Connection {
                 &mut event_revision,
                 &mut state_revision,
                 &mut heartbeat_revision,
+                &mut reporter_sequence,
             )
             .await;
         }
         log::debug!("post_seq_loop exited");
+    }
+
+    fn persisted_evidence_ack_is_valid(record: &PendingEvidence, body: &str) -> bool {
+        let Ok(response) = serde_json::from_str::<Value>(body) else {
+            return false;
+        };
+        if response.get("receipt_version").and_then(Value::as_u64)
+            != Some(u64::from(AUDIT_EVIDENCE_RECEIPT_VERSION))
+            || response
+                .get("acknowledged_event_id")
+                .and_then(Value::as_str)
+                != Some(record.event_id.as_str())
+            || response.get("audit_session_id").and_then(Value::as_str)
+                != record.body.get("audit_session_id").and_then(Value::as_str)
+            || response.get("reporter_sequence").and_then(Value::as_u64)
+                != record.body.get("reporter_sequence").and_then(Value::as_u64)
+            || !response
+                .get("payload_digest")
+                .and_then(Value::as_str)
+                .is_some_and(Self::is_lower_sha256)
+        {
+            return false;
+        }
+        match record.kind {
+            EvidenceKind::Alarm => {
+                response.get("version").and_then(Value::as_u64)
+                    == Some(u64::from(AUDIT_PROTOCOL_VERSION))
+                    && response
+                        .get("event_revision")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|revision| revision > 0)
+                    && response.get("state").and_then(Value::as_str) == Some("active")
+                    && response
+                        .get("lease_remaining_seconds")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|remaining| remaining > 0)
+            }
+            EvidenceKind::File => {
+                response.get("version").and_then(Value::as_u64)
+                    == Some(u64::from(FILE_AUDIT_PROTOCOL_VERSION))
+                    && response.get("transfer_id").and_then(Value::as_str)
+                        == record.body.get("transfer_id").and_then(Value::as_str)
+                    && response.get("transfer_revision").and_then(Value::as_u64)
+                        == record.body.get("transfer_revision").and_then(Value::as_u64)
+                    && response.get("transfer_state").and_then(Value::as_str)
+                        == record.body.get("state").and_then(Value::as_str)
+                    && response.get("transferred_bytes").and_then(Value::as_u64)
+                        == record.body.get("transferred_bytes").and_then(Value::as_u64)
+            }
+        }
+    }
+
+    fn durable_evidence_timestamp_is_valid(created_at_unix_ms: u64, now_ms: u64) -> bool {
+        let future_limit = now_ms.saturating_add(AUDIT_EVIDENCE_MAX_FUTURE_SKEW.as_millis() as u64);
+        let retry_window = AUDIT_EVIDENCE_DURABLE_RETRY_WINDOW.as_millis() as u64;
+        created_at_unix_ms <= future_limit
+            && now_ms.saturating_sub(created_at_unix_ms) < retry_window
+    }
+
+    fn durable_evidence_url_matches_configured_authority(
+        record: &PendingEvidence,
+        alarm_url: &str,
+        file_url: &str,
+    ) -> bool {
+        let expected = match record.kind {
+            EvidenceKind::Alarm => alarm_url,
+            EvidenceKind::File => file_url,
+        };
+        !expected.is_empty() && record.url == expected
+    }
+
+    async fn replay_pending_audit_evidence() {
+        loop {
+            let records = match audit_outbox::pending() {
+                Ok(records) => records,
+                Err(error) => {
+                    log::error!("Failed to inspect the durable audit outbox: {error}");
+                    return;
+                }
+            };
+            if records.is_empty() {
+                return;
+            }
+            let now_ms: u64 = match SystemTime::now().duration_since(UNIX_EPOCH) {
+                Ok(duration) => match duration.as_millis().try_into() {
+                    Ok(value) => value,
+                    Err(_) => {
+                        log::error!("System time is outside the durable audit range");
+                        return;
+                    }
+                },
+                Err(_) => {
+                    log::error!("System clock is before the Unix epoch");
+                    return;
+                }
+            };
+            let api_server = Config::get_option("api-server");
+            let custom_server = Config::get_option("custom-rendezvous-server");
+            let alarm_url = crate::get_audit_server(
+                api_server.clone(),
+                custom_server.clone(),
+                "alarm".to_owned(),
+            );
+            let file_url = crate::get_audit_server(api_server, custom_server, "file".to_owned());
+            for record in records.into_iter().take(16) {
+                if !Self::durable_evidence_timestamp_is_valid(record.created_at_unix_ms, now_ms) {
+                    log::warn!("Discarding expired or clock-invalid durable audit evidence");
+                    Self::acknowledge_durable_evidence(&record.event_id);
+                    continue;
+                }
+                if !Self::durable_evidence_url_matches_configured_authority(
+                    &record, &alarm_url, &file_url,
+                ) {
+                    log::warn!(
+                        "Refusing to send durable audit evidence to a non-current Management authority"
+                    );
+                    continue;
+                }
+                let operation = match crate::common::HttpOperation::from_event_id(&record.event_id)
+                {
+                    Ok(operation) => operation,
+                    Err(error) => {
+                        log::error!(
+                            "Discarding durable audit evidence with an invalid event ID: {error}"
+                        );
+                        Self::acknowledge_durable_evidence(&record.event_id);
+                        continue;
+                    }
+                };
+                match time::timeout(
+                    AUDIT_POST_TIMEOUT,
+                    Self::post_audit_async(record.url.clone(), record.body.clone(), &operation),
+                )
+                .await
+                {
+                    Ok(Ok(body)) if Self::persisted_evidence_ack_is_valid(&record, &body) => {
+                        Self::acknowledge_durable_evidence(&record.event_id);
+                    }
+                    Ok(Ok(body)) if Self::audit_response_is_permanent_error(&body) => {
+                        log::warn!("Management permanently rejected durable audit evidence");
+                        Self::acknowledge_durable_evidence(&record.event_id);
+                    }
+                    Ok(Ok(_)) => {
+                        log::warn!("Management returned an invalid durable audit acknowledgement")
+                    }
+                    Ok(Err(error)) => {
+                        log::warn!("Durable audit evidence retry failed: {error}")
+                    }
+                    Err(_) => log::warn!("Durable audit evidence retry timed out"),
+                }
+            }
+            time::sleep(Duration::from_secs(2)).await;
+        }
+    }
+
+    pub(super) fn spawn_pending_audit_replay() {
+        if AUDIT_OUTBOX_REPLAY_RUNNING
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            )
+            .is_err()
+        {
+            return;
+        }
+        tokio::spawn(async {
+            Self::replay_pending_audit_evidence().await;
+            AUDIT_OUTBOX_REPLAY_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
+            if audit_outbox::pending().is_ok_and(|records| !records.is_empty()) {
+                Self::spawn_pending_audit_replay();
+            }
+        });
     }
 
     async fn try_port_forward_loop(
@@ -1805,6 +2126,9 @@ impl Connection {
             AUDIT_PROTOCOL_VERSION
         });
         body["event_id"] = json!(Uuid::new_v4().to_string());
+        if matches!(kind, AuditPostKind::Evidence | AuditPostKind::FileEvidence) {
+            body["receipt_version"] = json!(AUDIT_EVIDENCE_RECEIPT_VERSION);
+        }
         AuditPost {
             url,
             body,
@@ -7605,6 +7929,8 @@ mod test {
             url: String::new(),
             body: json!({
                 "event_id": event_id,
+                "receipt_version": AUDIT_EVIDENCE_RECEIPT_VERSION,
+                "reporter_sequence": 4,
                 "transfer_id": transfer_id,
                 "transfer_revision": 2,
                 "state": "progress",
@@ -7618,6 +7944,9 @@ mod test {
                 "version": FILE_AUDIT_PROTOCOL_VERSION,
                 "audit_session_id": capability,
                 "acknowledged_event_id": event_id,
+                "receipt_version": AUDIT_EVIDENCE_RECEIPT_VERSION,
+                "reporter_sequence": 4,
+                "payload_digest": "a".repeat(64),
                 "transfer_id": transfer_id,
                 "transfer_revision": 2,
                 "transfer_state": "progress",
@@ -7673,6 +8002,161 @@ mod test {
             )
             .body["version"],
             FILE_AUDIT_PROTOCOL_VERSION,
+        );
+    }
+
+    #[test]
+    fn durable_alarm_and_file_receipts_are_bound_to_persisted_requests() {
+        let audit_session_id = Uuid::new_v4().to_string();
+        let alarm_event_id = Uuid::new_v4().to_string();
+        let alarm = PendingEvidence {
+            protocol: 1,
+            event_id: alarm_event_id.clone(),
+            url: "https://management.invalid/api/audit/alarm".to_owned(),
+            body: json!({
+                "version": AUDIT_PROTOCOL_VERSION,
+                "receipt_version": AUDIT_EVIDENCE_RECEIPT_VERSION,
+                "audit_session_id": audit_session_id,
+                "event_id": alarm_event_id,
+                "reporter_sequence": 7,
+            }),
+            kind: EvidenceKind::Alarm,
+            created_at_unix_ms: 1,
+        };
+        let alarm_ack = json!({
+            "version": AUDIT_PROTOCOL_VERSION,
+            "receipt_version": AUDIT_EVIDENCE_RECEIPT_VERSION,
+            "audit_session_id": audit_session_id,
+            "acknowledged_event_id": alarm_event_id,
+            "reporter_sequence": 7,
+            "payload_digest": "a".repeat(64),
+            "event_revision": 3,
+            "state": "active",
+            "lease_remaining_seconds": 90,
+        });
+        assert!(Connection::persisted_evidence_ack_is_valid(
+            &alarm,
+            &alarm_ack.to_string(),
+        ));
+        let mut mismatched_alarm = alarm_ack;
+        mismatched_alarm["reporter_sequence"] = json!(8);
+        assert!(!Connection::persisted_evidence_ack_is_valid(
+            &alarm,
+            &mismatched_alarm.to_string(),
+        ));
+
+        let file_event_id = Uuid::new_v4().to_string();
+        let transfer_id = Uuid::new_v4().to_string();
+        let file = PendingEvidence {
+            protocol: 1,
+            event_id: file_event_id.clone(),
+            url: "https://management.invalid/api/audit/file".to_owned(),
+            body: json!({
+                "version": FILE_AUDIT_PROTOCOL_VERSION,
+                "receipt_version": AUDIT_EVIDENCE_RECEIPT_VERSION,
+                "audit_session_id": audit_session_id,
+                "event_id": file_event_id,
+                "reporter_sequence": 8,
+                "transfer_id": transfer_id,
+                "transfer_revision": 2,
+                "state": "progress",
+                "transferred_bytes": 1024,
+            }),
+            kind: EvidenceKind::File,
+            created_at_unix_ms: 2,
+        };
+        let file_ack = json!({
+            "version": FILE_AUDIT_PROTOCOL_VERSION,
+            "receipt_version": AUDIT_EVIDENCE_RECEIPT_VERSION,
+            "audit_session_id": audit_session_id,
+            "acknowledged_event_id": file_event_id,
+            "reporter_sequence": 8,
+            "payload_digest": "b".repeat(64),
+            "transfer_id": transfer_id,
+            "transfer_revision": 2,
+            "transfer_state": "progress",
+            "transferred_bytes": 1024,
+        });
+        assert!(Connection::persisted_evidence_ack_is_valid(
+            &file,
+            &file_ack.to_string(),
+        ));
+        let mut mismatched_file = file_ack;
+        mismatched_file["payload_digest"] = json!("B".repeat(64));
+        assert!(!Connection::persisted_evidence_ack_is_valid(
+            &file,
+            &mismatched_file.to_string(),
+        ));
+    }
+
+    #[test]
+    fn durable_evidence_retry_deadline_is_finite_and_clock_safe() {
+        assert_eq!(AUDIT_EVIDENCE_INLINE_RETRY_WINDOW, Duration::from_secs(10));
+        assert_eq!(AUDIT_EVIDENCE_DURABLE_RETRY_WINDOW, Duration::from_secs(90));
+        let now_ms = 1_000_000;
+        assert!(Connection::durable_evidence_timestamp_is_valid(
+            now_ms + 5_000,
+            now_ms,
+        ));
+        assert!(!Connection::durable_evidence_timestamp_is_valid(
+            now_ms + 5_001,
+            now_ms,
+        ));
+        assert!(Connection::durable_evidence_timestamp_is_valid(
+            now_ms - 89_999,
+            now_ms,
+        ));
+        assert!(!Connection::durable_evidence_timestamp_is_valid(
+            now_ms - 90_000,
+            now_ms,
+        ));
+    }
+
+    #[test]
+    fn durable_evidence_replay_is_bound_to_the_current_management_authority() {
+        let event_id = Uuid::new_v4().to_string();
+        let mut record = PendingEvidence {
+            protocol: 1,
+            event_id: event_id.clone(),
+            url: "https://management.invalid/api/audit/alarm".to_owned(),
+            body: json!({
+                "version": AUDIT_PROTOCOL_VERSION,
+                "receipt_version": AUDIT_EVIDENCE_RECEIPT_VERSION,
+                "audit_session_id": Uuid::new_v4().to_string(),
+                "event_id": event_id,
+                "reporter_sequence": 1,
+            }),
+            kind: EvidenceKind::Alarm,
+            created_at_unix_ms: 1,
+        };
+        let alarm_url = "https://management.invalid/api/audit/alarm";
+        let file_url = "https://management.invalid/api/audit/file";
+        assert!(
+            Connection::durable_evidence_url_matches_configured_authority(
+                &record, alarm_url, file_url,
+            )
+        );
+        assert!(
+            !Connection::durable_evidence_url_matches_configured_authority(
+                &record,
+                "https://replacement.invalid/api/audit/alarm",
+                file_url,
+            )
+        );
+        record.kind = EvidenceKind::File;
+        assert!(
+            !Connection::durable_evidence_url_matches_configured_authority(
+                &record, alarm_url, file_url,
+            )
+        );
+        record.url = file_url.to_owned();
+        assert!(
+            Connection::durable_evidence_url_matches_configured_authority(
+                &record, alarm_url, file_url,
+            )
+        );
+        assert!(
+            !Connection::durable_evidence_url_matches_configured_authority(&record, alarm_url, "",)
         );
     }
 
