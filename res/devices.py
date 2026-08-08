@@ -1,8 +1,17 @@
 #!/usr/bin/env python3
 
-import requests
 import argparse
-from datetime import datetime, timedelta
+import sys
+from datetime import datetime, timezone
+
+import requests
+from batch_operations import (
+    canonical_model_pk,
+    canonical_operation_id,
+    check_control_response,
+    fail,
+    operation_headers,
+)
 
 
 def view(
@@ -42,12 +51,12 @@ def view(
         response = requests.get(f"{url}/api/devices", headers=headers, params=params)
         if response.status_code != 200:
             print(f"Error: HTTP {response.status_code} - {response.text}")
-            exit(1)
+            sys.exit(1)
 
         response_json = response.json()
         if "error" in response_json:
             print(f"Error: {response_json['error']}")
-            exit(1)
+            sys.exit(1)
 
         data = response_json.get("data", [])
 
@@ -57,8 +66,8 @@ def view(
                 continue
             last_online = datetime.strptime(
                 device["last_online"].split(".")[0], "%Y-%m-%dT%H:%M:%S"
-            )  # assuming date is in this format
-            if (datetime.utcnow() - last_online).days >= offline_days:
+            ).replace(tzinfo=timezone.utc)
+            if (datetime.now(timezone.utc) - last_online).days >= offline_days:
                 devices.append(device)
 
         total = response_json.get("total", 0)
@@ -71,37 +80,88 @@ def view(
 def check(response):
     if response.status_code != 200:
         print(f"Error: HTTP {response.status_code} - {response.text}")
-        exit(1)
+        sys.exit(1)
 
     try:
         response_json = response.json()
         if "error" in response_json:
             print(f"Error: {response_json['error']}")
-            exit(1)
+            sys.exit(1)
         return response_json
     except ValueError:
         return response.text or "Success"
 
 
-def disable(url, token, guid, id):
+def _control_mutation(
+    url,
+    token,
+    guid,
+    *,
+    action,
+    operation_id=None,
+):
+    guid = canonical_model_pk(guid, "device GUID")
+    operation = f"device_status_{action}"
+    operation_id = canonical_operation_id(operation_id)
+    print(f"Operation target: device {guid}", flush=True)
+    print(f"Operation ID: {operation_id}", flush=True)
+    request_document = {"operation": operation, "device": str(guid)}
+    response = requests.post(
+        f"{url}/api/devices/{guid}/{action}",
+        headers=operation_headers(token, operation_id),
+        json={},
+    )
+    return check_control_response(
+        response,
+        operation=operation,
+        operation_id=operation_id,
+        request_document=request_document,
+        requested={"devices": 1},
+    )
+
+
+def disable(url, token, guid, id, operation_id=None):
     print("Disable", id)
-    headers = {"Authorization": f"Bearer {token}"}
-    response = requests.post(f"{url}/api/devices/{guid}/disable", headers=headers)
-    return check(response)
+    return _control_mutation(
+        url,
+        token,
+        guid,
+        action="disable",
+        operation_id=operation_id,
+    )
 
 
-def enable(url, token, guid, id):
+def enable(url, token, guid, id, operation_id=None):
     print("Enable", id)
-    headers = {"Authorization": f"Bearer {token}"}
-    response = requests.post(f"{url}/api/devices/{guid}/enable", headers=headers)
-    return check(response)
+    return _control_mutation(
+        url,
+        token,
+        guid,
+        action="enable",
+        operation_id=operation_id,
+    )
 
 
-def delete(url, token, guid, id):
+def delete(url, token, guid, id, operation_id=None):
     print("Delete", id)
-    headers = {"Authorization": f"Bearer {token}"}
-    response = requests.delete(f"{url}/api/devices/{guid}", headers=headers)
-    return check(response)
+    guid = canonical_model_pk(guid, "device GUID")
+    operation = "device_delete"
+    operation_id = canonical_operation_id(operation_id)
+    print(f"Operation target: device {guid}", flush=True)
+    print(f"Operation ID: {operation_id}", flush=True)
+    request_document = {"operation": operation, "device": str(guid)}
+    response = requests.delete(
+        f"{url}/api/devices/{guid}",
+        headers=operation_headers(token, operation_id),
+        json={},
+    )
+    return check_control_response(
+        response,
+        operation=operation,
+        operation_id=operation_id,
+        request_document=request_document,
+        requested={"devices": 1},
+    )
 
 
 def assign(url, token, guid, id, type, value):
@@ -138,56 +198,104 @@ def main():
         "--token", required=True, help="Bearer token for authentication"
     )
     parser.add_argument("--id", help="Device ID")
+    parser.add_argument(
+        "--guid",
+        help="Exact Management device GUID for a control replay without a list lookup",
+    )
     parser.add_argument("--device_name", help="Device name")
     parser.add_argument("--user_name", help="User name")
     parser.add_argument("--group_name", help="User group name")
     parser.add_argument("--device_group_name", help="Device group name")
     parser.add_argument(
         "--assign_to",
-        help="<type>=<value>, e.g. user_name=mike, strategy_name=test, device_group_name=group1, note=note1, device_username=username1, device_name=name1, ab=ab1, ab=ab1,tag1,alias1,password1,note1"
+        help=(
+            "<type>=<value>, e.g. user_name=mike, strategy_name=test, "
+            "device_group_name=group1, note=note1, device_username=username1, "
+            "device_name=name1, ab=ab1, "
+            "ab=ab1,tag1,alias1,password1,note1"
+        ),
     )
     parser.add_argument(
         "--offline_days", type=int, help="Offline duration in days, e.g., 7"
     )
+    parser.add_argument(
+        "--operation-id",
+        help="Canonical UUID used to retry one control mutation after response loss",
+    )
 
     args = parser.parse_args()
 
-    while args.url.endswith("/"): args.url = args.url[:-1]
+    while args.url.endswith("/"):
+        args.url = args.url[:-1]
 
-    devices = view(
-        args.url,
-        args.token,
-        args.id,
-        args.device_name,
-        args.user_name,
-        args.group_name,
-        args.device_group_name,
-        args.offline_days,
-    )
+    if args.guid:
+        if args.command not in ("disable", "enable", "delete"):
+            fail(f"--guid is not supported for {args.command}")
+        device_guid = canonical_model_pk(args.guid, "device GUID")
+        devices = [{"guid": device_guid, "id": args.id or device_guid}]
+    else:
+        devices = view(
+            args.url,
+            args.token,
+            args.id,
+            args.device_name,
+            args.user_name,
+            args.group_name,
+            args.device_group_name,
+            args.offline_days,
+        )
 
     if args.command == "view":
         for device in devices:
             print(device)
     elif args.command in ["disable", "enable", "delete", "assign"]:
+        if args.operation_id and args.command not in ("disable", "enable", "delete"):
+            fail(f"--operation-id is not supported for {args.command}")
+        if len(devices) == 0:
+            fail(f"{args.command} matched no devices")
+        if args.operation_id and len(devices) != 1:
+            fail("--operation-id requires exactly one matched device")
+
         # Check if we need user confirmation for multiple devices
         if len(devices) > 1:
-            print(f"Found {len(devices)} devices. Do you want to proceed with {args.command} operation on the devices? (Y/N)")
+            print(
+                f"Found {len(devices)} devices. Do you want to proceed with "
+                f"{args.command} operation on the devices? (Y/N)"
+            )
             confirmation = input("Type 'Y' to confirm: ").strip()
-            if confirmation.upper() != 'Y':
+            if confirmation.upper() != "Y":
                 print("Operation cancelled.")
                 return
 
         if args.command == "disable":
             for device in devices:
-                response = disable(args.url, args.token, device["guid"], device["id"])
+                response = disable(
+                    args.url,
+                    args.token,
+                    device["guid"],
+                    device["id"],
+                    operation_id=args.operation_id if len(devices) == 1 else None,
+                )
                 print(response)
         elif args.command == "enable":
             for device in devices:
-                response = enable(args.url, args.token, device["guid"], device["id"])
+                response = enable(
+                    args.url,
+                    args.token,
+                    device["guid"],
+                    device["id"],
+                    operation_id=args.operation_id if len(devices) == 1 else None,
+                )
                 print(response)
         elif args.command == "delete":
             for device in devices:
-                response = delete(args.url, args.token, device["guid"], device["id"])
+                response = delete(
+                    args.url,
+                    args.token,
+                    device["guid"],
+                    device["id"],
+                    operation_id=args.operation_id if len(devices) == 1 else None,
+                )
                 print(response)
         elif args.command == "assign":
             if "=" not in args.assign_to:
