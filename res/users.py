@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
 
-import requests
 import argparse
-from datetime import datetime, timedelta
+
+import requests
+from batch_operations import (
+    canonical_operation_id,
+    check_batch_response,
+    fail,
+    operation_headers,
+    require_unique,
+)
 
 
 def check_response(response):
@@ -173,14 +180,29 @@ def reset_2fa(url, token, user_guids):
     check_response(response)
 
 
-def force_logout(url, token, user_guids):
+def force_logout(url, token, user_guids, operation_id=None):
     """Force logout users"""
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    user_guids = user_guids if isinstance(user_guids, list) else [user_guids]
+    require_unique(user_guids, "user")
+    operation_id = canonical_operation_id(operation_id)
+    print(f"Operation ID: {operation_id}", flush=True)
+    headers = operation_headers(token, operation_id)
     payload = {
-        "user_guids": user_guids if isinstance(user_guids, list) else [user_guids],
+        "user_guids": user_guids,
     }
+    request_document = {
+        "operation": "users_force_logout",
+        "users": user_guids,
+    }
+    requested = {"users": len(user_guids)}
     response = requests.post(f"{url}/api/users/force-logout", headers=headers, json=payload)
-    check_response(response)
+    return check_batch_response(
+        response,
+        operation="users_force_logout",
+        operation_id=operation_id,
+        request_document=request_document,
+        requested=requested,
+    )
 
 
 def main():
@@ -202,6 +224,7 @@ def main():
     parser.add_argument("--email", help="User email (for invite command)")
     parser.add_argument("--note", help="User note (for new/invite command)")
     parser.add_argument("--web-console-url", help="Web console URL (for 2FA enforce commands)")
+    parser.add_argument("--operation-id", help="Canonical UUID used to retry force-logout after response loss")
 
     args = parser.parse_args()
 
@@ -240,6 +263,8 @@ def main():
                            "disable-2fa-enforce", "disable-email-verification", "reset-2fa", "force-logout"]:
         if len(users) == 0:
             print("Found 0 users")
+            if args.command == "force-logout":
+                fail("force-logout matched no users")
             return
 
         # Check if we need user confirmation for multiple users
@@ -284,7 +309,7 @@ def main():
             print(f"Success: Reset 2FA for {len(users)} user(s)")
         elif args.command == "force-logout":
             user_guids = [user["guid"] for user in users]
-            force_logout(args.url, args.token, user_guids)
+            force_logout(args.url, args.token, user_guids, operation_id=args.operation_id)
             print(f"Success: Force logout for {len(users)} user(s)")
 
 

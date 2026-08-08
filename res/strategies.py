@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
 
-import requests
 import argparse
 import json
+
+import requests
+from batch_operations import (
+    canonical_operation_id,
+    canonical_uuid,
+    check_batch_response,
+    operation_headers,
+    require_unique,
+)
 
 
 def check_response(response):
@@ -136,7 +144,7 @@ def get_device_group_guid_by_name(url, token, name):
     return None
 
 
-def assign_strategy(url, token, strategy_name, peers=None, users=None, device_groups=None):
+def assign_strategy(url, token, strategy_name, peers=None, users=None, device_groups=None, operation_id=None):
     """
     Assign strategy to peers, users, or device groups
 
@@ -146,8 +154,6 @@ def assign_strategy(url, token, strategy_name, peers=None, users=None, device_gr
         users: List of user names or GUIDs
         device_groups: List of device group names or GUIDs
     """
-    headers = headers_with(token)
-
     # Get strategy GUID if strategy_name is provided
     strategy_guid = None
     if strategy_name:
@@ -155,14 +161,13 @@ def assign_strategy(url, token, strategy_name, peers=None, users=None, device_gr
         if not strategy:
             print(f"Error: Strategy '{strategy_name}' not found")
             exit(1)
-        strategy_guid = strategy.get("guid")
+        strategy_guid = canonical_uuid(strategy.get("guid"), "strategy GUID")
 
     # Convert device IDs to GUIDs
     peer_guids = []
     if peers:
         for peer in peers:
-            # Check if it's already a GUID format
-            if len(peer) == 36 and peer.count('-') == 4:
+            if isinstance(peer, str) and peer.isascii() and peer.isdigit() and not peer.startswith("0"):
                 peer_guids.append(peer)
             else:
                 # Treat as device ID, look it up
@@ -176,8 +181,7 @@ def assign_strategy(url, token, strategy_name, peers=None, users=None, device_gr
     user_guids = []
     if users:
         for user in users:
-            # Check if it's already a GUID format
-            if len(user) == 36 and user.count('-') == 4:
+            if isinstance(user, str) and user.isascii() and user.isdigit() and not user.startswith("0"):
                 user_guids.append(user)
             else:
                 # Treat as username, look it up
@@ -192,15 +196,19 @@ def assign_strategy(url, token, strategy_name, peers=None, users=None, device_gr
     if device_groups:
         for dg in device_groups:
             # Check if it's already a GUID format
-            if len(dg) == 36 and dg.count('-') == 4:
-                device_group_guids.append(dg)
+            if isinstance(dg, str) and len(dg) == 36 and dg.count('-') == 4:
+                device_group_guids.append(canonical_uuid(dg, "device group GUID"))
             else:
                 # Treat as device group name, look it up
                 guid = get_device_group_guid_by_name(url, token, dg)
                 if not guid:
                     print(f"Error: Device group '{dg}' not found")
                     exit(1)
-                device_group_guids.append(guid)
+                device_group_guids.append(canonical_uuid(guid, "device group GUID"))
+
+    require_unique(peer_guids, "device")
+    require_unique(user_guids, "user")
+    require_unique(device_group_guids, "device group")
 
     # Build payload
     payload = {}
@@ -211,8 +219,29 @@ def assign_strategy(url, token, strategy_name, peers=None, users=None, device_gr
     payload["users"] = user_guids
     payload["groups"] = device_group_guids
 
+    operation_id = canonical_operation_id(operation_id)
+    print(f"Operation ID: {operation_id}", flush=True)
+    request_document = {
+        "operation": "strategy_assign",
+        "strategy": strategy_guid,
+        "peers": peer_guids,
+        "users": user_guids,
+        "groups": device_group_guids,
+    }
+    requested = {
+        "devices": len(peer_guids),
+        "users": len(user_guids),
+        "groups": len(device_group_guids),
+    }
+    headers = operation_headers(token, operation_id)
     r = requests.post(f"{url}/api/strategies/assign", headers=headers, json=payload)
-    check_response(r)
+    return check_batch_response(
+        r,
+        operation="strategy_assign",
+        operation_id=operation_id,
+        request_document=request_document,
+        requested=requested,
+    )
 
 
 def main():
@@ -230,6 +259,7 @@ def main():
     parser.add_argument("--peers", help="Comma separated device IDs or GUIDs (requires Device Permission:r)")
     parser.add_argument("--users", help="Comma separated user names or GUIDs (requires User Permission:r)")
     parser.add_argument("--device-groups", help="Comma separated device group names or GUIDs (requires Device Group Permission:r)")
+    parser.add_argument("--operation-id", help="Canonical UUID used to retry an assign/unassign after response loss")
 
     args = parser.parse_args()
     while args.url.endswith("/"): args.url = args.url[:-1]
@@ -279,7 +309,15 @@ def main():
         users = [x.strip() for x in args.users.split(",") if x.strip()] if args.users else None
         device_groups = [x.strip() for x in args.device_groups.split(",") if x.strip()] if args.device_groups else None
 
-        assign_strategy(args.url, args.token, args.name, peers=peers, users=users, device_groups=device_groups)
+        assign_strategy(
+            args.url,
+            args.token,
+            args.name,
+            peers=peers,
+            users=users,
+            device_groups=device_groups,
+            operation_id=args.operation_id,
+        )
         count = (len(peers) if peers else 0) + (len(users) if users else 0) + (len(device_groups) if device_groups else 0)
         print(f"Success: Assigned strategy '{args.name}' to {count} target(s)")
 
@@ -292,7 +330,15 @@ def main():
         users = [x.strip() for x in args.users.split(",") if x.strip()] if args.users else None
         device_groups = [x.strip() for x in args.device_groups.split(",") if x.strip()] if args.device_groups else None
 
-        assign_strategy(args.url, args.token, None, peers=peers, users=users, device_groups=device_groups)
+        assign_strategy(
+            args.url,
+            args.token,
+            None,
+            peers=peers,
+            users=users,
+            device_groups=device_groups,
+            operation_id=args.operation_id,
+        )
         count = (len(peers) if peers else 0) + (len(users) if users else 0) + (len(device_groups) if device_groups else 0)
         print(f"Success: Unassigned strategy from {count} target(s)")
 
