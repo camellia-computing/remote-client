@@ -4,6 +4,7 @@ import re
 import uuid
 
 MANAGEMENT_OPERATION_RECEIPT_VERSION = 1
+MAX_MANAGEMENT_MODEL_PK = (1 << 63) - 1
 _DIGEST_RE = re.compile(r"[0-9a-f]{64}")
 
 
@@ -53,6 +54,21 @@ def canonical_uuid(value, label):
     if str(parsed) != value.lower():
         fail(f"{label} is not a canonical UUID")
     return str(parsed)
+
+
+def canonical_model_pk(value, label):
+    if (
+        not isinstance(value, str)
+        or not value
+        or not value.isascii()
+        or not value.isdigit()
+        or value.startswith("0")
+    ):
+        fail(f"{label} is not a canonical positive identifier")
+    parsed = int(value)
+    if parsed > MAX_MANAGEMENT_MODEL_PK:
+        fail(f"{label} is not a canonical positive identifier")
+    return value
 
 
 def require_unique(values, label):
@@ -113,3 +129,77 @@ def check_batch_response(
     if not valid:
         fail("management batch response receipt does not match the request")
     return body
+
+
+def _receipt_envelope_matches(
+    body, *, operation, operation_id, request_document, requested
+):
+    """Validate the fields common to every management mutation receipt."""
+
+    if not isinstance(body, dict):
+        return False
+    expected_digest = document_digest(request_document)
+    return not (
+        type(body.get("management_operation_receipt_version")) is not int
+        or body["management_operation_receipt_version"]
+        != MANAGEMENT_OPERATION_RECEIPT_VERSION
+        or body.get("operation") != operation
+        or body.get("operation_id") != operation_id
+        or body.get("request_digest") != expected_digest
+        or not isinstance(body.get("result_digest"), str)
+        or _DIGEST_RE.fullmatch(body["result_digest"]) is None
+        or not isinstance(body.get("operation_generation"), int)
+        or isinstance(body["operation_generation"], bool)
+        or body["operation_generation"] <= 0
+        or not isinstance(body.get("requested"), dict)
+        or not isinstance(body.get("applied"), dict)
+        or set(body["requested"]) != set(requested)
+        or set(body["applied"]) != set(requested)
+        or body["requested"] != requested
+        or any(
+            type(count) is not int or count < 0 for count in body["requested"].values()
+        )
+        or any(
+            type(count) is not int or count < 0 or count > requested[key]
+            for key, count in body["applied"].items()
+        )
+    )
+
+
+def check_control_response(
+    response, *, operation, operation_id, request_document, requested
+):
+    """Fail closed on a single-target control mutation response.
+
+    Control endpoints persist a receipt for both successful and durable
+    rejected mutations.  A legacy/partial/malformed body is never treated as
+    success, even when the HTTP status is 200.
+    """
+
+    try:
+        body = response.json()
+    except (AttributeError, ValueError):
+        fail("management control response is not JSON")
+
+    if not _receipt_envelope_matches(
+        body,
+        operation=operation,
+        operation_id=operation_id,
+        request_document=request_document,
+        requested=requested,
+    ):
+        fail("management control response receipt is invalid")
+
+    if response.status_code == 200:
+        if (
+            body.get("result") != "OK"
+            or "error" in body
+            or body["applied"] != requested
+        ):
+            fail("management control response receipt is not fully applied")
+        return body
+
+    error = body.get("error")
+    if not isinstance(error, str) or not error or body["applied"] == requested:
+        fail("management control error receipt is invalid")
+    fail(f"HTTP {response.status_code}: {error}")

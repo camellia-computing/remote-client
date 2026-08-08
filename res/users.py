@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 
 import argparse
+import sys
 
 import requests
 from batch_operations import (
+    canonical_model_pk,
     canonical_operation_id,
     check_batch_response,
+    check_control_response,
     fail,
     operation_headers,
     require_unique,
@@ -19,14 +22,14 @@ def check_response(response):
     """
     if response.status_code != 200:
         print(f"Error: HTTP {response.status_code}: {response.text}")
-        exit(1)
+        sys.exit(1)
 
     if response.text and response.text.strip():
         try:
             json_data = response.json()
             if isinstance(json_data, dict) and "error" in json_data:
                 print(f"Error: {json_data['error']}")
-                exit(1)
+                sys.exit(1)
             return json_data
         except ValueError:
             return response.text
@@ -64,12 +67,12 @@ def view(
         response = requests.get(f"{url}/api/users", headers=headers, params=params)
         if response.status_code != 200:
             print(f"Error: HTTP {response.status_code} - {response.text}")
-            exit(1)
+            sys.exit(1)
 
         response_json = response.json()
         if "error" in response_json:
             print(f"Error: {response_json['error']}")
-            exit(1)
+            sys.exit(1)
 
         data = response_json.get("data", [])
         users.extend(data)
@@ -81,18 +84,54 @@ def view(
     return users
 
 
-def disable(url, token, guid, name):
+def _control_mutation(
+    url,
+    token,
+    guid,
+    *,
+    action,
+    operation_id=None,
+):
+    guid = canonical_model_pk(guid, "user GUID")
+    operation = f"user_status_{action}"
+    operation_id = canonical_operation_id(operation_id)
+    print(f"Operation target: user {guid}", flush=True)
+    print(f"Operation ID: {operation_id}", flush=True)
+    request_document = {"operation": operation, "user": str(guid)}
+    response = requests.post(
+        f"{url}/api/users/{guid}/{action}",
+        headers=operation_headers(token, operation_id),
+        json={},
+    )
+    return check_control_response(
+        response,
+        operation=operation,
+        operation_id=operation_id,
+        request_document=request_document,
+        requested={"users": 1},
+    )
+
+
+def disable(url, token, guid, name, operation_id=None):
     print("Disable", name)
-    headers = {"Authorization": f"Bearer {token}"}
-    response = requests.post(f"{url}/api/users/{guid}/disable", headers=headers)
-    check_response(response)
+    return _control_mutation(
+        url,
+        token,
+        guid,
+        action="disable",
+        operation_id=operation_id,
+    )
 
 
-def enable(url, token, guid, name):
+def enable(url, token, guid, name, operation_id=None):
     print("Enable", name)
-    headers = {"Authorization": f"Bearer {token}"}
-    response = requests.post(f"{url}/api/users/{guid}/enable", headers=headers)
-    check_response(response)
+    return _control_mutation(
+        url,
+        token,
+        guid,
+        action="enable",
+        operation_id=operation_id,
+    )
 
 
 def delete_user(url, token, guid, name):
@@ -140,9 +179,11 @@ def enable_2fa_enforce(url, token, user_guids, base_url):
     payload = {
         "user_guids": user_guids if isinstance(user_guids, list) else [user_guids],
         "enforce": True,
-        "url": base_url
+        "url": base_url,
     }
-    response = requests.put(f"{url}/api/users/tfa/totp/enforce", headers=headers, json=payload)
+    response = requests.put(
+        f"{url}/api/users/tfa/totp/enforce", headers=headers, json=payload
+    )
     check_response(response)
 
 
@@ -152,9 +193,11 @@ def disable_2fa_enforce(url, token, user_guids, base_url=""):
     payload = {
         "user_guids": user_guids if isinstance(user_guids, list) else [user_guids],
         "enforce": False,
-        "url": base_url
+        "url": base_url,
     }
-    response = requests.put(f"{url}/api/users/tfa/totp/enforce", headers=headers, json=payload)
+    response = requests.put(
+        f"{url}/api/users/tfa/totp/enforce", headers=headers, json=payload
+    )
     check_response(response)
 
 
@@ -163,9 +206,11 @@ def disable_email_verification(url, token, user_guids):
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     payload = {
         "user_guids": user_guids if isinstance(user_guids, list) else [user_guids],
-        "type": "email"
+        "type": "email",
     }
-    response = requests.put(f"{url}/api/users/disable_login_verification", headers=headers, json=payload)
+    response = requests.put(
+        f"{url}/api/users/disable_login_verification", headers=headers, json=payload
+    )
     check_response(response)
 
 
@@ -174,9 +219,11 @@ def reset_2fa(url, token, user_guids):
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     payload = {
         "user_guids": user_guids if isinstance(user_guids, list) else [user_guids],
-        "type": "2fa"
+        "type": "2fa",
     }
-    response = requests.put(f"{url}/api/users/disable_login_verification", headers=headers, json=payload)
+    response = requests.put(
+        f"{url}/api/users/disable_login_verification", headers=headers, json=payload
+    )
     check_response(response)
 
 
@@ -195,7 +242,9 @@ def force_logout(url, token, user_guids, operation_id=None):
         "users": user_guids,
     }
     requested = {"users": len(user_guids)}
-    response = requests.post(f"{url}/api/users/force-logout", headers=headers, json=payload)
+    response = requests.post(
+        f"{url}/api/users/force-logout", headers=headers, json=payload
+    )
     return check_batch_response(
         response,
         operation="users_force_logout",
@@ -209,9 +258,19 @@ def main():
     parser = argparse.ArgumentParser(description="User manager")
     parser.add_argument(
         "command",
-        choices=["view", "disable", "enable", "delete", "new", "invite",
-                 "enable-2fa-enforce", "disable-2fa-enforce",
-                 "disable-email-verification", "reset-2fa", "force-logout"],
+        choices=[
+            "view",
+            "disable",
+            "enable",
+            "delete",
+            "new",
+            "invite",
+            "enable-2fa-enforce",
+            "disable-2fa-enforce",
+            "disable-email-verification",
+            "reset-2fa",
+            "force-logout",
+        ],
         help="Command to execute",
     )
     parser.add_argument("--url", required=True, help="URL of the API")
@@ -219,39 +278,77 @@ def main():
         "--token", required=True, help="Bearer token for authentication"
     )
     parser.add_argument("--name", help="User name")
-    parser.add_argument("--group_name", help="Group name (for filtering in view, or for new/invite command)")
+    parser.add_argument(
+        "--guid",
+        help="Exact Management user GUID for a control replay without a list lookup",
+    )
+    parser.add_argument(
+        "--group_name",
+        help="Group name (for filtering in view, or for new/invite command)",
+    )
     parser.add_argument("--password", help="User password (for new command)")
     parser.add_argument("--email", help="User email (for invite command)")
     parser.add_argument("--note", help="User note (for new/invite command)")
-    parser.add_argument("--web-console-url", help="Web console URL (for 2FA enforce commands)")
-    parser.add_argument("--operation-id", help="Canonical UUID used to retry force-logout after response loss")
+    parser.add_argument(
+        "--web-console-url", help="Web console URL (for 2FA enforce commands)"
+    )
+    parser.add_argument(
+        "--operation-id",
+        help=(
+            "Canonical UUID used to retry one control/batch mutation after "
+            "response loss"
+        ),
+    )
 
     args = parser.parse_args()
 
-    while args.url.endswith("/"): args.url = args.url[:-1]
+    while args.url.endswith("/"):
+        args.url = args.url[:-1]
 
     if args.command == "new":
         if not args.name or not args.password or not args.group_name:
-            print("Error: --name and --password and --group_name are required for new command")
-            exit(1)
-        new_user(args.url, args.token, args.name, args.password, args.group_name, args.email, args.note)
+            print(
+                "Error: --name, --password and --group_name are required for "
+                "new command"
+            )
+            sys.exit(1)
+        new_user(
+            args.url,
+            args.token,
+            args.name,
+            args.password,
+            args.group_name,
+            args.email,
+            args.note,
+        )
         print("Success: User created")
         return
 
     if args.command == "invite":
         if not args.email or not args.name or not args.group_name:
-            print("Error: --email and --name and --group_name are required for invite command")
-            exit(1)
-        invite_user(args.url, args.token, args.email, args.name, args.group_name, args.note)
+            print(
+                "Error: --email, --name and --group_name are required for "
+                "invite command"
+            )
+            sys.exit(1)
+        invite_user(
+            args.url, args.token, args.email, args.name, args.group_name, args.note
+        )
         print("Success: Invitation sent")
         return
 
-    users = view(
-        args.url,
-        args.token,
-        args.name,
-        args.group_name,
-    )
+    if args.guid:
+        if args.command not in ("disable", "enable", "force-logout"):
+            fail(f"--guid is not supported for {args.command}")
+        user_guid = canonical_model_pk(args.guid, "user GUID")
+        users = [{"guid": user_guid, "name": args.name or user_guid}]
+    else:
+        users = view(
+            args.url,
+            args.token,
+            args.name,
+            args.group_name,
+        )
 
     if args.command == "view":
         if len(users) == 0:
@@ -259,29 +356,60 @@ def main():
         else:
             for user in users:
                 print(user)
-    elif args.command in ["disable", "enable", "delete", "enable-2fa-enforce",
-                           "disable-2fa-enforce", "disable-email-verification", "reset-2fa", "force-logout"]:
+    elif args.command in [
+        "disable",
+        "enable",
+        "delete",
+        "enable-2fa-enforce",
+        "disable-2fa-enforce",
+        "disable-email-verification",
+        "reset-2fa",
+        "force-logout",
+    ]:
+        if args.operation_id and args.command not in (
+            "disable",
+            "enable",
+            "force-logout",
+        ):
+            fail(f"--operation-id is not supported for {args.command}")
+
         if len(users) == 0:
             print("Found 0 users")
-            if args.command == "force-logout":
-                fail("force-logout matched no users")
+            fail(f"{args.command} matched no users")
             return
+        if args.operation_id and len(users) != 1 and args.command != "force-logout":
+            fail("--operation-id requires exactly one matched user")
 
         # Check if we need user confirmation for multiple users
         if len(users) > 1:
-            print(f"Found {len(users)} users. Do you want to proceed with {args.command} operation on the users? (Y/N)")
+            print(
+                f"Found {len(users)} users. Do you want to proceed with "
+                f"{args.command} operation on the users? (Y/N)"
+            )
             confirmation = input("Type 'Y' to confirm: ").strip()
-            if confirmation.upper() != 'Y':
+            if confirmation.upper() != "Y":
                 print("Operation cancelled.")
                 return
 
         if args.command == "disable":
             for user in users:
-                disable(args.url, args.token, user["guid"], user["name"])
+                disable(
+                    args.url,
+                    args.token,
+                    user["guid"],
+                    user["name"],
+                    operation_id=args.operation_id if len(users) == 1 else None,
+                )
                 print("Success")
         elif args.command == "enable":
             for user in users:
-                enable(args.url, args.token, user["guid"], user["name"])
+                enable(
+                    args.url,
+                    args.token,
+                    user["guid"],
+                    user["name"],
+                    operation_id=args.operation_id if len(users) == 1 else None,
+                )
                 print("Success")
         elif args.command == "delete":
             for user in users:
@@ -290,7 +418,7 @@ def main():
         elif args.command == "enable-2fa-enforce":
             if not args.web_console_url:
                 print("Error: --web-console-url is required for enable-2fa-enforce")
-                exit(1)
+                sys.exit(1)
             user_guids = [user["guid"] for user in users]
             enable_2fa_enforce(args.url, args.token, user_guids, args.web_console_url)
             print(f"Success: Enabled 2FA enforcement for {len(users)} user(s)")
@@ -309,7 +437,9 @@ def main():
             print(f"Success: Reset 2FA for {len(users)} user(s)")
         elif args.command == "force-logout":
             user_guids = [user["guid"] for user in users]
-            force_logout(args.url, args.token, user_guids, operation_id=args.operation_id)
+            force_logout(
+                args.url, args.token, user_guids, operation_id=args.operation_id
+            )
             print(f"Success: Force logout for {len(users)} user(s)")
 
 
