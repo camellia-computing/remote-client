@@ -1,8 +1,17 @@
 #!/usr/bin/env python3
 
-import requests
 import argparse
 import json
+
+import requests
+from batch_operations import (
+    canonical_operation_id,
+    canonical_uuid,
+    check_batch_response,
+    fail,
+    operation_headers,
+    require_unique,
+)
 
 
 def check_response(response):
@@ -158,26 +167,56 @@ def view_devices(url, token, group_name=None, id=None, device_name=None,
     return data
 
 
-def add_devices(url, token, group_name, device_ids):
-    headers = headers_with(token)
+def add_devices(url, token, group_name, device_ids, operation_id=None):
     g = get_group_by_name(url, token, group_name)
     if not g:
-        return f"Group '{group_name}' not found"
-    guid = g.get("guid")
+        fail(f"Group '{group_name}' not found")
+    guid = canonical_uuid(g.get("guid"), "device group GUID")
     payload = device_ids if isinstance(device_ids, list) else [device_ids]
+    require_unique(payload, "device")
+    operation_id = canonical_operation_id(operation_id)
+    print(f"Operation ID: {operation_id}", flush=True)
+    request_document = {
+        "operation": "device_group_add_devices",
+        "group": guid,
+        "devices": payload,
+    }
+    requested = {"devices": len(payload)}
+    headers = operation_headers(token, operation_id)
     r = requests.post(f"{url}/api/device-groups/{guid}", headers=headers, json=payload)
-    return check_response(r)
+    return check_batch_response(
+        r,
+        operation="device_group_add_devices",
+        operation_id=operation_id,
+        request_document=request_document,
+        requested=requested,
+    )
 
 
-def remove_devices(url, token, group_name, device_ids):
-    headers = headers_with(token)
+def remove_devices(url, token, group_name, device_ids, operation_id=None):
     g = get_group_by_name(url, token, group_name)
     if not g:
-        return f"Group '{group_name}' not found"
-    guid = g.get("guid")
+        fail(f"Group '{group_name}' not found")
+    guid = canonical_uuid(g.get("guid"), "device group GUID")
     payload = device_ids if isinstance(device_ids, list) else [device_ids]
+    require_unique(payload, "device")
+    operation_id = canonical_operation_id(operation_id)
+    print(f"Operation ID: {operation_id}", flush=True)
+    request_document = {
+        "operation": "device_group_remove_devices",
+        "group": guid,
+        "devices": payload,
+    }
+    requested = {"devices": len(payload)}
+    headers = operation_headers(token, operation_id)
     r = requests.delete(f"{url}/api/device-groups/{guid}/devices", headers=headers, json=payload)
-    return check_response(r)
+    return check_batch_response(
+        r,
+        operation="device_group_remove_devices",
+        operation_id=operation_id,
+        request_document=request_document,
+        requested=requested,
+    )
 
 
 def parse_rules(s):
@@ -213,6 +252,7 @@ def main():
     parser.add_argument("--accessed-from", help="JSON array: '[{\"type\":0|2,\"name\":\"...\"}]' (0=User Group, 2=User)")
 
     parser.add_argument("--ids", help="Comma separated device IDs for add-devices/remove-devices")
+    parser.add_argument("--operation-id", help="Canonical UUID used to retry add/remove devices after response loss")
 
     # Filters for view-devices command
     parser.add_argument("--id", help="Device ID filter (for view-devices)")
@@ -265,9 +305,9 @@ def main():
             exit(1)
         ids = [x.strip() for x in args.ids.split(",") if x.strip()]
         if args.command == "add-devices":
-            print(add_devices(args.url, args.token, args.name, ids))
+            print(add_devices(args.url, args.token, args.name, ids, operation_id=args.operation_id))
         else:
-            print(remove_devices(args.url, args.token, args.name, ids))
+            print(remove_devices(args.url, args.token, args.name, ids, operation_id=args.operation_id))
 
 
 if __name__ == "__main__":
