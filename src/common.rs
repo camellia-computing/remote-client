@@ -19,6 +19,7 @@ use camellia_remote_protocol::{
         self, keys, use_ws, Config, LocalConfig, CONNECT_TIMEOUT, READ_TIMEOUT, RENDEZVOUS_PORT,
     },
     crypto::{box_, secretbox, sign},
+    error,
     futures::future::join_all,
     futures_util::future::poll_fn,
     log,
@@ -1243,14 +1244,26 @@ async fn post_request_via_tcp_proxy(
     let headers = post_header_entries(header, operation);
     let resp = tcp_proxy_request("POST", url, body.as_bytes(), headers).await?;
     if !resp.error.is_empty() {
-        bail!("TCP proxy error: {}", resp.error);
+        bail!("TCP proxy returned deprecated text error");
+    }
+    if let Some(proxy_error) = resp.typed_error.as_ref() {
+        if !error::is_valid_for(proxy_error, error::ErrorContext::HttpProxy) {
+            bail!("TCP proxy returned an invalid error envelope");
+        }
+        bail!("TCP proxy error: {}", proxy_error.display_key);
     }
     Ok(String::from_utf8_lossy(&resp.body).to_string())
 }
 
 fn http_proxy_response_to_json(resp: HttpProxyResponse) -> ResultType<String> {
     if !resp.error.is_empty() {
-        bail!("TCP proxy error: {}", resp.error);
+        bail!("TCP proxy returned deprecated text error");
+    }
+    if let Some(proxy_error) = resp.typed_error.as_ref() {
+        if !error::is_valid_for(proxy_error, error::ErrorContext::HttpProxy) {
+            bail!("TCP proxy returned an invalid error envelope");
+        }
+        bail!("TCP proxy error: {}", proxy_error.display_key);
     }
 
     let mut response_headers = Map::new();
@@ -2939,13 +2952,32 @@ mod tests {
         assert_eq!(value["headers"]["content-type"], "application/json");
         assert_eq!(value["body"], r#"{"ok":true}"#);
 
-        let err = http_proxy_response_to_json(HttpProxyResponse {
+        let mut failed = HttpProxyResponse::new();
+        failed.typed_error = camellia_remote_protocol::protobuf::MessageField::some(
+            error::for_code(ErrorCode::HTTP_PROXY_FAILED),
+        );
+        let err = http_proxy_response_to_json(failed).unwrap_err().to_string();
+        assert!(err.contains("TCP proxy error: http_proxy_failed"));
+
+        let mut ambiguous = HttpProxyResponse {
+            error: "legacy text".into(),
+            ..Default::default()
+        };
+        ambiguous.typed_error = camellia_remote_protocol::protobuf::MessageField::some(
+            error::for_code(ErrorCode::HTTP_PROXY_FAILED),
+        );
+        let ambiguous = http_proxy_response_to_json(ambiguous)
+            .unwrap_err()
+            .to_string();
+        assert!(ambiguous.contains("deprecated text error"));
+
+        let legacy = http_proxy_response_to_json(HttpProxyResponse {
             error: "dial failed".into(),
             ..Default::default()
         })
         .unwrap_err()
         .to_string();
-        assert!(err.contains("TCP proxy error: dial failed"));
+        assert!(legacy.contains("deprecated text error"));
     }
 
     #[test]

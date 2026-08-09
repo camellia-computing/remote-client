@@ -1666,7 +1666,7 @@ impl<T: InvokeUiSession> Interface for Session<T> {
         self.ui_handler.msgbox(msgtype, title, text, link, retry);
     }
 
-    fn handle_login_error(&self, err: &str) -> bool {
+    fn handle_login_error(&self, err: &ErrorEnvelope) -> bool {
         handle_login_error(self.lc.clone(), err, self)
     }
 
