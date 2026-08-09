@@ -114,6 +114,7 @@ struct AuditPost {
 
 #[derive(Deserialize)]
 struct AuditPostResponse {
+    response_schema_version: u8,
     version: u8,
     audit_session_id: String,
     acknowledged_event_id: String,
@@ -132,6 +133,7 @@ struct AuditPostResponse {
 
 #[derive(Deserialize)]
 struct FileAuditPostResponse {
+    response_schema_version: u8,
     version: u8,
     audit_session_id: String,
     acknowledged_event_id: String,
@@ -1357,7 +1359,8 @@ impl Connection {
             Ok(response) => response,
             Err(_) => bail!("Management returned an invalid audit response"),
         };
-        if response.version != AUDIT_PROTOCOL_VERSION
+        if response.response_schema_version != 1
+            || response.version != AUDIT_PROTOCOL_VERSION
             || response.event_revision == 0
             || response.state_revision == 0
         {
@@ -1386,7 +1389,8 @@ impl Connection {
             Ok(response) => response,
             Err(_) => bail!("Management returned an invalid file audit response"),
         };
-        if response.version != FILE_AUDIT_PROTOCOL_VERSION
+        if response.response_schema_version != 1
+            || response.version != FILE_AUDIT_PROTOCOL_VERSION
             || response.receipt_version != AUDIT_EVIDENCE_RECEIPT_VERSION
             || response.reporter_sequence == 0
             || response.transfer_revision == 0
@@ -1558,14 +1562,14 @@ impl Connection {
                 Some("closed" | "aborted" | "expired")
             )
             || matches!(
-                error.get("error").and_then(Value::as_str),
+                error.get("code").and_then(Value::as_str),
                 Some(
-                    "Audit event identity conflict"
-                        | "Audit reporter sequence is already bound"
-                        | "Connection not found"
-                        | "Connection authority changed"
-                        | "Controller is not bound"
-                        | "Device is not active"
+                    "audit_event_identity_conflict"
+                        | "audit_reporter_sequence_conflict"
+                        | "audit_connection_not_found"
+                        | "audit_connection_authority_changed"
+                        | "audit_controller_not_bound"
+                        | "audit_device_not_active"
                 )
             )
     }

@@ -11,6 +11,7 @@ from batch_operations import (
     operation_headers,
     require_unique,
 )
+from management_response import ManagementResponseError, response_any
 
 
 def check_response(response):
@@ -21,22 +22,11 @@ def check_response(response):
     1. Status code is not 200 -> exit with error
     2. Response contains {"error": "xxx"} -> exit with error
     """
-    if response.status_code != 200:
-        print(f"Error: HTTP {response.status_code}: {response.text}")
-        exit(1)
-
-    # Check for {"error": "xxx"} in response
-    if response.text and response.text.strip():
-        try:
-            json_data = response.json()
-            if isinstance(json_data, dict) and "error" in json_data:
-                print(f"Error: {json_data['error']}")
-                exit(1)
-            return json_data
-        except ValueError:
-            return response.text
-
-    return None
+    try:
+        return response_any(response)
+    except (ManagementResponseError, ValueError) as exc:
+        print(f"Error: {exc}")
+        raise SystemExit(1) from exc
 
 
 def headers_with(token):

@@ -3,6 +3,12 @@ import json
 import re
 import uuid
 
+from management_response import (
+    ManagementResponseError,
+    response_object,
+    response_payload,
+)
+
 MANAGEMENT_OPERATION_RECEIPT_VERSION = 1
 MAX_MANAGEMENT_MODEL_PK = (1 << 63) - 1
 _DIGEST_RE = re.compile(r"[0-9a-f]{64}")
@@ -92,18 +98,19 @@ def operation_headers(token, operation_id):
 def check_batch_response(
     response, *, operation, operation_id, request_document, requested
 ):
-    if response.status_code != 200:
-        fail(f"HTTP {response.status_code}: {response.text}")
     try:
-        body = response.json()
-    except ValueError:
-        fail("management batch response is not JSON")
+        if response.status_code >= 400:
+            response_object(response)
+        body = response_payload(response)
+    except (ManagementResponseError, ValueError) as exc:
+        fail(str(exc))
     expected_digest = document_digest(request_document)
     expected_keys = set(requested)
     valid = (
         isinstance(body, dict)
         and body.get("result") == "OK"
         and "error" not in body
+        and body.get("response_schema_version") == 1
         and type(body.get("management_operation_receipt_version")) is int
         and body["management_operation_receipt_version"]
         == MANAGEMENT_OPERATION_RECEIPT_VERSION
@@ -177,9 +184,11 @@ def check_control_response(
     """
 
     try:
-        body = response.json()
-    except (AttributeError, ValueError):
-        fail("management control response is not JSON")
+        if response.status_code >= 400:
+            response_object(response)
+        body = response_payload(response)
+    except (AttributeError, ManagementResponseError, ValueError) as exc:
+        fail(str(exc))
 
     if not _receipt_envelope_matches(
         body,
@@ -199,7 +208,15 @@ def check_control_response(
             fail("management control response receipt is not fully applied")
         return body
 
-    error = body.get("error")
-    if not isinstance(error, str) or not error or body["applied"] == requested:
+    error = body.get("message")
+    code = body.get("code")
+    retryable = body.get("retryable")
+    if (
+        not isinstance(error, str)
+        or not error
+        or not isinstance(code, str)
+        or not isinstance(retryable, bool)
+        or body["applied"] == requested
+    ):
         fail("management control error receipt is invalid")
     fail(f"HTTP {response.status_code}: {error}")

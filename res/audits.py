@@ -5,6 +5,8 @@ import argparse
 import json
 from datetime import datetime, timedelta, timezone
 
+from management_response import ManagementResponseError, response_object
+
 
 def format_timestamp(timestamp):
     """Convert Unix timestamp to readable local datetime"""
@@ -149,18 +151,11 @@ def enhance_audit_data(data, audit_type):
 
 def check_response(response):
     """Check API response and return result"""
-    if response.status_code != 200:
-        print(f"Error: HTTP {response.status_code} - {response.text}")
-        exit(1)
-
     try:
-        response_json = response.json()
-        if "error" in response_json:
-            print(f"Error: {response_json['error']}")
-            exit(1)
-        return response_json
-    except ValueError:
-        return response.text or "Success"
+        return response_object(response)
+    except (ManagementResponseError, ValueError) as exc:
+        print(f"Error: {exc}")
+        raise SystemExit(1) from exc
 
 
 def view_audits_common(url, token, endpoint, filters=None, page_size=None, current=None,

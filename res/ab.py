@@ -3,19 +3,27 @@
 import requests
 import argparse
 import json
-from datetime import datetime, timedelta
+
+from management_response import (
+    ManagementResponseError,
+    require_empty_success,
+    response_any,
+    response_object,
+)
 
 
 def get_personal_ab(url, token):
     """Get personal address book GUID"""
     headers = {"Authorization": f"Bearer {token}"}
 
-    response = requests.get(f"{url}/api/ab/personal", headers=headers)
-
-    if response.status_code != 200:
-        return f"Error: {response.status_code} - {response.text}"
-
-    return response.json()
+    response = requests.post(
+        f"{url}/api/ab/personal",
+        headers={**headers, "Content-Type": "application/json", "Content-Length": "0"},
+    )
+    try:
+        return response_object(response)
+    except (ManagementResponseError, ValueError) as exc:
+        return f"Error: {exc}"
 
 
 def view_shared_abs(url, token, name=None):
@@ -40,13 +48,10 @@ def view_shared_abs(url, token, name=None):
         current += 1
         filtered_params["current"] = current
         response = requests.get(f"{url}/api/ab/shared/profiles", headers=headers, params=filtered_params)
-        if response.status_code != 200:
-            print(f"Error: HTTP {response.status_code} - {response.text}")
-            exit(1)
-
-        response_json = response.json()
-        if "error" in response_json:
-            print(f"Error: {response_json['error']}")
+        try:
+            response_json = response_object(response)
+        except (ManagementResponseError, ValueError) as exc:
+            print(f"Error: {exc}")
             exit(1)
 
         data = response_json.get("data", [])
@@ -92,13 +97,10 @@ def view_ab_peers(url, token, ab_guid, peer_id=None, alias=None):
         current += 1
         filtered_params["current"] = current
         response = requests.get(f"{url}/api/ab/peers", headers=headers, params=filtered_params)
-        if response.status_code != 200:
-            print(f"Error: HTTP {response.status_code} - {response.text}")
-            exit(1)
-
-        response_json = response.json()
-        if "error" in response_json:
-            print(f"Error: {response_json['error']}")
+        try:
+            response_json = response_object(response)
+        except (ManagementResponseError, ValueError) as exc:
+            print(f"Error: {exc}")
             exit(1)
 
         data = response_json.get("data", [])
@@ -131,18 +133,14 @@ def view_ab_tags(url, token, ab_guid):
 
 def check_response(response):
     """Check API response and return result"""
-    if response.status_code != 200:
-        print(f"Error: HTTP {response.status_code} - {response.text}")
-        exit(1)
-
     try:
-        response_json = response.json()
-        if "error" in response_json:
-            print(f"Error: {response_json['error']}")
-            exit(1)
-        return response_json
-    except ValueError:
-        return response.text or "Success"
+        if response.status_code == 204:
+            require_empty_success(response)
+            return "Success"
+        return response_any(response)
+    except (ManagementResponseError, ValueError) as exc:
+        print(f"Error: {exc}")
+        raise SystemExit(1) from exc
 
 
 def add_peer(url, token, ab_guid, peer_id, alias=None, note=None, tags=None, password=None):
@@ -409,13 +407,10 @@ def view_ab_rules(url, token, ab_guid):
         current += 1
         params["current"] = current
         response = requests.get(f"{url}/api/ab/rules", headers=headers, params=params)
-        if response.status_code != 200:
-            print(f"Error: HTTP {response.status_code} - {response.text}")
-            exit(1)
-
-        response_json = response.json()
-        if "error" in response_json:
-            print(f"Error: {response_json['error']}")
+        try:
+            response_json = response_object(response)
+        except (ManagementResponseError, ValueError) as exc:
+            print(f"Error: {exc}")
             exit(1)
 
         data = response_json.get("data", [])

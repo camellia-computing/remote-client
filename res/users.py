@@ -13,6 +13,7 @@ from batch_operations import (
     operation_headers,
     require_unique,
 )
+from management_response import ManagementResponseError, response_any, response_object
 
 
 def check_response(response):
@@ -20,21 +21,11 @@ def check_response(response):
     Check API response and handle errors properly.
     Exit with code 1 if there's an error.
     """
-    if response.status_code != 200:
-        print(f"Error: HTTP {response.status_code}: {response.text}")
-        sys.exit(1)
-
-    if response.text and response.text.strip():
-        try:
-            json_data = response.json()
-            if isinstance(json_data, dict) and "error" in json_data:
-                print(f"Error: {json_data['error']}")
-                sys.exit(1)
-            return json_data
-        except ValueError:
-            return response.text
-
-    return None
+    try:
+        return response_any(response)
+    except (ManagementResponseError, ValueError) as exc:
+        print(f"Error: {exc}")
+        raise SystemExit(1) from exc
 
 
 def view(
@@ -65,13 +56,10 @@ def view(
         current += 1
         params["current"] = current
         response = requests.get(f"{url}/api/users", headers=headers, params=params)
-        if response.status_code != 200:
-            print(f"Error: HTTP {response.status_code} - {response.text}")
-            sys.exit(1)
-
-        response_json = response.json()
-        if "error" in response_json:
-            print(f"Error: {response_json['error']}")
+        try:
+            response_json = response_object(response)
+        except (ManagementResponseError, ValueError) as exc:
+            print(f"Error: {exc}")
             sys.exit(1)
 
         data = response_json.get("data", [])

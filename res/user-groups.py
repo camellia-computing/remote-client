@@ -4,6 +4,8 @@ import requests
 import argparse
 import json
 
+from management_response import ManagementResponseError, response_any, response_object
+
 
 def check_response(response):
     """
@@ -13,22 +15,11 @@ def check_response(response):
     1. Status code is not 200 -> exit with error
     2. Response contains {"error": "xxx"} -> exit with error
     """
-    if response.status_code != 200:
-        print(f"Error: HTTP {response.status_code}: {response.text}")
-        exit(1)
-
-    # Check for {"error": "xxx"} in response
-    if response.text and response.text.strip():
-        try:
-            json_data = response.json()
-            if isinstance(json_data, dict) and "error" in json_data:
-                print(f"Error: {json_data['error']}")
-                exit(1)
-            return json_data
-        except ValueError:
-            return response.text
-
-    return None
+    try:
+        return response_any(response)
+    except (ManagementResponseError, ValueError) as exc:
+        print(f"Error: {exc}")
+        raise SystemExit(1) from exc
 
 
 def headers_with(token):
@@ -47,12 +38,10 @@ def list_groups(url, token, name=None, page_size=50):
         current += 1
         params["current"] = current
         r = requests.get(f"{url}/api/user-groups", headers=headers, params=params)
-        if r.status_code != 200:
-            print(f"Error: HTTP {r.status_code} - {r.text}")
-            exit(1)
-        res = r.json()
-        if "error" in res:
-            print(f"Error: {res['error']}")
+        try:
+            res = response_object(r)
+        except (ManagementResponseError, ValueError) as exc:
+            print(f"Error: {exc}")
             exit(1)
         rows = res.get("data", [])
         data.extend(rows)
@@ -149,7 +138,11 @@ def view_users(url, token, group_name=None, name=None, page_size=50):
         r = requests.get(f"{url}/api/users", headers=headers, params=params)
         if r.status_code != 200:
             return check_response(r)
-        res = r.json()
+        try:
+            res = response_object(r)
+        except (ManagementResponseError, ValueError) as exc:
+            print(f"Error: {exc}")
+            exit(1)
         rows = res.get("data", [])
         data.extend(rows)
         total = res.get("total", 0)
@@ -179,11 +172,11 @@ def add_users(url, token, group_name, user_names):
         # Get user by exact name match
         params = {"name": user_name, "pageSize": 50}
         r = requests.get(f"{url}/api/users", headers=headers, params=params)
-        if r.status_code != 200:
-            errors.append(f"{user_name}: HTTP {r.status_code}")
+        try:
+            users_data = response_object(r)
+        except (ManagementResponseError, ValueError) as exc:
+            errors.append(f"{user_name}: {exc}")
             continue
-
-        users_data = r.json()
         users_list = users_data.get("data", [])
         user = None
         for u in users_list:

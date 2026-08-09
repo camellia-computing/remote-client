@@ -23,6 +23,12 @@ class FakeResponse:
         self._body = body
         self.status_code = status_code
         self.text = str(body)
+        self.content = self.text.encode()
+        self.headers = {
+            "X-Camellia-Response-Schema": "1",
+            "X-Camellia-Response-Kind": "success" if status_code < 400 else "error",
+            "Content-Type": "application/json",
+        }
 
     def json(self):
         return self._body
@@ -30,6 +36,7 @@ class FakeResponse:
 
 def receipt(operation, request_document, requested, *, operation_id=OPERATION_ID):
     return {
+        "response_schema_version": 1,
         "result": "OK",
         "management_operation_receipt_version": 1,
         "operation_id": operation_id,
@@ -60,7 +67,9 @@ def control_receipt(
     body["applied"] = requested if applied is None else applied
     if error is not None:
         body.pop("result", None)
-        body["error"] = error
+        body["code"] = f"management_operation_{operation}_failed"
+        body["message"] = error
+        body["retryable"] = False
     return body
 
 

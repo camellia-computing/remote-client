@@ -234,7 +234,7 @@ impl OidcSession {
                 OIDC_SESSION
                     .write()
                     .unwrap()
-                    .set_state(REQUESTING_ACCOUNT_AUTH, err);
+                    .set_state(REQUESTING_ACCOUNT_AUTH, err.message);
                 return;
             }
             Ok(_) => {
@@ -289,19 +289,29 @@ impl OidcSession {
                     OIDC_SESSION.write().unwrap().auth_body = Some(auth_body);
                     return;
                 }
+                Ok(HbbHttpResponse::<_>::Pending(pending)) if pending.code == "oidc_pending" => {
+                    // Explicit machine state: keep querying independently of localized text.
+                }
+                Ok(HbbHttpResponse::<_>::Pending(_)) => {
+                    OIDC_SESSION
+                        .write()
+                        .unwrap()
+                        .set_state(WAITING_ACCOUNT_AUTH, "Invalid pending response".to_owned());
+                    return;
+                }
                 Ok(HbbHttpResponse::<_>::Error(err)) => {
-                    if err.contains("No authed oidc is found") {
-                        // ignore, keep querying
-                    } else {
-                        OIDC_SESSION
-                            .write()
-                            .unwrap()
-                            .set_state(WAITING_ACCOUNT_AUTH, err);
-                        return;
-                    }
+                    OIDC_SESSION
+                        .write()
+                        .unwrap()
+                        .set_state(WAITING_ACCOUNT_AUTH, err.message);
+                    return;
                 }
                 Ok(_) => {
-                    // ignore
+                    OIDC_SESSION
+                        .write()
+                        .unwrap()
+                        .set_state(WAITING_ACCOUNT_AUTH, "Invalid auth response".to_owned());
+                    return;
                 }
                 Err(err) => {
                     log::trace!("Failed query oidc {}", err);
