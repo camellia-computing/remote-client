@@ -13,6 +13,7 @@ import 'package:bot_toast/bot_toast.dart';
 
 import '../utils/http_service.dart' as http;
 import '../common.dart';
+import 'management_api_contract.dart';
 
 String? parseSharedCredentialResponse(String body, int statusCode) {
   if (statusCode != 200) {
@@ -20,7 +21,8 @@ String? parseSharedCredentialResponse(String body, int statusCode) {
   }
   try {
     final decoded = jsonDecode(body);
-    if (decoded is! Map<String, dynamic>) {
+    if (decoded is! Map<String, dynamic> ||
+        decoded['response_schema_version'] != managementResponseSchemaVersion) {
       return null;
     }
     final password = decoded['password'];
@@ -266,13 +268,7 @@ class AbModel {
         debugPrint("HTTP 404, api server doesn't support shared address book");
         return false;
       }
-      Map<String, dynamic> json = _jsonDecodeRespMap(
-        decode_http_response(resp),
-        resp.statusCode,
-      );
-      if (json.containsKey('error')) {
-        throw json['error'];
-      }
+      Map<String, dynamic> json = _jsonDecodeRespMap(resp);
       if (statusCode != 200) {
         throw 'HTTP $statusCode';
       }
@@ -299,13 +295,7 @@ class AbModel {
       if (statusCode == 404) {
         throw 'HTTP 404';
       }
-      Map<String, dynamic> json = _jsonDecodeRespMap(
-        decode_http_response(resp),
-        resp.statusCode,
-      );
-      if (json.containsKey('error')) {
-        throw json['error'];
-      }
+      Map<String, dynamic> json = _jsonDecodeRespMap(resp);
       if (statusCode != 200) {
         throw 'HTTP $statusCode';
       }
@@ -360,13 +350,7 @@ class AbModel {
         if (statusCode == 404) {
           throw 'HTTP 404';
         }
-        Map<String, dynamic> json = _jsonDecodeRespMap(
-          decode_http_response(resp),
-          resp.statusCode,
-        );
-        if (json.containsKey('error')) {
-          throw json['error'];
-        }
+        Map<String, dynamic> json = _jsonDecodeRespMap(resp);
         if (statusCode != 200) {
           throw 'HTTP $statusCode';
         }
@@ -882,6 +866,7 @@ class AbModel {
         body: jsonEncode({'guid': profile.guid, 'id': rid}),
       );
       statusCode = response.statusCode;
+      decodeManagementObject(response, decode_http_response(response));
       return parseSharedCredentialResponse(
         decode_http_response(response),
         response.statusCode,
@@ -1098,13 +1083,7 @@ class Ab extends BaseAb {
         _setEmptyBody(headers);
         final resp = await http.post(uri, headers: headers);
         statusCode = resp.statusCode;
-        Map<String, dynamic> json = _jsonDecodeRespMap(
-          decode_http_response(resp),
-          resp.statusCode,
-        );
-        if (json.containsKey('error')) {
-          throw json['error'];
-        }
+        Map<String, dynamic> json = _jsonDecodeRespMap(resp);
         if (resp.statusCode != 200) {
           throw 'HTTP ${resp.statusCode}';
         }
@@ -1168,10 +1147,7 @@ class Ab extends BaseAb {
       _setEmptyBody(headers);
       final resp = await http.post(uri, headers: headers);
       statusCode = resp.statusCode;
-      List<dynamic> json = _jsonDecodeRespList(
-        decode_http_response(resp),
-        resp.statusCode,
-      );
+      List<dynamic> json = _jsonDecodeRespList(resp);
       if (resp.statusCode != 200) {
         throw 'HTTP ${resp.statusCode}';
       }
@@ -1649,56 +1625,21 @@ class DummyAb extends BaseAb {
   Future<void> syncFromRecent(List<Peer> recents) async {}
 }
 
-Map<String, dynamic> _jsonDecodeRespMap(String body, int statusCode) {
-  try {
-    Map<String, dynamic> json = jsonDecode(body);
-    return json;
-  } catch (e) {
-    final err = body.isNotEmpty && body.length < 128 ? body : e.toString();
-    if (statusCode != 200) {
-      throw 'HTTP $statusCode, $err';
-    }
-    throw err;
-  }
+Map<String, dynamic> _jsonDecodeRespMap(http.Response response) {
+  return decodeManagementObject(response, decode_http_response(response));
 }
 
-List<dynamic> _jsonDecodeRespList(String body, int statusCode) {
-  try {
-    List<dynamic> json = jsonDecode(body);
-    return json;
-  } catch (e) {
-    final err = body.isNotEmpty && body.length < 128 ? body : e.toString();
-    if (statusCode != 200) {
-      throw 'HTTP $statusCode, $err';
-    }
-    throw err;
-  }
+List<dynamic> _jsonDecodeRespList(http.Response response) {
+  return decodeManagementList(response, decode_http_response(response));
 }
 
 String _jsonDecodeActionResp(http.Response resp) {
-  var errMsg = '';
-  if (resp.statusCode == 200 && resp.body.isEmpty) {
-    // ok
-  } else {
-    try {
-      errMsg = jsonDecode(resp.body)['error'].toString();
-    } catch (_) {}
-    if (errMsg.isEmpty) {
-      if (resp.statusCode != 200) {
-        errMsg = 'HTTP ${resp.statusCode}';
-      }
-      if (resp.body.isNotEmpty) {
-        if (errMsg.isNotEmpty) {
-          errMsg += ', ';
-        }
-        errMsg += resp.body;
-      }
-      if (errMsg.isEmpty) {
-        errMsg = "unknown error";
-      }
-    }
+  try {
+    requireManagementEmptySuccess(resp);
+    return '';
+  } catch (error) {
+    return error.toString();
   }
-  return errMsg;
 }
 
 // https://github.com/seanmonstar/reqwest/issues/838

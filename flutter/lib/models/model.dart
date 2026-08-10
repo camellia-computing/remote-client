@@ -44,6 +44,7 @@ import '../common.dart';
 import '../utils/image.dart' as img;
 import '../common/widgets/dialog.dart';
 import 'input_model.dart';
+import 'management_api_contract.dart';
 import 'platform_model.dart';
 import 'remote_window_geometry.dart';
 import 'package:camellia_remote_app/utils/scale.dart';
@@ -68,6 +69,7 @@ String auditSessionCapabilityFromResponseBody(
   try {
     final payload = jsonDecode(body);
     if (payload is! Map<String, dynamic> ||
+        payload['response_schema_version'] != managementResponseSchemaVersion ||
         payload['version'] != 3 ||
         payload['acknowledged_event_id'] != expectedEventId ||
         payload['event_revision'] is! int ||
@@ -1499,8 +1501,13 @@ class FfiModel with ChangeNotifier {
           headers['Content-Type'] = "application/json";
 
           final response = await http.get(Uri.parse(fullUrl), headers: headers);
+          requireManagementResponseHeaders(response);
 
           if (response.statusCode == 200) {
+            if (response.headers[managementResponseKindHeader] != 'success') {
+              debugPrint('Invalid audit success response kind');
+              return;
+            }
             final auditSessionId = auditSessionCapabilityFromResponseBody(
               response.body,
               expectedEventId: auditBindEventId,
@@ -1513,10 +1520,20 @@ class FfiModel with ChangeNotifier {
               debugPrint('Successfully retrieved audit GUID');
               return;
             }
-          } else {
-            debugPrint(
-              'Failed to query audit GUID. Status: ${response.statusCode}, Body: ${response.body}',
+          } else if (response.statusCode == 202) {
+            final pending = decodeManagementObject(
+              response,
+              decode_http_response(response),
             );
+            if (pending['code'] != 'audit_binding_pending' &&
+                    pending['code'] != 'audit_connection_pending' ||
+                pending['pending'] != true ||
+                pending['retryable'] != true) {
+              debugPrint('Invalid audit pending state: ${pending['code']}');
+              return;
+            }
+          } else {
+            decodeManagementObject(response, decode_http_response(response));
             return;
           }
         } catch (e) {

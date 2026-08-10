@@ -12,6 +12,7 @@ from batch_operations import (
     fail,
     operation_headers,
 )
+from management_response import ManagementResponseError, response_any, response_object
 
 
 def view(
@@ -49,13 +50,10 @@ def view(
         current += 1
         params["current"] = current
         response = requests.get(f"{url}/api/devices", headers=headers, params=params)
-        if response.status_code != 200:
-            print(f"Error: HTTP {response.status_code} - {response.text}")
-            sys.exit(1)
-
-        response_json = response.json()
-        if "error" in response_json:
-            print(f"Error: {response_json['error']}")
+        try:
+            response_json = response_object(response)
+        except (ManagementResponseError, ValueError) as exc:
+            print(f"Error: {exc}")
             sys.exit(1)
 
         data = response_json.get("data", [])
@@ -78,18 +76,11 @@ def view(
 
 
 def check(response):
-    if response.status_code != 200:
-        print(f"Error: HTTP {response.status_code} - {response.text}")
-        sys.exit(1)
-
     try:
-        response_json = response.json()
-        if "error" in response_json:
-            print(f"Error: {response_json['error']}")
-            sys.exit(1)
-        return response_json
-    except ValueError:
-        return response.text or "Success"
+        return response_any(response)
+    except (ManagementResponseError, ValueError) as exc:
+        print(f"Error: {exc}")
+        raise SystemExit(1) from exc
 
 
 def _control_mutation(
