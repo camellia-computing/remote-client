@@ -141,7 +141,8 @@ class TerminalModel with ChangeNotifier {
       // Validate all dimensions before using them
       if (w > 0 && h > 0 && pw > 0 && ph > 0) {
         debugPrint(
-            '[TerminalModel] Terminal resized to ${w}x$h (pixel: ${pw}x$ph)');
+          '[TerminalModel] Terminal resized to ${w}x$h (pixel: ${pw}x$ph)',
+        );
 
         // This piece of code must be placed before the conditional check in order to initialize properly.
         onResizeExternal?.call(w, h, pw, ph);
@@ -167,7 +168,8 @@ class TerminalModel with ChangeNotifier {
         }
       } else {
         debugPrint(
-            '[TerminalModel] Invalid terminal dimensions: ${w}x$h (pixel: ${pw}x$ph)');
+          '[TerminalModel] Invalid terminal dimensions: ${w}x$h (pixel: ${pw}x$ph)',
+        );
       }
     };
   }
@@ -200,22 +202,24 @@ class TerminalModel with ChangeNotifier {
     }
 
     debugPrint(
-        '[TerminalModel] Opening terminal $terminalId, sessionId: ${parent.sessionId}, size: ${cols}x$rows');
+      '[TerminalModel] Opening terminal $terminalId, sessionId: ${parent.sessionId}, size: ${cols}x$rows',
+    );
     try {
       await bind
           .sessionOpenTerminal(
-        sessionId: parent.sessionId,
-        terminalId: terminalId,
-        rows: rows,
-        cols: cols,
-      )
+            sessionId: parent.sessionId,
+            terminalId: terminalId,
+            rows: rows,
+            cols: cols,
+          )
           .timeout(
-        const Duration(seconds: 5),
-        onTimeout: () {
-          throw TimeoutException(
-              'sessionOpenTerminal timed out after 5 seconds');
-        },
-      );
+            const Duration(seconds: 5),
+            onTimeout: () {
+              throw TimeoutException(
+                'sessionOpenTerminal timed out after 5 seconds',
+              );
+            },
+          );
       debugPrint('[TerminalModel] sessionOpenTerminal called successfully');
     } catch (e) {
       debugPrint('[TerminalModel] Error calling sessionOpenTerminal: $e');
@@ -247,16 +251,17 @@ class TerminalModel with ChangeNotifier {
       try {
         await bind
             .sessionCloseTerminal(
-          sessionId: parent.sessionId,
-          terminalId: terminalId,
-        )
+              sessionId: parent.sessionId,
+              terminalId: terminalId,
+            )
             .timeout(
-          const Duration(seconds: 3),
-          onTimeout: () {
-            throw TimeoutException(
-                'sessionCloseTerminal timed out after 3 seconds');
-          },
-        );
+              const Duration(seconds: 3),
+              onTimeout: () {
+                throw TimeoutException(
+                  'sessionCloseTerminal timed out after 3 seconds',
+                );
+              },
+            );
         debugPrint('[TerminalModel] sessionCloseTerminal called successfully');
       } catch (e) {
         debugPrint('[TerminalModel] Error calling sessionCloseTerminal: $e');
@@ -280,13 +285,15 @@ class TerminalModel with ChangeNotifier {
           return parsed;
         } else {
           debugPrint(
-              '[TerminalModel] Failed to parse terminal_id as integer: $v. Expected a numeric string.');
+            '[TerminalModel] Failed to parse terminal_id as integer: $v. Expected a numeric string.',
+          );
           return 0;
         }
       } else {
         // Unexpected type, log and handle gracefully
         debugPrint(
-            '[TerminalModel] Unexpected terminal_id type: ${v.runtimeType}, value: $v. Expected int or String.');
+          '[TerminalModel] Unexpected terminal_id type: ${v.runtimeType}, value: $v. Expected int or String.',
+        );
         return 0;
       }
     } else {
@@ -307,7 +314,8 @@ class TerminalModel with ChangeNotifier {
       } else {
         // Unexpected type, log and handle gracefully
         debugPrint(
-            '[TerminalModel] Unexpected success type: ${v.runtimeType}, value: $v. Expected bool or String.');
+          '[TerminalModel] Unexpected success type: ${v.runtimeType}, value: $v. Expected bool or String.',
+        );
         return false;
       }
     } else {
@@ -329,12 +337,14 @@ class TerminalModel with ChangeNotifier {
           return parsed;
         } else {
           debugPrint(
-              '[TerminalModel] Failed to parse exit_code as integer: $v. Expected a numeric string.');
+            '[TerminalModel] Failed to parse exit_code as integer: $v. Expected a numeric string.',
+          );
           return 0;
         }
       } else {
         debugPrint(
-            '[TerminalModel] Unexpected exit_code type: ${v.runtimeType}, value: $v. Expected int or String.');
+          '[TerminalModel] Unexpected exit_code type: ${v.runtimeType}, value: $v. Expected int or String.',
+        );
         return 0;
       }
     } else {
@@ -350,7 +360,8 @@ class TerminalModel with ChangeNotifier {
     // Only handle events for this terminal
     if (evtTerminalId != terminalId) {
       debugPrint(
-          '[TerminalModel] Ignoring event for terminal $evtTerminalId (not mine)');
+        '[TerminalModel] Ignoring event for terminal $evtTerminalId (not mine)',
+      );
       return;
     }
 
@@ -376,7 +387,8 @@ class TerminalModel with ChangeNotifier {
     final String? serviceId = evt['service_id']?.toString();
 
     debugPrint(
-        '[TerminalModel] Terminal opened response: success=$success, message=$message, service_id=$serviceId');
+      '[TerminalModel] Terminal opened response: success=$success, message=$message, service_id=$serviceId',
+    );
 
     if (success) {
       _terminalOpened = true;
@@ -385,7 +397,8 @@ class TerminalModel with ChangeNotifier {
       // terminal queries like DSR/DA; xterm answers them through onOutput as
       // "^[[1;1R^[[2;2R^[[>0;0;0c", which must not be sent back to the peer.
       final replayTerminalOutput = evt['replay_terminal_output'];
-      _suppressNextTerminalDataOutput = replayTerminalOutput == true ||
+      _suppressNextTerminalDataOutput =
+          replayTerminalOutput == true ||
           message == 'Reconnected to existing terminal with pending output';
 
       // Fallback: if terminal view is not yet ready but already has valid
@@ -398,12 +411,14 @@ class TerminalModel with ChangeNotifier {
       }
 
       // Process any buffered input
-      _processBufferedInputAsync().then((_) {
-        notifyListeners();
-      }).catchError((e) {
-        debugPrint('[TerminalModel] Error processing buffered input: $e');
-        notifyListeners();
-      });
+      _processBufferedInputAsync()
+          .then((_) {
+            notifyListeners();
+          })
+          .catchError((e) {
+            debugPrint('[TerminalModel] Error processing buffered input: $e');
+            notifyListeners();
+          });
 
       final persistentSessions =
           (evt['persistent_sessions'] as List<dynamic>? ?? [])
@@ -412,12 +427,13 @@ class TerminalModel with ChangeNotifier {
               .toList();
       if (kWindowId != null && persistentSessions.isNotEmpty) {
         DesktopMultiWindow.invokeMethod(
-            kWindowId!,
-            kWindowEventRestoreTerminalSessions,
-            jsonEncode({
-              'peer_id': id,
-              'persistent_sessions': persistentSessions,
-            }));
+          kWindowId!,
+          kWindowEventRestoreTerminalSessions,
+          jsonEncode({
+            'peer_id': id,
+            'persistent_sessions': persistentSessions,
+          }),
+        );
       }
     } else {
       _writeToTerminal('Failed to open terminal: $message\r\n');
@@ -476,10 +492,7 @@ class TerminalModel with ChangeNotifier {
   /// Write text to terminal, buffering if the view is not yet ready.
   /// All terminal output should go through this method to avoid NaN errors
   /// from writing before the terminal view has valid layout dimensions.
-  void _writeToTerminal(
-    String text, {
-    bool suppressTerminalOutput = false,
-  }) {
+  void _writeToTerminal(String text, {bool suppressTerminalOutput = false}) {
     if (!_terminalViewReady) {
       // If a single chunk exceeds the cap, keep only its tail.
       // Note: truncation may split a multi-byte ANSI escape sequence,
@@ -515,7 +528,8 @@ class TerminalModel with ChangeNotifier {
   void _flushOutputBuffer() {
     if (_pendingOutputChunks.isEmpty) return;
     debugPrint(
-        '[TerminalModel] Flushing $_pendingOutputSize buffered chars (${_pendingOutputChunks.length} chunks)');
+      '[TerminalModel] Flushing $_pendingOutputSize buffered chars (${_pendingOutputChunks.length} chunks)',
+    );
     for (var i = 0; i < _pendingOutputChunks.length; i++) {
       _writeTerminalChunk(
         _pendingOutputChunks[i],
@@ -574,8 +588,8 @@ class TerminalModel with ChangeNotifier {
   }
 
   void _handleTerminalError(Map<String, dynamic> evt) {
-    final String message = evt['message'] ?? 'Unknown error';
-    _writeToTerminal('\r\nTerminal error: $message\r\n');
+    final String code = evt['code']?.toString() ?? 'protocol_mismatch';
+    _writeToTerminal('\r\nTerminal error: $code\r\n');
   }
 
   @override
