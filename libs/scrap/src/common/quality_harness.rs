@@ -54,7 +54,7 @@ use std::{
     fs::OpenOptions,
     io::{BufWriter, Write},
     path::PathBuf,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use camellia_remote_protocol::{
@@ -1077,6 +1077,24 @@ const FULL_MEASURED: usize = 32;
 const SMOKE_WARMUP: usize = 4;
 const SMOKE_MEASURED: usize = 8;
 
+fn requested_work_duration() -> Result<Option<Duration>, String> {
+    let Some(raw) = env::var_os("CAMELLIA_PERFORMANCE_WORK_SECONDS") else {
+        return Ok(None);
+    };
+    let raw = raw
+        .to_str()
+        .ok_or_else(|| "CAMELLIA_PERFORMANCE_WORK_SECONDS must be UTF-8".to_owned())?;
+    let seconds = raw
+        .parse::<u64>()
+        .map_err(|_| "CAMELLIA_PERFORMANCE_WORK_SECONDS must be an integer".to_owned())?;
+    if raw != seconds.to_string() || !(1..=60).contains(&seconds) {
+        return Err(
+            "CAMELLIA_PERFORMANCE_WORK_SECONDS must be a canonical integer in 1..60".to_owned(),
+        );
+    }
+    Ok(Some(Duration::from_secs(seconds)))
+}
+
 fn case(
     width: u32,
     height: u32,
@@ -1220,25 +1238,39 @@ fn performance_contract_observation() {
         "performance observation path must be absolute"
     );
 
-    let measurement = run_case(case(
-        1280,
-        720,
-        30,
-        Quality::Balanced,
-        Motion::Light,
-        Model::Current,
-        SMOKE_WARMUP,
-        SMOKE_MEASURED,
-    ));
+    let requested_duration = requested_work_duration().expect("valid bounded work duration");
+    let started = Instant::now();
+    let mut measurements = Vec::new();
+    loop {
+        measurements.push(run_case(case(
+            1280,
+            720,
+            30,
+            Quality::Balanced,
+            Motion::Light,
+            Model::Current,
+            SMOKE_WARMUP,
+            SMOKE_MEASURED,
+        )));
+        if requested_duration.is_none_or(|duration| started.elapsed() >= duration) {
+            break;
+        }
+    }
+    let average = |value: fn(&Measurement) -> f64| {
+        measurements.iter().map(value).sum::<f64>() / measurements.len() as f64
+    };
+    let decode_ms_mean = average(|measurement| measurement.decode_ms_mean);
+    let dropped_frames = average(|measurement| measurement.dropped as f64);
+    let encode_ms_p95 = average(|measurement| measurement.encode_ms_p95);
+    let encoded_bytes_per_second = average(|measurement| measurement.achieved_kbps * 125.0);
+    let psnr_db = average(|measurement| measurement.psnr_db);
+    let ssim = average(|measurement| measurement.ssim);
     for (name, value) in [
-        ("decode_ms_mean", measurement.decode_ms_mean),
-        ("encode_ms_p95", measurement.encode_ms_p95),
-        ("psnr_db", measurement.psnr_db),
-        ("ssim", measurement.ssim),
-        (
-            "encoded_bytes_per_second",
-            measurement.achieved_kbps * 125.0,
-        ),
+        ("decode_ms_mean", decode_ms_mean),
+        ("encode_ms_p95", encode_ms_p95),
+        ("encoded_bytes_per_second", encoded_bytes_per_second),
+        ("psnr_db", psnr_db),
+        ("ssim", ssim),
     ] {
         assert!(
             value.is_finite() && value > 0.0,
@@ -1246,38 +1278,42 @@ fn performance_contract_observation() {
             name
         );
     }
+    assert!(
+        dropped_frames.is_finite() && dropped_frames >= 0.0,
+        "dropped_frames is not a finite non-negative observation"
+    );
 
     let document = json!({
         "metrics": {
             "decode_ms_mean": {
                 "direction": "lower",
                 "unit": "ms",
-                "value": measurement.decode_ms_mean,
+                "value": decode_ms_mean,
             },
             "dropped_frames": {
                 "direction": "lower",
                 "unit": "count",
-                "value": measurement.dropped,
+                "value": dropped_frames,
             },
             "encode_ms_p95": {
                 "direction": "lower",
                 "unit": "ms",
-                "value": measurement.encode_ms_p95,
+                "value": encode_ms_p95,
             },
             "encoded_bytes_per_second": {
                 "direction": "lower",
                 "unit": "bytes_per_second",
-                "value": measurement.achieved_kbps * 125.0,
+                "value": encoded_bytes_per_second,
             },
             "psnr_db": {
                 "direction": "higher",
                 "unit": "db",
-                "value": measurement.psnr_db,
+                "value": psnr_db,
             },
             "ssim": {
                 "direction": "higher",
                 "unit": "ratio",
-                "value": measurement.ssim,
+                "value": ssim,
             },
         },
         "scenario": "client-vp9-quality-v1",
