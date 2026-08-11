@@ -561,6 +561,105 @@ jobs:
         working-directory: flutter/web/js
         run: npm audit --audit-level=high
 
+  performance_smoke:
+    name: VP9 performance contract smoke
+    if: >-
+      github.event_name == 'pull_request' &&
+      needs.classify.outputs.runtime == 'true'
+    needs: classify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: candidate
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+          submodules: recursive
+
+      - name: Checkout exact control
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: control
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.base.sha }}
+          submodules: recursive
+
+      - name: Install exact Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # zizmor: ignore[superfluous-actions]
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Install bounded software-codec prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake gcc g++ libclang-dev libvpx-dev pkg-config
+
+      - name: Validate shared performance contract
+        run: python3 -m unittest -v tools.test_performance_contract
+        working-directory: candidate/libs/camellia_remote_protocol
+
+      - name: Build and compare real VP9 observations
+        env:
+          CANDIDATE_REVISION: ${{ github.event.pull_request.head.sha }}
+          CONTROL_REVISION: ${{ github.event.pull_request.base.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -m 0644 \
+            candidate/libs/scrap/src/common/quality_harness.rs \
+            control/libs/scrap/src/common/quality_harness.rs
+          CARGO_TARGET_DIR="$RUNNER_TEMP/client-control-target" \
+            cargo test --locked --release --no-run \
+            --manifest-path control/Cargo.toml \
+            --package scrap --features linux-pkg-config
+          CARGO_TARGET_DIR="$RUNNER_TEMP/client-candidate-target" \
+            cargo test --locked --release --no-run \
+            --manifest-path candidate/Cargo.toml \
+            --package scrap --features linux-pkg-config
+          mapfile -t control_bins < <(
+            find "$RUNNER_TEMP/client-control-target/release/deps" \
+              -maxdepth 1 -type f -perm -u+x -name 'scrap-*'
+          )
+          mapfile -t candidate_bins < <(
+            find "$RUNNER_TEMP/client-candidate-target/release/deps" \
+              -maxdepth 1 -type f -perm -u+x -name 'scrap-*'
+          )
+          [[ ${#control_bins[@]} -eq 1 && ${#candidate_bins[@]} -eq 1 ]]
+          python3 candidate/libs/camellia_remote_protocol/tools/performance_contract.py collect-pair \
+            --repository remote-client \
+            --control-revision "$CONTROL_REVISION" \
+            --candidate-revision "$CANDIDATE_REVISION" \
+            --scenario client-vp9-quality-v1 \
+            --tier pr-smoke \
+            --runner-class github-ubuntu-24.04-x64 \
+            --toolchain rust-1.97.1-libvpx-system \
+            --iterations 5 --warmups 1 --timeout-seconds 60 \
+            --control-output "$RUNNER_TEMP/client-control-performance.json" \
+            --candidate-output "$RUNNER_TEMP/client-candidate-performance.json" \
+            -- "${control_bins[0]}" \
+            common::quality_harness::performance_contract_observation --ignored --exact \
+            ::: "${candidate_bins[0]}" \
+            common::quality_harness::performance_contract_observation --ignored --exact
+          python3 candidate/libs/camellia_remote_protocol/tools/performance_contract.py compare \
+            "$RUNNER_TEMP/client-control-performance.json" \
+            "$RUNNER_TEMP/client-candidate-performance.json" \
+            candidate/performance/client-vp9-quality-v1.json \
+            --output "$RUNNER_TEMP/client-performance-comparison.json"
+
+      - name: Upload bounded performance evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: client-performance-${{ github.event.pull_request.head.sha }}
+          path: |
+            ${{ runner.temp }}/client-control-performance.json
+            ${{ runner.temp }}/client-candidate-performance.json
+            ${{ runner.temp }}/client-performance-comparison.json
+          if-no-files-found: error
+          retention-days: 14
+
   required:
     name: CI / Required
     if: always()
@@ -575,6 +674,7 @@ jobs:
       - windows_portable
       - apple_native
       - quality
+      - performance_smoke
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -595,6 +695,7 @@ jobs:
           WINDOWS_PORTABLE_RESULT: ${{ needs.windows_portable.result }}
           APPLE_NATIVE_RESULT: ${{ needs.apple_native.result }}
           QUALITY_RESULT: ${{ needs.quality.result }}
+          PERFORMANCE_SMOKE_RESULT: ${{ needs.performance_smoke.result }}
         run: |
           failure=false
           require_success() {
@@ -621,6 +722,12 @@ jobs:
           fi
           if [[ "$EVENT_NAME" == "pull_request" && "$DEPENDENCIES_CHANGED" == "true" ]]; then
             require_success "dependency review" "$DEPENDENCY_REVIEW_RESULT"
+          fi
+          if [[ "$EVENT_NAME" == "pull_request" && "$RUNTIME_REQUIRED" == "true" ]]; then
+            require_success "VP9 performance contract smoke" "$PERFORMANCE_SMOKE_RESULT"
+          elif [[ "$PERFORMANCE_SMOKE_RESULT" != "skipped" ]]; then
+            echo "VP9 performance smoke must be skipped outside runtime pull requests, got: $PERFORMANCE_SMOKE_RESULT" >&2
+            failure=true
           fi
           if [[ "$failure" == "true" ]]; then
             exit 1
