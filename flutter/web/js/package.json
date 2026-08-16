@@ -15,11 +15,11 @@
   },
   "dependencies": {
     "fzstd": "^0.1.1",
-    "protobufjs": "8.7.1",
+    "protobufjs": "8.7.2",
     "tweetnacl": "^1.0.3"
   },
   "devDependencies": {
     "typescript": "^7.0.2",
-    "vite": "8.1.5"
+    "vite": "8.2.1"
   }
 }
