@@ -1859,17 +1859,25 @@ pub fn main_start_dbus_server() {
     {
         use crate::dbus::start_dbus_server;
         // spawn new thread to start dbus server
-        std::thread::spawn(|| {
+        if let Err(error) = crate::threading::spawn_named("dbus-server", || {
             let _ = start_dbus_server();
-        });
+        }) {
+            log::error!(
+                "event=thread_spawn_failed name=dbus-server error={error}; capability=disabled"
+            );
+        }
     }
 }
 
 pub fn main_save_ab(json: String) {
     if json.len() > 1024 {
-        std::thread::spawn(|| {
+        if let Err(error) = crate::threading::spawn_named("address-book-save", move || {
             config::Ab::store(json);
-        });
+        }) {
+            log::error!(
+                "event=thread_spawn_failed name=address-book-save error={error}; capability=disabled"
+            );
+        }
     } else {
         config::Ab::store(json);
     }
@@ -1885,9 +1893,13 @@ pub fn main_load_ab() -> String {
 
 pub fn main_save_group(json: String) {
     if json.len() > 1024 {
-        std::thread::spawn(|| {
+        if let Err(error) = crate::threading::spawn_named("group-save", move || {
             config::Group::store(json);
-        });
+        }) {
+            log::error!(
+                "event=thread_spawn_failed name=group-save error={error}; capability=disabled"
+            );
+        }
     } else {
         config::Group::store(json);
     }
@@ -2475,19 +2487,31 @@ pub fn cm_init() {
 /// * macOS only
 pub fn main_start_ipc_url_server() {
     #[cfg(target_os = "macos")]
-    std::thread::spawn(move || crate::server::start_ipc_url_server());
+    if let Err(error) =
+        crate::threading::spawn_named("ipc-url-server", crate::server::start_ipc_url_server)
+    {
+        log::error!(
+            "event=thread_spawn_failed name=ipc-url-server error={error}; capability=disabled"
+        );
+    }
 }
 
 pub fn main_test_wallpaper(_second: u64) {
     #[cfg(any(target_os = "windows", target_os = "linux"))]
-    std::thread::spawn(move || match crate::platform::WallPaperRemover::new() {
-        Ok(_remover) => {
-            std::thread::sleep(std::time::Duration::from_secs(_second));
+    if let Err(error) = crate::threading::spawn_named("wallpaper-test", move || {
+        match crate::platform::WallPaperRemover::new() {
+            Ok(_remover) => {
+                std::thread::sleep(std::time::Duration::from_secs(_second));
+            }
+            Err(e) => {
+                log::info!("create wallpaper remover failed: {:?}", e);
+            }
         }
-        Err(e) => {
-            log::info!("create wallpaper remover failed: {:?}", e);
-        }
-    });
+    }) {
+        log::error!(
+            "event=thread_spawn_failed name=wallpaper-test error={error}; capability=disabled"
+        );
+    }
 }
 
 pub fn main_support_remove_wallpaper() -> bool {
@@ -2558,7 +2582,11 @@ pub fn is_preset_password_mobile_only() -> bool {
 #[allow(unused_variables)]
 pub fn send_url_scheme(_url: String) {
     #[cfg(target_os = "macos")]
-    std::thread::spawn(move || crate::handle_url_scheme(_url));
+    if let Err(error) =
+        crate::threading::spawn_named("url-scheme", move || crate::handle_url_scheme(_url))
+    {
+        log::error!("event=thread_spawn_failed name=url-scheme error={error}; capability=disabled");
+    }
 }
 
 // The plugin framework has been removed; these endpoints are kept as no-op
@@ -2778,7 +2806,7 @@ pub fn main_get_common_sync(key: String) -> String {
 pub fn main_set_common(_key: String, _value: String) {
     #[cfg(target_os = "windows")]
     if _key == "install-printer" && crate::platform::is_win_10_or_greater() {
-        std::thread::spawn(move || {
+        if let Err(error) = crate::threading::spawn_named("printer-install", move || {
             let (success, msg) = match remote_printer::install_update_printer(&get_app_name()) {
                 Ok(_) => (true, "".to_owned()),
                 Err(e) => {
@@ -2806,11 +2834,15 @@ pub fn main_set_common(_key: String, _value: String) {
                 flutter::APP_TYPE_MAIN,
                 serde_json::ser::to_string(&data).unwrap_or("".to_owned()),
             );
-        });
+        }) {
+            log::error!(
+                "event=thread_spawn_failed name=printer-install error={error}; capability=disabled"
+            );
+        }
     }
     #[cfg(target_os = "linux")]
     if _key == "clear-gnome-shortcuts-inhibitor-permission" {
-        std::thread::spawn(move || {
+        if let Err(error) = crate::threading::spawn_named("clear-gnome-shortcuts", move || {
             let (success, msg) =
                 match crate::platform::linux::clear_gnome_shortcuts_inhibitor_permission() {
                     Ok(_) => (true, "".to_owned()),
@@ -2828,7 +2860,11 @@ pub fn main_set_common(_key: String, _value: String) {
                 flutter::APP_TYPE_MAIN,
                 serde_json::ser::to_string(&data).unwrap_or("".to_owned()),
             );
-        });
+        }) {
+            log::error!(
+                "event=thread_spawn_failed name=clear-gnome-shortcuts error={error}; capability=disabled"
+            );
+        }
     }
 }
 
@@ -2897,7 +2933,11 @@ pub mod server_side {
                 crate::read_custom_client(&custom_client_config);
             }
         }
-        std::thread::spawn(move || start_server(true));
+        if let Err(error) =
+            crate::threading::spawn_named("android-server", move || start_server(true))
+        {
+            log::error!("event=thread_spawn_failed name=android-server error={error}");
+        }
     }
 
     #[no_mangle]

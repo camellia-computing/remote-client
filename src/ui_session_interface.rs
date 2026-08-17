@@ -539,9 +539,11 @@ impl<T: InvokeUiSession> Session<T> {
         let id = self.get_id();
         let session_id = self.lc.read().unwrap().session_id;
         *self.last_audit_note.lock().unwrap() = note.clone();
-        std::thread::spawn(move || {
+        if let Err(error) = crate::threading::spawn_named("audit-note", move || {
             send_note(url, id, session_id, note);
-        });
+        }) {
+            log::error!("event=thread_spawn_failed name=audit-note error={error}");
+        }
     }
 
     pub fn remove_port_forward(&self, port: i32) {
@@ -1241,9 +1243,22 @@ impl<T: InvokeUiSession> Session<T> {
         let mut lock = self.thread.lock().unwrap();
         // No need to join the previous thread, because it will exit automatically.
         // And the previous thread will not change important states.
-        *lock = Some(std::thread::spawn(move || {
+        match crate::threading::spawn_named("session-io", move || {
             io_loop(cloned, round);
-        }));
+        }) {
+            Ok(handle) => *lock = Some(handle),
+            Err(error) => {
+                log::error!("event=thread_spawn_failed name=session-io error={error}");
+                drop(lock);
+                self.connection_round_state
+                    .lock()
+                    .unwrap()
+                    .set_disconnected(round);
+                self.on_error(
+                    "Unable to start the remote session worker due to local resource limits.",
+                );
+            }
+        }
     }
 
     pub fn login(
@@ -1475,7 +1490,11 @@ impl<T: InvokeUiSession> Session<T> {
     #[inline]
     pub fn request_voice_call(&self) {
         #[cfg(target_os = "linux")]
-        std::thread::spawn(crate::ipc::start_pa);
+        if let Err(error) = crate::threading::spawn_named("audio-ipc", crate::ipc::start_pa) {
+            log::error!("event=thread_spawn_failed name=audio-ipc error={error}");
+            self.on_error("Unable to start audio due to local resource limits.");
+            return;
+        }
         self.send(Data::NewVoiceCall);
     }
 
