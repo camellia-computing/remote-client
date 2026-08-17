@@ -299,13 +299,18 @@ fn spawn_wait_responses(sockets: Vec<UdpSocket>) -> UnboundedReceiver<config::Di
     let (tx, rx) = unbounded_channel::<_>();
     for socket in sockets {
         let tx_clone = tx.clone();
-        std::thread::spawn(move || {
+        let result = crate::threading::spawn_named("lan-discover-response", move || {
             allow_err!(wait_response(
                 socket,
                 Some(std::time::Duration::from_millis(10)),
                 tx_clone
             ));
         });
+        if let Err(error) = result {
+            log::error!(
+                "event=thread_spawn_failed name=lan-discover-response error={error}; capability=degraded"
+            );
+        }
     }
     rx
 }
