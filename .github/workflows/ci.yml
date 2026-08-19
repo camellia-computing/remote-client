@@ -193,6 +193,7 @@ jobs:
 
       - name: Test build automation
         run: |
+          python3 .github/scripts/test_dynamic_boundary_policy.py
           python3 -m compileall -q .github/scripts libs/portable
           python3 .github/scripts/verify_apple_deployment.py
           python3 .github/scripts/test_manage_release.py
@@ -317,17 +318,21 @@ jobs:
           --features with_serde
 
   windows_portable:
-    name: Windows portable smoke check (${{ matrix.target }})
+    name: Windows portable and CRT check (${{ matrix.target }})
     if: needs.classify.outputs.runtime == 'true'
     needs: classify
     runs-on: windows-2022
-    timeout-minutes: 20
+    timeout-minutes: 30
+    env:
+      VCPKG_BINARY_SOURCES: clear
     strategy:
       fail-fast: false
       matrix:
-        target:
-          - x86_64-pc-windows-msvc
-          - aarch64-pc-windows-msvc
+        include:
+          - target: x86_64-pc-windows-msvc
+            triplet: x64-windows-static
+          - target: aarch64-pc-windows-msvc
+            triplet: arm64-windows-static
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -340,6 +345,49 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: ${{ matrix.target }}
+
+      - name: Configure vcpkg
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.6
+        with:
+          doNotCache: true
+          vcpkgDirectory: C:\vcpkg
+
+      - name: Configure MSBuild
+        uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3.0.0
+
+      - name: Build clean Opus and verify CRT directives
+        shell: pwsh
+        env:
+          VCPKG_TARGET_TRIPLET: ${{ matrix.triplet }}
+        run: | # zizmor: ignore[template-injection] The triplet is selected only from the fixed in-repository matrix.
+          python .github/scripts/verify_windows_crt.py source
+          $sourceRoot = (Get-Location).Path
+          $workRoot = Join-Path $env:RUNNER_TEMP "camellia-opus-$env:VCPKG_TARGET_TRIPLET"
+          $installRoot = Join-Path $workRoot 'installed'
+          $buildtrees = Join-Path $workRoot 'buildtrees'
+          $packages = Join-Path $workRoot 'packages'
+          $downloads = Join-Path $workRoot 'downloads'
+          if (Test-Path -LiteralPath $workRoot) {
+            throw "Refusing to reuse Opus build root: $workRoot"
+          }
+          New-Item -ItemType Directory -Path $workRoot | Out-Null
+          Push-Location $env:RUNNER_TEMP
+          try {
+            & "$env:VCPKG_ROOT\vcpkg.exe" install "opus:$env:VCPKG_TARGET_TRIPLET" `
+              "--overlay-ports=$sourceRoot\res\vcpkg" `
+              "--x-install-root=$installRoot" `
+              "--x-buildtrees-root=$buildtrees" `
+              "--x-packages-root=$packages" `
+              "--downloads-root=$downloads" `
+              --clean-after-build
+            if ($LASTEXITCODE -ne 0) {
+              throw "vcpkg failed with exit code $LASTEXITCODE"
+            }
+          } finally {
+            Pop-Location
+          }
+          python .github/scripts/verify_windows_crt.py archive --path "$installRoot/$env:VCPKG_TARGET_TRIPLET/lib/opus.lib" --linkage static --configuration release
+          python .github/scripts/verify_windows_crt.py archive --path "$installRoot/$env:VCPKG_TARGET_TRIPLET/debug/lib/opus.lib" --linkage static --configuration debug
 
       - name: Build deterministic portable launcher fixture
         shell: pwsh
@@ -615,7 +663,7 @@ jobs:
           if [[ "$RUNTIME_REQUIRED" == "true" ]]; then
             require_success "bridge generation" "$BRIDGE_RESULT"
             require_success "Windows Rust smoke check" "$WINDOWS_RUST_RESULT"
-            require_success "Windows portable smoke checks" "$WINDOWS_PORTABLE_RESULT"
+            require_success "Windows portable and CRT checks" "$WINDOWS_PORTABLE_RESULT"
             require_success "Apple native smoke checks" "$APPLE_NATIVE_RESULT"
             require_success "Rust, Flutter, and Web quality" "$QUALITY_RESULT"
           fi
