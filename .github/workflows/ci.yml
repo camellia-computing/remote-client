@@ -193,6 +193,7 @@ jobs:
 
       - name: Test build automation
         run: |
+          python3 .github/scripts/test_dynamic_boundary_policy.py
           python3 -m compileall -q .github/scripts libs/portable
           python3 .github/scripts/verify_apple_deployment.py
           python3 .github/scripts/test_manage_release.py
