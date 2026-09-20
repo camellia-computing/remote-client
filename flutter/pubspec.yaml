@@ -29,14 +29,14 @@ dependencies:
 
   ffi: ^2.1.0
   path_provider: ^2.1.1
-  external_path: ^2.2.0
+  external_path: ^3.0.0
   provider: ^6.0.5
   tuple: ^2.0.0
   wakelock_plus: ^1.1.3
   #firebase_analytics: ^9.1.5
   package_info_plus: ^9.0.1
   url_launcher: ^6.3.1
-  url_launcher_ios: ^6.3.2
+  url_launcher_ios: ^6.4.2
   draggable_float_widget: ^0.1.0
   flutter_breadcrumb: ^1.0.1
   http: ^1.1.0
@@ -45,7 +45,7 @@ dependencies:
   image_picker: ^1.1.2
   image: ^4.0.17
   back_button_interceptor: ^8.0.4
-  flutter_rust_bridge: ^2.12.0
+  flutter_rust_bridge: ^2.13.0
   window_manager:
     git:
       url: https://github.com/rustdesk-org/window_manager
@@ -61,7 +61,7 @@ dependencies:
       ref: eb3964990cf19629c89ff8cb4a37640c7b3d5601
   get: ^4.6.5
   visibility_detector: ^0.4.0+2
-  desktop_drop: ^0.7.1
+  desktop_drop: ^0.8.4
   scroll_pos: ^0.5.0
   debounce_throttle: ^2.0.0
   file_picker: ^11.0.2
@@ -77,7 +77,7 @@ dependencies:
   bot_toast: ^4.0.3
   win32: ">=2.1.3 <6.0.0"
   password_strength: ^0.2.0
-  flutter_keyboard_visibility: ^6.0.0
+  flutter_keyboard_visibility: ^7.0.1
   cupertino_icons: ^1.0.8
   texture_rgba_renderer:
     git:
@@ -91,7 +91,7 @@ dependencies:
       ref: 08a471bb8ceccdd50483c81cdfa8b81b07b14b87
   uuid: ^4.6.0
   auto_size_text_field: ^2.2.1
-  flex_color_picker: ^3.3.0
+  flex_color_picker: ^4.0.0
   dynamic_layouts:
     git:
       url: https://github.com/rustdesk-org/dynamic_layouts.git
@@ -102,17 +102,17 @@ dependencies:
   xterm: ^4.0.0
   # No Dart import: the macOS Runner registers SqflitePlugin natively
   # (macos/Runner/MainFlutterWindow.swift), so the plugin must be resolved.
-  sqflite: ^2.2.0
-  vector_math: ^2.1.4
+  sqflite: ^2.4.4
+  vector_math: ^2.4.3
   web: ^1.1.1
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  build_runner: ^2.15.1
-  freezed: ^3.2.5
+  build_runner: ^2.16.1
+  freezed: ^4.0.2
   flutter_lints: ^6.0.0
-  ffigen: ^21.0.0
+  ffigen: ^22.0.0
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
