@@ -9,8 +9,10 @@ from batch_operations import (
     canonical_model_pk,
     canonical_operation_id,
     check_control_response,
+    document_digest,
     fail,
     operation_headers,
+    required_generation,
 )
 
 
@@ -99,16 +101,20 @@ def _control_mutation(
     *,
     action,
     operation_id=None,
+    expected_generation=None,
 ):
     guid = canonical_model_pk(guid, "device GUID")
+    expected_generation = required_generation(expected_generation)
     operation = f"device_status_{action}"
     operation_id = canonical_operation_id(operation_id)
     print(f"Operation target: device {guid}", flush=True)
     print(f"Operation ID: {operation_id}", flush=True)
     request_document = {"operation": operation, "device": str(guid)}
+    if expected_generation is not None:
+        request_document["expected_generation"] = expected_generation
     response = requests.post(
         f"{url}/api/devices/{guid}/{action}",
-        headers=operation_headers(token, operation_id),
+        headers=operation_headers(token, operation_id, expected_generation),
         json={},
     )
     return check_control_response(
@@ -120,7 +126,7 @@ def _control_mutation(
     )
 
 
-def disable(url, token, guid, id, operation_id=None):
+def disable(url, token, guid, id, operation_id=None, expected_generation=None):
     print("Disable", id)
     return _control_mutation(
         url,
@@ -128,10 +134,11 @@ def disable(url, token, guid, id, operation_id=None):
         guid,
         action="disable",
         operation_id=operation_id,
+        expected_generation=expected_generation,
     )
 
 
-def enable(url, token, guid, id, operation_id=None):
+def enable(url, token, guid, id, operation_id=None, expected_generation=None):
     print("Enable", id)
     return _control_mutation(
         url,
@@ -139,20 +146,26 @@ def enable(url, token, guid, id, operation_id=None):
         guid,
         action="enable",
         operation_id=operation_id,
+        expected_generation=expected_generation,
     )
 
 
-def delete(url, token, guid, id, operation_id=None):
+def delete(
+    url, token, guid, id, operation_id=None, expected_generation=None
+):
     print("Delete", id)
     guid = canonical_model_pk(guid, "device GUID")
+    expected_generation = required_generation(expected_generation)
     operation = "device_delete"
     operation_id = canonical_operation_id(operation_id)
     print(f"Operation target: device {guid}", flush=True)
     print(f"Operation ID: {operation_id}", flush=True)
     request_document = {"operation": operation, "device": str(guid)}
+    if expected_generation is not None:
+        request_document["expected_generation"] = expected_generation
     response = requests.delete(
         f"{url}/api/devices/{guid}",
-        headers=operation_headers(token, operation_id),
+        headers=operation_headers(token, operation_id, expected_generation),
         json={},
     )
     return check_control_response(
@@ -164,7 +177,9 @@ def delete(url, token, guid, id, operation_id=None):
     )
 
 
-def assign(url, token, guid, id, type, value):
+def assign(
+    url, token, guid, id, type, value, operation_id=None, expected_generation=None
+):
     print("assign", id, type, value)
     valid_types = [
         "ab",
@@ -176,14 +191,65 @@ def assign(url, token, guid, id, type, value):
         "device_name",
     ]
     if type not in valid_types:
-        print(f"Invalid type, it must be one of: {', '.join(valid_types)}")
-        return
+        fail(f"Invalid type, it must be one of: {', '.join(valid_types)}")
+    if type == "ab":
+        values = value.split(",")
+        if len(values) != 5:
+            fail("ab assignment must contain name,tag,alias,password,note")
+        value = dict(
+            zip(
+                (
+                    "address_book_name",
+                    "address_book_tag",
+                    "address_book_alias",
+                    "address_book_password",
+                    "address_book_note",
+                ),
+                values,
+                strict=True,
+            )
+        )
     data = {"type": type, "value": value}
-    headers = {"Authorization": f"Bearer {token}"}
+    guid = canonical_model_pk(guid, "device GUID")
+    expected_generation = required_generation(expected_generation)
+    operation_id = canonical_operation_id(operation_id)
+    print(f"Operation target: device {guid}", flush=True)
+    print(f"Operation ID: {operation_id}", flush=True)
+    request_document = {
+        "operation": "device_assign",
+        "device": guid,
+        "type": type,
+        "value": (
+            {
+                **{
+                    key: nested_value
+                    for key, nested_value in value.items()
+                    if key != "address_book_password"
+                },
+                "has_address_book_password": "address_book_password" in value,
+                "address_book_password_digest": (
+                    document_digest(value["address_book_password"])
+                    if "address_book_password" in value
+                    else None
+                ),
+            }
+            if type == "ab"
+            else value
+        ),
+        "expected_generation": expected_generation,
+    }
     response = requests.post(
-        f"{url}/api/devices/{guid}/assign", headers=headers, json=data
+        f"{url}/api/devices/{guid}/assign",
+        headers=operation_headers(token, operation_id, expected_generation),
+        json=data,
     )
-    return check(response)
+    return check_control_response(
+        response,
+        operation="device_assign",
+        operation_id=operation_id,
+        request_document=request_document,
+        requested={"devices": 1},
+    )
 
 
 def main():
@@ -222,6 +288,11 @@ def main():
         "--operation-id",
         help="Canonical UUID used to retry one control mutation after response loss",
     )
+    parser.add_argument(
+        "--expected-generation",
+        type=int,
+        help="Device policy generation observed before assign",
+    )
 
     args = parser.parse_args()
 
@@ -229,10 +300,14 @@ def main():
         args.url = args.url[:-1]
 
     if args.guid:
-        if args.command not in ("disable", "enable", "delete"):
+        if args.command not in ("disable", "enable", "delete", "assign"):
             fail(f"--guid is not supported for {args.command}")
         device_guid = canonical_model_pk(args.guid, "device GUID")
-        devices = [{"guid": device_guid, "id": args.id or device_guid}]
+        devices = [{
+            "guid": device_guid,
+            "id": args.id or device_guid,
+            "mutation_generation": args.expected_generation,
+        }]
     else:
         devices = view(
             args.url,
@@ -249,8 +324,6 @@ def main():
         for device in devices:
             print(device)
     elif args.command in ["disable", "enable", "delete", "assign"]:
-        if args.operation_id and args.command not in ("disable", "enable", "delete"):
-            fail(f"--operation-id is not supported for {args.command}")
         if len(devices) == 0:
             fail(f"{args.command} matched no devices")
         if args.operation_id and len(devices) != 1:
@@ -275,6 +348,7 @@ def main():
                     device["guid"],
                     device["id"],
                     operation_id=args.operation_id if len(devices) == 1 else None,
+                    expected_generation=device.get("mutation_generation"),
                 )
                 print(response)
         elif args.command == "enable":
@@ -285,6 +359,7 @@ def main():
                     device["guid"],
                     device["id"],
                     operation_id=args.operation_id if len(devices) == 1 else None,
+                    expected_generation=device.get("mutation_generation"),
                 )
                 print(response)
         elif args.command == "delete":
@@ -295,6 +370,7 @@ def main():
                     device["guid"],
                     device["id"],
                     operation_id=args.operation_id if len(devices) == 1 else None,
+                    expected_generation=device.get("mutation_generation"),
                 )
                 print(response)
         elif args.command == "assign":
@@ -304,7 +380,18 @@ def main():
             type, value = args.assign_to.split("=", 1)
             for device in devices:
                 response = assign(
-                    args.url, args.token, device["guid"], device["id"], type, value
+                    args.url,
+                    args.token,
+                    device["guid"],
+                    device["id"],
+                    type,
+                    value,
+                    operation_id=args.operation_id if len(devices) == 1 else None,
+                    expected_generation=(
+                        args.expected_generation
+                        if args.expected_generation is not None
+                        else device.get("mutation_generation")
+                    ),
                 )
                 print(response)
 

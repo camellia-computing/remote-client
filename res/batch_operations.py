@@ -3,9 +3,12 @@ import json
 import re
 import uuid
 
+import requests
+
 MANAGEMENT_OPERATION_RECEIPT_VERSION = 1
 MAX_MANAGEMENT_MODEL_PK = (1 << 63) - 1
 _DIGEST_RE = re.compile(r"[0-9a-f]{64}")
+_MACHINE_CODE_RE = re.compile(r"[a-z][a-z0-9_]{0,63}")
 
 
 def fail(message):
@@ -39,8 +42,8 @@ def canonical_operation_id(value=None):
         parsed = uuid.UUID(value)
     except ValueError:
         fail("operation ID must be a canonical UUID")
-    if str(parsed) != value.lower():
-        fail("operation ID must be a canonical UUID")
+    if str(parsed) != value.lower() or parsed.version != 4:
+        fail("operation ID must be a canonical random UUIDv4")
     return str(parsed)
 
 
@@ -81,11 +84,83 @@ def require_unique(values, label):
         seen.add(value)
 
 
-def operation_headers(token, operation_id):
-    return {
+def operation_headers(token, operation_id, expected_generation=None):
+    headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
         "Idempotency-Key": operation_id,
+    }
+    if expected_generation is not None:
+        if type(expected_generation) is not int or expected_generation < 0:
+            fail("expected generation must be a non-negative integer")
+        headers["If-Match"] = f'"{expected_generation}"'
+    return headers
+
+
+def required_generation(value):
+    if type(value) is not int or value < 0:
+        fail("expected generation is required for this mutation")
+    return value
+
+
+def recover_operation(url, token, operation_id):
+    """Recover an immutable receipt without replaying the mutation request."""
+
+    operation_id = canonical_operation_id(operation_id)
+    response = requests.get(
+        f"{url.rstrip('/')}/api/management-operations/{operation_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    if response.status_code != 200:
+        fail(f"HTTP {response.status_code}: {response.text}")
+    try:
+        envelope = response.json()
+    except ValueError:
+        fail("management operation recovery response is not JSON")
+    receipt = envelope.get("receipt") if isinstance(envelope, dict) else None
+    original_status = envelope.get("original_status_code") if isinstance(envelope, dict) else None
+    if (
+        type(original_status) is not int
+        or not 200 <= original_status < 500
+        or not isinstance(receipt, dict)
+        or receipt.get("operation_id") != operation_id
+        or receipt.get("management_operation_receipt_version")
+        != MANAGEMENT_OPERATION_RECEIPT_VERSION
+        or not isinstance(receipt.get("operation"), str)
+        or not receipt["operation"]
+        or not isinstance(receipt.get("request_digest"), str)
+        or _DIGEST_RE.fullmatch(receipt["request_digest"]) is None
+        or not isinstance(receipt.get("result_digest"), str)
+        or _DIGEST_RE.fullmatch(receipt["result_digest"]) is None
+        or type(receipt.get("operation_generation")) is not int
+        or receipt["operation_generation"] <= 0
+        or not isinstance(receipt.get("requested"), dict)
+        or not isinstance(receipt.get("applied"), dict)
+    ):
+        fail("management operation recovery receipt is invalid")
+    return {"original_status_code": original_status, "receipt": receipt}
+
+
+def replayable_request_document(
+    operation, method, path, payload, *, expected_generation=None, query=None
+):
+    """Build the digest input used by replayable Address Book endpoints."""
+
+    try:
+        body = json.dumps(payload, allow_nan=False).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Mutation payload is not JSON serializable") from exc
+    args = {}
+    for key, values in (query or {}).items():
+        values = values if isinstance(values, list) else [values]
+        args[str(key)] = sorted(str(value) for value in values)
+    return {
+        "operation": operation,
+        "method": method.upper(),
+        "path": path,
+        "args": {key: args[key] for key in sorted(args)},
+        "body_sha256": hashlib.sha256(body).hexdigest(),
+        "expected_generation": expected_generation,
     }
 
 
@@ -199,7 +274,17 @@ def check_control_response(
             fail("management control response receipt is not fully applied")
         return body
 
-    error = body.get("error")
-    if not isinstance(error, str) or not error or body["applied"] == requested:
+    code = body.get("code")
+    message = body.get("message")
+    retryable = body.get("retryable")
+    if (
+        not isinstance(code, str)
+        or _MACHINE_CODE_RE.fullmatch(code) is None
+        or not isinstance(message, str)
+        or not message
+        or type(retryable) is not bool
+        or body.get("result") == "OK"
+        or body["applied"] == requested
+    ):
         fail("management control error receipt is invalid")
-    fail(f"HTTP {response.status_code}: {error}")
+    fail(f"HTTP {response.status_code} [{code}]: {message}")

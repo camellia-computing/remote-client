@@ -8,8 +8,10 @@ from batch_operations import (
     canonical_operation_id,
     canonical_uuid,
     check_batch_response,
+    check_control_response,
     fail,
     operation_headers,
+    required_generation,
     require_unique,
 )
 
@@ -79,19 +81,41 @@ def get_group_by_name(url, token, name):
     return None
 
 
-def create_group(url, token, name, note=None, accessed_from=None):
-    headers = headers_with(token)
+def create_group(url, token, name, note=None, accessed_from=None, operation_id=None):
     payload = {"name": name}
-    if note:
+    if note is not None:
         payload["note"] = note
-    if accessed_from:
+    if accessed_from is not None:
         payload["allowed_incomings"] = accessed_from
+    operation_id = canonical_operation_id(operation_id)
+    print(f"Operation ID: {operation_id}", flush=True)
+    request_document = {
+        "operation": "device_group_create",
+        "name": name,
+        "note": note or "",
+        "allowed_incomings": accessed_from or [],
+        "strategy_name": "",
+    }
+    headers = operation_headers(token, operation_id)
     r = requests.post(f"{url}/api/device-groups", headers=headers, json=payload)
-    return check_response(r)
+    return check_control_response(
+        r,
+        operation="device_group_create",
+        operation_id=operation_id,
+        request_document=request_document,
+        requested={"groups": 1},
+    )
 
 
-def update_group(url, token, name, new_name=None, note=None, accessed_from=None):
-    headers = headers_with(token)
+def update_group(
+    url,
+    token,
+    name,
+    new_name=None,
+    note=None,
+    accessed_from=None,
+    operation_id=None,
+):
     g = get_group_by_name(url, token, name)
     if not g:
         print(f"Error: Group '{name}' not found")
@@ -104,24 +128,65 @@ def update_group(url, token, name, new_name=None, note=None, accessed_from=None)
         payload["note"] = note
     if accessed_from is not None:
         payload["allowed_incomings"] = accessed_from
+    if not payload:
+        fail("at least one update field is required")
+    operation_id = canonical_operation_id(operation_id)
+    print(f"Operation ID: {operation_id}", flush=True)
+    generation = required_generation(g.get("mutation_generation"))
+    request_document = {
+        "operation": "device_group_update",
+        "group": canonical_uuid(guid, "device group GUID"),
+        "data": payload,
+        "expected_generation": generation,
+    }
+    headers = operation_headers(token, operation_id, generation)
     r = requests.patch(f"{url}/api/device-groups/{guid}", headers=headers, json=payload)
-    check_response(r)
-    return "Success"
+    return check_control_response(
+        r,
+        operation="device_group_update",
+        operation_id=operation_id,
+        request_document=request_document,
+        requested={"groups": 1},
+    )
 
 
-def delete_groups(url, token, names):
-    headers = headers_with(token)
+def delete_groups(url, token, names, operation_id=None):
     if isinstance(names, str):
         names = [names]
+    if operation_id is not None and len(names) != 1:
+        fail("one operation ID can only retry one device group deletion")
+    results = []
     for n in names:
         g = get_group_by_name(url, token, n)
         if not g:
             print(f"Error: Group '{n}' not found")
             exit(1)
-        guid = g.get("guid")
-        r = requests.delete(f"{url}/api/device-groups/{guid}", headers=headers)
-        check_response(r)
-    return "Success"
+        guid = canonical_uuid(g.get("guid"), "device group GUID")
+        one_operation_id = canonical_operation_id(operation_id)
+        print(f"Operation ID: {one_operation_id}", flush=True)
+        generation = required_generation(g.get("mutation_generation"))
+        headers = operation_headers(
+            token,
+            one_operation_id,
+            generation,
+        )
+        r = requests.delete(
+            f"{url}/api/device-groups/{guid}", headers=headers, json={}
+        )
+        results.append(
+            check_control_response(
+                r,
+                operation="device_group_delete",
+                operation_id=one_operation_id,
+                request_document={
+                    "operation": "device_group_delete",
+                    "group": guid,
+                    "expected_generation": generation,
+                },
+                requested={"groups": 1},
+            )
+        )
+    return results
 
 
 # ---------- Device group assign APIs (name -> guid) ----------
@@ -172,6 +237,7 @@ def add_devices(url, token, group_name, device_ids, operation_id=None):
     if not g:
         fail(f"Group '{group_name}' not found")
     guid = canonical_uuid(g.get("guid"), "device group GUID")
+    generation = required_generation(g.get("mutation_generation"))
     payload = device_ids if isinstance(device_ids, list) else [device_ids]
     require_unique(payload, "device")
     operation_id = canonical_operation_id(operation_id)
@@ -180,9 +246,10 @@ def add_devices(url, token, group_name, device_ids, operation_id=None):
         "operation": "device_group_add_devices",
         "group": guid,
         "devices": payload,
+        "expected_generation": generation,
     }
     requested = {"devices": len(payload)}
-    headers = operation_headers(token, operation_id)
+    headers = operation_headers(token, operation_id, generation)
     r = requests.post(f"{url}/api/device-groups/{guid}", headers=headers, json=payload)
     return check_batch_response(
         r,
@@ -198,6 +265,7 @@ def remove_devices(url, token, group_name, device_ids, operation_id=None):
     if not g:
         fail(f"Group '{group_name}' not found")
     guid = canonical_uuid(g.get("guid"), "device group GUID")
+    generation = required_generation(g.get("mutation_generation"))
     payload = device_ids if isinstance(device_ids, list) else [device_ids]
     require_unique(payload, "device")
     operation_id = canonical_operation_id(operation_id)
@@ -206,9 +274,10 @@ def remove_devices(url, token, group_name, device_ids, operation_id=None):
         "operation": "device_group_remove_devices",
         "group": guid,
         "devices": payload,
+        "expected_generation": generation,
     }
     requested = {"devices": len(payload)}
-    headers = operation_headers(token, operation_id)
+    headers = operation_headers(token, operation_id, generation)
     r = requests.delete(f"{url}/api/device-groups/{guid}/devices", headers=headers, json=payload)
     return check_batch_response(
         r,
@@ -252,7 +321,7 @@ def main():
     parser.add_argument("--accessed-from", help="JSON array: '[{\"type\":0|2,\"name\":\"...\"}]' (0=User Group, 2=User)")
 
     parser.add_argument("--ids", help="Comma separated device IDs for add-devices/remove-devices")
-    parser.add_argument("--operation-id", help="Canonical UUID used to retry add/remove devices after response loss")
+    parser.add_argument("--operation-id", help="Canonical UUID used to retry one mutation after response loss")
 
     # Filters for view-devices command
     parser.add_argument("--id", help="Device ID filter (for view-devices)")
@@ -272,7 +341,7 @@ def main():
             exit(1)
         print(create_group(
             args.url, args.token, args.name, args.note,
-            parse_rules(args.accessed_from)
+            parse_rules(args.accessed_from), operation_id=args.operation_id
         ))
     elif args.command == "update":
         if not args.name:
@@ -280,14 +349,14 @@ def main():
             exit(1)
         print(update_group(
             args.url, args.token, args.name, args.new_name, args.note,
-            parse_rules(args.accessed_from)
+            parse_rules(args.accessed_from), operation_id=args.operation_id
         ))
     elif args.command == "delete":
         if not args.name:
             print("Error: --name is required (supports comma separated)")
             exit(1)
         names = [x.strip() for x in args.name.split(",") if x.strip()]
-        print(delete_groups(args.url, args.token, names))
+        print(delete_groups(args.url, args.token, names, operation_id=args.operation_id))
     elif args.command == "view-devices":
         res = view_devices(
             args.url,

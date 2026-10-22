@@ -9,8 +9,10 @@ from batch_operations import (
     canonical_operation_id,
     check_batch_response,
     check_control_response,
+    document_digest,
     fail,
     operation_headers,
+    required_generation,
     require_unique,
 )
 
@@ -91,16 +93,20 @@ def _control_mutation(
     *,
     action,
     operation_id=None,
+    expected_generation=None,
 ):
     guid = canonical_model_pk(guid, "user GUID")
+    expected_generation = required_generation(expected_generation)
     operation = f"user_status_{action}"
     operation_id = canonical_operation_id(operation_id)
     print(f"Operation target: user {guid}", flush=True)
     print(f"Operation ID: {operation_id}", flush=True)
     request_document = {"operation": operation, "user": str(guid)}
+    if expected_generation is not None:
+        request_document["expected_generation"] = expected_generation
     response = requests.post(
         f"{url}/api/users/{guid}/{action}",
-        headers=operation_headers(token, operation_id),
+        headers=operation_headers(token, operation_id, expected_generation),
         json={},
     )
     return check_control_response(
@@ -112,7 +118,7 @@ def _control_mutation(
     )
 
 
-def disable(url, token, guid, name, operation_id=None):
+def disable(url, token, guid, name, operation_id=None, expected_generation=None):
     print("Disable", name)
     return _control_mutation(
         url,
@@ -120,10 +126,11 @@ def disable(url, token, guid, name, operation_id=None):
         guid,
         action="disable",
         operation_id=operation_id,
+        expected_generation=expected_generation,
     )
 
 
-def enable(url, token, guid, name, operation_id=None):
+def enable(url, token, guid, name, operation_id=None, expected_generation=None):
     print("Enable", name)
     return _control_mutation(
         url,
@@ -131,31 +138,77 @@ def enable(url, token, guid, name, operation_id=None):
         guid,
         action="enable",
         operation_id=operation_id,
+        expected_generation=expected_generation,
     )
 
 
-def delete_user(url, token, guid, name):
+def delete_user(
+    url, token, guid, name, operation_id=None, expected_generation=None
+):
     print("Delete", name)
-    headers = {"Authorization": f"Bearer {token}"}
-    response = requests.delete(f"{url}/api/users/{guid}", headers=headers)
-    check_response(response)
+    guid = canonical_model_pk(guid, "user GUID")
+    expected_generation = required_generation(expected_generation)
+    operation_id = canonical_operation_id(operation_id)
+    print(f"Operation target: user {guid}", flush=True)
+    print(f"Operation ID: {operation_id}", flush=True)
+    response = requests.delete(
+        f"{url}/api/users/{guid}",
+        headers=operation_headers(token, operation_id, expected_generation),
+        json={},
+    )
+    return check_control_response(
+        response,
+        operation="user_delete",
+        operation_id=operation_id,
+        request_document={
+            "operation": "user_delete",
+            "user": guid,
+            **(
+                {"expected_generation": expected_generation}
+                if expected_generation is not None
+                else {}
+            ),
+        },
+        requested={"users": 1},
+    )
 
 
-def new_user(url, token, name, password, group_name=None, email=None, note=None):
+def new_user(
+    url, token, name, password, group_name=None, email=None, note=None,
+    operation_id=None
+):
     """Create a new user"""
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     payload = {
         "name": name,
         "password": password,
     }
-    if group_name:
+    if group_name is not None:
         payload["group_name"] = group_name
-    if email:
+    if email is not None:
         payload["email"] = email
-    if note:
+    if note is not None:
         payload["note"] = note
-    response = requests.post(f"{url}/api/users", headers=headers, json=payload)
-    check_response(response)
+    operation_id = canonical_operation_id(operation_id)
+    print(f"Operation ID: {operation_id}", flush=True)
+    response = requests.post(
+        f"{url}/api/users",
+        headers=operation_headers(token, operation_id),
+        json=payload,
+    )
+    return check_control_response(
+        response,
+        operation="user_create",
+        operation_id=operation_id,
+        request_document={
+            "operation": "user_create",
+            "username": name,
+            "password_digest": document_digest(password),
+            "email": email or "",
+            "note": note or "",
+            "group_name": group_name or "",
+        },
+        requested={"users": 1},
+    )
 
 
 def invite_user(url, token, email, name, group_name=None, note=None):
@@ -299,6 +352,11 @@ def main():
             "response loss"
         ),
     )
+    parser.add_argument(
+        "--expected-generation",
+        type=int,
+        help="User generation observed before a single-target mutation",
+    )
 
     args = parser.parse_args()
 
@@ -320,6 +378,7 @@ def main():
             args.group_name,
             args.email,
             args.note,
+            operation_id=args.operation_id,
         )
         print("Success: User created")
         return
@@ -338,10 +397,14 @@ def main():
         return
 
     if args.guid:
-        if args.command not in ("disable", "enable", "force-logout"):
+        if args.command not in ("disable", "enable", "delete", "force-logout"):
             fail(f"--guid is not supported for {args.command}")
         user_guid = canonical_model_pk(args.guid, "user GUID")
-        users = [{"guid": user_guid, "name": args.name or user_guid}]
+        users = [{
+            "guid": user_guid,
+            "name": args.name or user_guid,
+            "mutation_generation": args.expected_generation,
+        }]
     else:
         users = view(
             args.url,
@@ -369,6 +432,7 @@ def main():
         if args.operation_id and args.command not in (
             "disable",
             "enable",
+            "delete",
             "force-logout",
         ):
             fail(f"--operation-id is not supported for {args.command}")
@@ -399,6 +463,7 @@ def main():
                     user["guid"],
                     user["name"],
                     operation_id=args.operation_id if len(users) == 1 else None,
+                    expected_generation=user.get("mutation_generation"),
                 )
                 print("Success")
         elif args.command == "enable":
@@ -409,11 +474,19 @@ def main():
                     user["guid"],
                     user["name"],
                     operation_id=args.operation_id if len(users) == 1 else None,
+                    expected_generation=user.get("mutation_generation"),
                 )
                 print("Success")
         elif args.command == "delete":
             for user in users:
-                delete_user(args.url, args.token, user["guid"], user["name"])
+                delete_user(
+                    args.url,
+                    args.token,
+                    user["guid"],
+                    user["name"],
+                    operation_id=args.operation_id if len(users) == 1 else None,
+                    expected_generation=user.get("mutation_generation"),
+                )
                 print("Success")
         elif args.command == "enable-2fa-enforce":
             if not args.web_console_url:

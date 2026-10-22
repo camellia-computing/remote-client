@@ -1,10 +1,50 @@
 #!/usr/bin/env python3
 
-import requests
 import argparse
 import json
-from datetime import datetime, timedelta
 
+import requests
+from batch_operations import (
+    canonical_operation_id,
+    check_control_response,
+    document_digest,
+    fail,
+    operation_headers,
+    replayable_request_document,
+    required_generation,
+)
+
+
+def replayable_mutation(
+    request_method,
+    http_method,
+    url,
+    token,
+    path,
+    payload,
+    operation,
+    *,
+    operation_id=None,
+    expected_generation=None,
+):
+    expected_generation = required_generation(expected_generation)
+    operation_id = canonical_operation_id(operation_id)
+    print(f"Operation ID: {operation_id}", flush=True)
+    headers = operation_headers(token, operation_id, expected_generation)
+    response = request_method(f"{url}{path}", headers=headers, json=payload)
+    return check_control_response(
+        response,
+        operation=operation,
+        operation_id=operation_id,
+        request_document=replayable_request_document(
+            operation,
+            http_method,
+            path,
+            payload,
+            expected_generation=expected_generation,
+        ),
+        requested={"mutations": 1},
+    )
 
 def get_personal_ab(url, token):
     """Get personal address book GUID"""
@@ -145,11 +185,12 @@ def check_response(response):
         return response.text or "Success"
 
 
-def add_peer(url, token, ab_guid, peer_id, alias=None, note=None, tags=None, password=None):
+def add_peer(
+    url, token, ab_guid, peer_id, alias=None, note=None, tags=None, password=None,
+    operation_id=None, expected_generation=None
+):
     """Add a peer to address book"""
     print(f"Adding peer {peer_id} to address book")
-    headers = {"Authorization": f"Bearer {token}"}
-
     payload = {
         "id": peer_id,
         "note": note,
@@ -167,29 +208,37 @@ def add_peer(url, token, ab_guid, peer_id, alias=None, note=None, tags=None, pas
     if info:
         payload.update(info)
 
-    response = requests.post(f"{url}/api/ab/peer/add/{ab_guid}", headers=headers, json=payload)
-    return check_response(response)
+    return replayable_mutation(
+        requests.post, "POST", url, token, f"/api/ab/peer/add/{ab_guid}", payload,
+        "address_book_peer_add", operation_id=operation_id,
+        expected_generation=expected_generation,
+    )
 
 
-def delete_peer(url, token, ab_guid, peer_ids):
+def delete_peer(
+    url, token, ab_guid, peer_ids, operation_id=None, expected_generation=None
+):
     """Delete peers from address book by IDs"""
     if isinstance(peer_ids, str):
         peer_ids = [peer_ids]
 
     print(f"Deleting peers {peer_ids} from address book")
-    headers = {"Authorization": f"Bearer {token}"}
-    response = requests.delete(f"{url}/api/ab/peer/{ab_guid}", headers=headers, json=peer_ids)
-    return check_response(response)
+    return replayable_mutation(
+        requests.delete, "DELETE", url, token, f"/api/ab/peer/{ab_guid}", peer_ids,
+        "address_book_peer_delete", operation_id=operation_id,
+        expected_generation=expected_generation,
+    )
 
-def update_peer(url, token, ab_guid, peer_id, alias=None, note=None, tags=None, password=None):
+def update_peer(
+    url, token, ab_guid, peer_id, alias=None, note=None, tags=None, password=None,
+    operation_id=None, expected_generation=None
+):
     """Update a peer in address book"""
     print(f"Updating peer {peer_id} in address book")
-    headers = {"Authorization": f"Bearer {token}"}
-
     # Check if at least one parameter is provided for update
     update_params = [alias, note, tags, password]
     if all(param is None for param in update_params):
-        return "Error: At least one parameter must be specified for update"
+        fail("At least one parameter must be specified for update")
 
     payload = {
         "id": peer_id,
@@ -210,8 +259,11 @@ def update_peer(url, token, ab_guid, peer_id, alias=None, note=None, tags=None, 
     if note is not None:
         payload["note"] = note
 
-    response = requests.put(f"{url}/api/ab/peer/update/{ab_guid}", headers=headers, json=payload)
-    return check_response(response)
+    return replayable_mutation(
+        requests.put, "PUT", url, token, f"/api/ab/peer/update/{ab_guid}", payload,
+        "address_book_peer_update", operation_id=operation_id,
+        expected_generation=expected_generation,
+    )
 
 
 def str2color(tag_name, existing_colors=None):
@@ -263,11 +315,12 @@ def str2color(tag_name, existing_colors=None):
     return result
 
 
-def add_tag(url, token, ab_guid, tag_name, color=None):
+def add_tag(
+    url, token, ab_guid, tag_name, color=None, operation_id=None,
+    expected_generation=None
+):
     """Add a tag to address book"""
     print(f"Adding tag '{tag_name}' to address book")
-    headers = {"Authorization": f"Bearer {token}"}
-
     # If no color specified, generate one based on tag name
     if color is None:
         # Get existing tags to avoid color conflicts
@@ -284,64 +337,91 @@ def add_tag(url, token, ab_guid, tag_name, color=None):
         "color": color,
     }
 
-    response = requests.post(f"{url}/api/ab/tag/add/{ab_guid}", headers=headers, json=payload)
-    return check_response(response)
+    return replayable_mutation(
+        requests.post, "POST", url, token, f"/api/ab/tag/add/{ab_guid}", payload,
+        "address_book_tag_add", operation_id=operation_id,
+        expected_generation=expected_generation,
+    )
 
 
-def update_tag(url, token, ab_guid, tag_name, color):
+def update_tag(
+    url, token, ab_guid, tag_name, color, operation_id=None,
+    expected_generation=None
+):
     """Update a tag in address book"""
     print(f"Updating tag '{tag_name}' in address book")
-    headers = {"Authorization": f"Bearer {token}"}
-
     payload = {
         "name": tag_name,
         "color": color,
     }
 
-    response = requests.put(f"{url}/api/ab/tag/update/{ab_guid}", headers=headers, json=payload)
-    return check_response(response)
+    return replayable_mutation(
+        requests.put, "PUT", url, token, f"/api/ab/tag/update/{ab_guid}", payload,
+        "address_book_tag_update", operation_id=operation_id,
+        expected_generation=expected_generation,
+    )
 
 
-def delete_tags(url, token, ab_guid, tag_names):
+def delete_tags(
+    url, token, ab_guid, tag_names, operation_id=None, expected_generation=None
+):
     """Delete tags from address book"""
     if isinstance(tag_names, str):
         tag_names = [tag_names]
 
     print(f"Deleting tags {tag_names} from address book")
-    headers = {"Authorization": f"Bearer {token}"}
-    response = requests.delete(f"{url}/api/ab/tag/{ab_guid}", headers=headers, json=tag_names)
-    return check_response(response)
+    return replayable_mutation(
+        requests.delete, "DELETE", url, token, f"/api/ab/tag/{ab_guid}", tag_names,
+        "address_book_tag_delete", operation_id=operation_id,
+        expected_generation=expected_generation,
+    )
 
 
-def add_shared_ab(url, token, name, note=None, password=None):
+def add_shared_ab(url, token, name, note=None, password=None, operation_id=None):
     """Add a new shared address book"""
     print(f"Adding shared address book '{name}'")
-    headers = {"Authorization": f"Bearer {token}"}
-
     payload = {
         "name": name,
-        "note": note,
+        "note": note or "",
     }
 
-    # Add info if password is provided
-    if password:
-        payload["info"] = {
-            "password": password
-        }
+    if password is not None:
+        payload["default_password"] = password
+    operation_id = canonical_operation_id(operation_id)
+    print(f"Operation ID: {operation_id}", flush=True)
+    response = requests.post(
+        f"{url}/api/ab/shared/add",
+        headers=operation_headers(token, operation_id),
+        json=payload,
+    )
+    return check_control_response(
+        response,
+        operation="address_book_profile_create",
+        operation_id=operation_id,
+        request_document={
+            "operation": "address_book_profile_create",
+            "name": name.strip(),
+            "note": note or "",
+            "info": None,
+            "has_default_password": password is not None,
+            "default_password_digest": (
+                document_digest(password) if password is not None else None
+            ),
+        },
+        requested={"profiles": 1},
+    )
 
-    response = requests.post(f"{url}/api/ab/shared/add", headers=headers, json=payload)
-    return check_response(response)
 
-
-def update_shared_ab(url, token, ab_guid, name=None, note=None, owner=None, password=None):
+def update_shared_ab(
+    url, token, ab_guid, name=None, note=None, owner=None, password=None,
+    operation_id=None, expected_generation=None
+):
     """Update a shared address book"""
     print(f"Updating shared address book {ab_guid}")
-    headers = {"Authorization": f"Bearer {token}"}
-
     # Check if at least one parameter is provided for update
     update_params = [name, note, owner, password]
     if all(param is None for param in update_params):
-        return "Error: At least one parameter must be specified for update"
+        fail("At least one parameter must be specified for update")
 
     payload = {
         "guid": ab_guid,
@@ -354,23 +434,66 @@ def update_shared_ab(url, token, ab_guid, name=None, note=None, owner=None, pass
     if owner is not None:
         payload["owner"] = owner
     if password is not None:
-        payload["info"] = {
-            "password": password
-        }
+        payload["default_password"] = password
+    expected_generation = required_generation(expected_generation)
+    operation_id = canonical_operation_id(operation_id)
+    print(f"Operation ID: {operation_id}", flush=True)
+    response = requests.put(
+        f"{url}/api/ab/shared/update/profile",
+        headers=operation_headers(token, operation_id, expected_generation),
+        json=payload,
+    )
+    return check_control_response(
+        response,
+        operation="address_book_profile_update",
+        operation_id=operation_id,
+        request_document={
+            "operation": "address_book_profile_update",
+            "guid": str(ab_guid),
+            "data": {
+                key: value for key, value in payload.items()
+                if key != "default_password"
+            },
+            "has_default_password": password is not None,
+            "default_password_digest": (
+                document_digest(password) if password is not None else None
+            ),
+            "owner": owner,
+            "expected_generation": expected_generation,
+        },
+        requested={"profiles": 1},
+    )
 
-    response = requests.put(f"{url}/api/ab/shared/update/profile", headers=headers, json=payload)
-    return check_response(response)
 
-
-def delete_shared_abs(url, token, ab_guids):
+def delete_shared_abs(
+    url, token, ab_guids, operation_id=None, expected_generation=None
+):
     """Delete shared address books"""
     if isinstance(ab_guids, str):
         ab_guids = [ab_guids]
+    if len(ab_guids) != 1:
+        fail("one operation can delete exactly one address book")
+    expected_generation = required_generation(expected_generation)
 
     print(f"Deleting shared address books {ab_guids}")
-    headers = {"Authorization": f"Bearer {token}"}
-    response = requests.delete(f"{url}/api/ab/shared", headers=headers, json=ab_guids)
-    return check_response(response)
+    operation_id = canonical_operation_id(operation_id)
+    print(f"Operation ID: {operation_id}", flush=True)
+    response = requests.delete(
+        f"{url}/api/ab/shared",
+        headers=operation_headers(token, operation_id, expected_generation),
+        json=ab_guids,
+    )
+    return check_control_response(
+        response,
+        operation="address_book_profile_delete",
+        operation_id=operation_id,
+        request_document={
+            "operation": "address_book_profile_delete",
+            "profiles": sorted(str(value) for value in ab_guids),
+            "expected_generation": expected_generation,
+        },
+        requested={"profiles": len(ab_guids)},
+    )
 
 
 def permission_to_string(permission):
@@ -433,11 +556,12 @@ def view_ab_rules(url, token, ab_guid):
     return rules
 
 
-def add_ab_rule(url, token, ab_guid, rule_type, user=None, group=None, rule=1):
+def add_ab_rule(
+    url, token, ab_guid, rule_type, user=None, group=None, rule=1,
+    operation_id=None, expected_generation=None
+):
     """Add a rule to address book"""
     print(f"Adding {rule_type} rule to address book")
-    headers = {"Authorization": f"Bearer {token}"}
-
     payload = {
         "guid": ab_guid,
         "rule": rule,
@@ -451,33 +575,43 @@ def add_ab_rule(url, token, ab_guid, rule_type, user=None, group=None, rule=1):
         # For everyone, both user and group are None (not included in payload)
         pass
 
-    response = requests.post(f"{url}/api/ab/rule", headers=headers, json=payload)
-    return check_response(response)
+    return replayable_mutation(
+        requests.post, "POST", url, token, "/api/ab/rule", payload,
+        "address_book_rule_mutation", operation_id=operation_id,
+        expected_generation=expected_generation,
+    )
 
 
-def update_ab_rule(url, token, rule_guid, rule):
+def update_ab_rule(
+    url, token, rule_guid, rule, operation_id=None, expected_generation=None
+):
     """Update an address book rule"""
     print(f"Updating rule {rule_guid}")
-    headers = {"Authorization": f"Bearer {token}"}
-
     payload = {
         "guid": rule_guid,
         "rule": rule,
     }
 
-    response = requests.patch(f"{url}/api/ab/rule", headers=headers, json=payload)
-    return check_response(response)
+    return replayable_mutation(
+        requests.patch, "PATCH", url, token, "/api/ab/rule", payload,
+        "address_book_rule_mutation", operation_id=operation_id,
+        expected_generation=expected_generation,
+    )
 
 
-def delete_ab_rules(url, token, rule_guids):
+def delete_ab_rules(
+    url, token, rule_guids, operation_id=None, expected_generation=None
+):
     """Delete address book rules"""
     if isinstance(rule_guids, str):
         rule_guids = [rule_guids]
 
     print(f"Deleting rules {rule_guids}")
-    headers = {"Authorization": f"Bearer {token}"}
-    response = requests.delete(f"{url}/api/ab/rules", headers=headers, json=rule_guids)
-    return check_response(response)
+    return replayable_mutation(
+        requests.delete, "DELETE", url, token, "/api/ab/rules", rule_guids,
+        "address_book_rule_delete", operation_id=operation_id,
+        expected_generation=expected_generation,
+    )
 
 
 def main():
@@ -542,6 +676,8 @@ def main():
         help="Rule permission (ro=Read, rw=ReadWrite, full=FullControl)",
     )
     parser.add_argument("--rule-guid", help="Rule GUID (for update/delete)")
+    parser.add_argument("--operation-id", help="Canonical UUID used to retry one mutation after response loss")
+    parser.add_argument("--expected-generation", type=int, help="Address-book generation observed before mutation")
 
     args = parser.parse_args()
 
@@ -566,7 +702,10 @@ def main():
                 print("Error: --ab-name is required for add-ab command")
                 return
 
-            result = add_shared_ab(args.url, args.token, args.ab_name, args.note, args.password)
+            result = add_shared_ab(
+                args.url, args.token, args.ab_name, args.note, args.password,
+                operation_id=args.operation_id,
+            )
             print(f"Result: {result}")
 
         elif args.command in ["update-ab", "delete-ab"]:
@@ -581,6 +720,7 @@ def main():
 
             if args.ab_guid:
                 ab_guid = args.ab_guid
+                profile_generation = args.expected_generation
                 print(f"Working with address book GUID: {ab_guid}")
             else:
                 # Get address book by name
@@ -589,14 +729,29 @@ def main():
                     print(f"Error: Address book '{args.ab_name}' not found")
                     return
                 ab_guid = ab["guid"]
+                profile_generation = (
+                    args.expected_generation
+                    if args.expected_generation is not None
+                    else ab.get("authorization_generation")
+                )
                 print(f"Working with address book: {args.ab_name} (GUID: {ab_guid})")
 
             if args.command == "update-ab":
-                result = update_shared_ab(args.url, args.token, ab_guid, args.ab_update_name, args.note, args.owner, args.password)
+                result = update_shared_ab(
+                    args.url, args.token, ab_guid, args.ab_update_name, args.note,
+                    args.owner, args.password, operation_id=args.operation_id,
+                    expected_generation=profile_generation,
+                )
                 print(f"Result: {result}")
 
             elif args.command == "delete-ab":
-                result = delete_shared_abs(args.url, args.token, ab_guid)
+                result = delete_shared_abs(
+                    args.url,
+                    args.token,
+                    ab_guid,
+                    operation_id=args.operation_id,
+                    expected_generation=profile_generation,
+                )
                 print(f"Result: {result}")
 
     elif args.command in ["view-peer", "add-peer", "update-peer", "delete-peer", "view-tag", "add-tag", "update-tag", "delete-tag", "view-rule", "add-rule", "update-rule", "delete-rule"]:
@@ -610,6 +765,7 @@ def main():
 
         if args.ab_guid:
             ab_guid = args.ab_guid
+            profile_generation = args.expected_generation
             print(f"Working with address book GUID: {ab_guid}")
         else:
             # Get address book by name
@@ -619,6 +775,11 @@ def main():
                 return
 
             ab_guid = ab["guid"]
+            profile_generation = (
+                args.expected_generation
+                if args.expected_generation is not None
+                else ab.get("authorization_generation")
+            )
             print(f"Working with address book: {args.ab_name} (GUID: {ab_guid})")
 
         if args.command == "view-peer":
@@ -650,7 +811,9 @@ def main():
                 args.alias,
                 args.note,
                 tags,
-                args.password
+                args.password,
+                operation_id=args.operation_id,
+                expected_generation=profile_generation,
             )
             print(f"Result: {result}")
 
@@ -679,7 +842,9 @@ def main():
                 args.alias,
                 args.note,
                 tags,
-                args.password
+                args.password,
+                operation_id=args.operation_id,
+                expected_generation=profile_generation,
             )
             print(f"Result: {result}")
 
@@ -688,7 +853,11 @@ def main():
                 print("Error: --peer-id is required for delete-peer command")
                 return
 
-            result = delete_peer(args.url, args.token, ab_guid, args.peer_id)
+            result = delete_peer(
+                args.url, args.token, ab_guid, args.peer_id,
+                operation_id=args.operation_id,
+                expected_generation=profile_generation,
+            )
             print(f"Result: {result}")
 
         elif args.command == "view-tag":
@@ -700,7 +869,11 @@ def main():
                 print("Error: --tag-name is required for add-tag command")
                 return
 
-            result = add_tag(args.url, args.token, ab_guid, args.tag_name, args.tag_color)
+            result = add_tag(
+                args.url, args.token, ab_guid, args.tag_name, args.tag_color,
+                operation_id=args.operation_id,
+                expected_generation=profile_generation,
+            )
             print(f"Result: {result}")
 
         elif args.command == "update-tag":
@@ -708,7 +881,11 @@ def main():
                 print("Error: --tag-name is required for update-tag command")
                 return
 
-            result = update_tag(args.url, args.token, ab_guid, args.tag_name, args.tag_color)
+            result = update_tag(
+                args.url, args.token, ab_guid, args.tag_name, args.tag_color,
+                operation_id=args.operation_id,
+                expected_generation=profile_generation,
+            )
             print(f"Result: {result}")
 
         elif args.command == "delete-tag":
@@ -716,7 +893,11 @@ def main():
                 print("Error: --tag-name is required for delete-tag command")
                 return
 
-            result = delete_tags(args.url, args.token, ab_guid, args.tag_name)
+            result = delete_tags(
+                args.url, args.token, ab_guid, args.tag_name,
+                operation_id=args.operation_id,
+                expected_generation=profile_generation,
+            )
             print(f"Result: {result}")
 
         elif args.command == "view-rule":
@@ -760,7 +941,12 @@ def main():
                     print("Error: Cannot specify --rule-user or --rule-group when rule-type=everyone")
                     return
 
-            result = add_ab_rule(args.url, args.token, ab_guid, rule_type, args.rule_user, args.rule_group, args.rule_permission)
+            result = add_ab_rule(
+                args.url, args.token, ab_guid, rule_type, args.rule_user,
+                args.rule_group, args.rule_permission,
+                operation_id=args.operation_id,
+                expected_generation=profile_generation,
+            )
             print(f"Result: {result}")
 
         elif args.command == "update-rule":
@@ -771,7 +957,11 @@ def main():
                 print("Error: --rule-permission is required for update-rule command")
                 return
 
-            result = update_ab_rule(args.url, args.token, args.rule_guid, args.rule_permission)
+            result = update_ab_rule(
+                args.url, args.token, args.rule_guid, args.rule_permission,
+                operation_id=args.operation_id,
+                expected_generation=profile_generation,
+            )
             print(f"Result: {result}")
 
         elif args.command == "delete-rule":
@@ -779,7 +969,11 @@ def main():
                 print("Error: --rule-guid is required for delete-rule command")
                 return
 
-            result = delete_ab_rules(args.url, args.token, args.rule_guid)
+            result = delete_ab_rules(
+                args.url, args.token, args.rule_guid,
+                operation_id=args.operation_id,
+                expected_generation=profile_generation,
+            )
             print(f"Result: {result}")
 
 

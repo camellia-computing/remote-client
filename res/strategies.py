@@ -5,10 +5,14 @@ import json
 
 import requests
 from batch_operations import (
+    canonical_model_pk,
     canonical_operation_id,
     canonical_uuid,
     check_batch_response,
+    check_control_response,
+    fail,
     operation_headers,
+    required_generation,
     require_unique,
 )
 
@@ -70,36 +74,154 @@ def get_strategy_by_name(url, token, name):
     return None
 
 
-def enable_strategy(url, token, name):
+def set_strategy_status(url, token, name, enabled, operation_id=None):
+    """Set a strategy status with replay and optimistic concurrency."""
+
+    if type(enabled) is not bool:
+        fail("strategy status must be boolean")
+    strategy = get_strategy_by_name(url, token, name)
+    if not strategy:
+        fail(f"Strategy '{name}' not found")
+    guid = canonical_uuid(strategy.get("guid"), "strategy GUID")
+    generation = required_generation(strategy.get("mutation_generation"))
+    operation_id = canonical_operation_id(operation_id)
+    print(f"Operation ID: {operation_id}", flush=True)
+    headers = operation_headers(token, operation_id, generation)
+    request_document = {
+        "operation": "strategy_status",
+        "strategy": guid,
+        "enabled": enabled,
+        "expected_generation": generation,
+    }
+    response = requests.put(
+        f"{url}/api/strategies/{guid}/status", headers=headers, json=enabled
+    )
+    return check_control_response(
+        response,
+        operation="strategy_status",
+        operation_id=operation_id,
+        request_document=request_document,
+        requested={"strategies": 1},
+    )
+
+
+def enable_strategy(url, token, name, operation_id=None):
     """Enable a strategy"""
-    headers = headers_with(token)
-    strategy = get_strategy_by_name(url, token, name)
-    if not strategy:
-        print(f"Error: Strategy '{name}' not found")
-        exit(1)
-    guid = strategy.get("guid")
-    r = requests.put(f"{url}/api/strategies/{guid}/status", headers=headers, json=True)
-    check_response(r)
-    return "Success"
+    return set_strategy_status(url, token, name, True, operation_id=operation_id)
 
 
-def disable_strategy(url, token, name):
+def disable_strategy(url, token, name, operation_id=None):
     """Disable a strategy"""
-    headers = headers_with(token)
+    return set_strategy_status(url, token, name, False, operation_id=operation_id)
+
+
+def create_strategy(url, token, name, config_options=None, enabled=True, operation_id=None):
+    payload = {"name": name, "config_options": config_options or {}, "enabled": enabled}
+    operation_id = canonical_operation_id(operation_id)
+    print(f"Operation ID: {operation_id}", flush=True)
+    response = requests.post(
+        f"{url}/api/strategies",
+        headers=operation_headers(token, operation_id),
+        json=payload,
+    )
+    return check_control_response(
+        response,
+        operation="strategy_create",
+        operation_id=operation_id,
+        request_document={"operation": "strategy_create", **payload},
+        requested={"strategies": 1},
+    )
+
+
+def update_strategy(
+    url,
+    token,
+    name,
+    *,
+    new_name=None,
+    config_options=None,
+    enabled=None,
+    operation_id=None,
+):
     strategy = get_strategy_by_name(url, token, name)
     if not strategy:
-        print(f"Error: Strategy '{name}' not found")
-        exit(1)
-    guid = strategy.get("guid")
-    r = requests.put(f"{url}/api/strategies/{guid}/status", headers=headers, json=False)
-    check_response(r)
-    return "Success"
+        fail(f"Strategy '{name}' not found")
+    guid = canonical_uuid(strategy.get("guid"), "strategy GUID")
+    generation = required_generation(strategy.get("mutation_generation"))
+    payload = {}
+    if new_name is not None:
+        payload["name"] = new_name
+    if config_options is not None:
+        payload["config_options"] = config_options
+    if enabled is not None:
+        payload["enabled"] = enabled
+    if not payload:
+        fail("at least one update field is required")
+    operation_id = canonical_operation_id(operation_id)
+    print(f"Operation ID: {operation_id}", flush=True)
+    response = requests.patch(
+        f"{url}/api/strategies/{guid}",
+        headers=operation_headers(
+            token, operation_id, generation
+        ),
+        json=payload,
+    )
+    return check_control_response(
+        response,
+        operation="strategy_update",
+        operation_id=operation_id,
+        request_document={
+            "operation": "strategy_update",
+            "strategy": guid,
+            "data": payload,
+            "expected_generation": generation,
+        },
+        requested={"strategies": 1},
+    )
 
 
-def get_device_guid_by_id(url, token, device_id):
-    """Get device GUID by device ID (exact match)"""
+def delete_strategy(url, token, name, operation_id=None):
+    strategy = get_strategy_by_name(url, token, name)
+    if not strategy:
+        fail(f"Strategy '{name}' not found")
+    guid = canonical_uuid(strategy.get("guid"), "strategy GUID")
+    generation = required_generation(strategy.get("mutation_generation"))
+    operation_id = canonical_operation_id(operation_id)
+    print(f"Operation ID: {operation_id}", flush=True)
+    response = requests.delete(
+        f"{url}/api/strategies/{guid}",
+        headers=operation_headers(
+            token, operation_id, generation
+        ),
+        json={},
+    )
+    return check_control_response(
+        response,
+        operation="strategy_delete",
+        operation_id=operation_id,
+        request_document={
+            "operation": "strategy_delete",
+            "strategy": guid,
+            "expected_generation": generation,
+        },
+        requested={"strategies": 1},
+    )
+
+
+def get_device_target(url, token, device_identifier):
+    """Resolve one exact device row, including its mutation generation."""
+
     headers = headers_with(token)
-    params = {"id": device_id, "pageSize": 50}
+    is_guid = (
+        isinstance(device_identifier, str)
+        and device_identifier.isascii()
+        and device_identifier.isdigit()
+        and not device_identifier.startswith("0")
+    )
+    params = {
+        "guid" if is_guid else "id": device_identifier,
+        "pageSize": 2,
+    }
     r = requests.get(f"{url}/api/devices", headers=headers, params=params)
     res = check_response(r)
     if not res:
@@ -107,15 +229,26 @@ def get_device_guid_by_id(url, token, device_id):
 
     devices_data = res.get("data", []) if isinstance(res, dict) else res
     for d in devices_data:
-        if d.get("id") == device_id:
-            return d.get("guid")
+        field = "guid" if is_guid else "id"
+        if str(d.get(field)) == device_identifier:
+            return d
     return None
 
 
-def get_user_guid_by_name(url, token, name):
-    """Get user GUID by exact name match"""
+def get_user_target(url, token, user_identifier):
+    """Resolve one exact user row, including its mutation generation."""
+
     headers = headers_with(token)
-    params = {"name": name, "pageSize": 50}
+    is_guid = (
+        isinstance(user_identifier, str)
+        and user_identifier.isascii()
+        and user_identifier.isdigit()
+        and not user_identifier.startswith("0")
+    )
+    params = {
+        "guid" if is_guid else "name": user_identifier,
+        "pageSize": 2,
+    }
     r = requests.get(f"{url}/api/users", headers=headers, params=params)
     res = check_response(r)
     if not res:
@@ -123,15 +256,27 @@ def get_user_guid_by_name(url, token, name):
 
     users_data = res.get("data", []) if isinstance(res, dict) else res
     for u in users_data:
-        if u.get("name") == name:
-            return u.get("guid")
+        field = "guid" if is_guid else "name"
+        if str(u.get(field)) == user_identifier:
+            return u
     return None
 
 
-def get_device_group_guid_by_name(url, token, name):
-    """Get device group GUID by exact name match"""
+def get_device_group_target(url, token, group_identifier):
+    """Resolve one exact device-group row, including its mutation generation."""
+
     headers = headers_with(token)
-    params = {"pageSize": 50, "name": name}
+    is_guid = (
+        isinstance(group_identifier, str)
+        and len(group_identifier) == 36
+        and group_identifier.count("-") == 4
+    )
+    if is_guid:
+        group_identifier = canonical_uuid(group_identifier, "device group GUID")
+    params = {
+        "pageSize": 2,
+        "guid" if is_guid else "name": group_identifier,
+    }
     r = requests.get(f"{url}/api/device-groups", headers=headers, params=params)
     res = check_response(r)
     if not res:
@@ -139,8 +284,9 @@ def get_device_group_guid_by_name(url, token, name):
 
     groups_data = res.get("data", []) if isinstance(res, dict) else res
     for g in groups_data:
-        if g.get("name") == name:
-            return g.get("guid")
+        field = "guid" if is_guid else "name"
+        if str(g.get(field)) == group_identifier:
+            return g
     return None
 
 
@@ -163,48 +309,45 @@ def assign_strategy(url, token, strategy_name, peers=None, users=None, device_gr
             exit(1)
         strategy_guid = canonical_uuid(strategy.get("guid"), "strategy GUID")
 
-    # Convert device IDs to GUIDs
+    # Resolve exact target rows so the batch is bound to one inventory snapshot.
     peer_guids = []
+    peer_generations = {}
     if peers:
         for peer in peers:
-            if isinstance(peer, str) and peer.isascii() and peer.isdigit() and not peer.startswith("0"):
-                peer_guids.append(peer)
-            else:
-                # Treat as device ID, look it up
-                guid = get_device_guid_by_id(url, token, peer)
-                if not guid:
-                    print(f"Error: Device '{peer}' not found")
-                    exit(1)
-                peer_guids.append(guid)
+            target = get_device_target(url, token, peer)
+            if not target:
+                fail(f"Device '{peer}' not found")
+            guid = canonical_model_pk(target.get("guid"), "device GUID")
+            peer_guids.append(guid)
+            peer_generations[guid] = required_generation(
+                target.get("mutation_generation")
+            )
 
-    # Convert user names to GUIDs
     user_guids = []
+    user_generations = {}
     if users:
         for user in users:
-            if isinstance(user, str) and user.isascii() and user.isdigit() and not user.startswith("0"):
-                user_guids.append(user)
-            else:
-                # Treat as username, look it up
-                guid = get_user_guid_by_name(url, token, user)
-                if not guid:
-                    print(f"Error: User '{user}' not found")
-                    exit(1)
-                user_guids.append(guid)
+            target = get_user_target(url, token, user)
+            if not target:
+                fail(f"User '{user}' not found")
+            guid = canonical_model_pk(target.get("guid"), "user GUID")
+            user_guids.append(guid)
+            user_generations[guid] = required_generation(
+                target.get("mutation_generation")
+            )
 
-    # Convert device group names to GUIDs
     device_group_guids = []
+    device_group_generations = {}
     if device_groups:
         for dg in device_groups:
-            # Check if it's already a GUID format
-            if isinstance(dg, str) and len(dg) == 36 and dg.count('-') == 4:
-                device_group_guids.append(canonical_uuid(dg, "device group GUID"))
-            else:
-                # Treat as device group name, look it up
-                guid = get_device_group_guid_by_name(url, token, dg)
-                if not guid:
-                    print(f"Error: Device group '{dg}' not found")
-                    exit(1)
-                device_group_guids.append(canonical_uuid(guid, "device group GUID"))
+            target = get_device_group_target(url, token, dg)
+            if not target:
+                fail(f"Device group '{dg}' not found")
+            guid = canonical_uuid(target.get("guid"), "device group GUID")
+            device_group_guids.append(guid)
+            device_group_generations[guid] = required_generation(
+                target.get("mutation_generation")
+            )
 
     require_unique(peer_guids, "device")
     require_unique(user_guids, "user")
@@ -218,6 +361,12 @@ def assign_strategy(url, token, strategy_name, peers=None, users=None, device_gr
     payload["peers"] = peer_guids
     payload["users"] = user_guids
     payload["groups"] = device_group_guids
+    expected_generations = {
+        "devices": peer_generations,
+        "users": user_generations,
+        "groups": device_group_generations,
+    }
+    payload["expected_generations"] = expected_generations
 
     operation_id = canonical_operation_id(operation_id)
     print(f"Operation ID: {operation_id}", flush=True)
@@ -227,6 +376,7 @@ def assign_strategy(url, token, strategy_name, peers=None, users=None, device_gr
         "peers": peer_guids,
         "users": user_guids,
         "groups": device_group_guids,
+        "expected_generations": expected_generations,
     }
     requested = {
         "devices": len(peer_guids),
@@ -247,19 +397,22 @@ def assign_strategy(url, token, strategy_name, peers=None, users=None, device_gr
 def main():
     parser = argparse.ArgumentParser(description="Strategy manager")
     parser.add_argument("command", choices=[
-        "list", "view", "enable", "disable", "assign", "unassign"
+        "list", "view", "add", "update", "delete", "enable", "disable", "assign", "unassign"
     ])
     parser.add_argument("--url", required=True, help="Server URL")
     parser.add_argument("--token", required=True, help="API token")
 
     parser.add_argument("--name", help="Strategy name (for view/enable/disable/assign commands)")
     parser.add_argument("--guid", help="Strategy GUID (for view command, alternative to --name)")
+    parser.add_argument("--new-name", help="New strategy name (for update)")
+    parser.add_argument("--config-options", help="JSON object of managed strategy options")
+    parser.add_argument("--enabled", choices=("true", "false"), help="Strategy enabled state")
 
     # For assign/unassign commands
     parser.add_argument("--peers", help="Comma separated device IDs or GUIDs (requires Device Permission:r)")
     parser.add_argument("--users", help="Comma separated user names or GUIDs (requires User Permission:r)")
     parser.add_argument("--device-groups", help="Comma separated device group names or GUIDs (requires Device Group Permission:r)")
-    parser.add_argument("--operation-id", help="Canonical UUID used to retry an assign/unassign after response loss")
+    parser.add_argument("--operation-id", help="Canonical UUID used to retry one mutation after response loss")
 
     args = parser.parse_args()
     while args.url.endswith("/"): args.url = args.url[:-1]
@@ -285,17 +438,53 @@ def main():
             print("Error: --name or --guid is required for view command")
             exit(1)
 
+    elif args.command in ("add", "update", "delete"):
+        if not args.name:
+            fail("--name is required")
+        try:
+            config_options = json.loads(args.config_options) if args.config_options is not None else None
+        except ValueError:
+            fail("--config-options must be a JSON object")
+        if config_options is not None and not isinstance(config_options, dict):
+            fail("--config-options must be a JSON object")
+        enabled = None if args.enabled is None else args.enabled == "true"
+        if args.command == "add":
+            print(
+                create_strategy(
+                    args.url,
+                    args.token,
+                    args.name,
+                    config_options,
+                    True if enabled is None else enabled,
+                    operation_id=args.operation_id,
+                )
+            )
+        elif args.command == "update":
+            print(
+                update_strategy(
+                    args.url,
+                    args.token,
+                    args.name,
+                    new_name=args.new_name,
+                    config_options=config_options,
+                    enabled=enabled,
+                    operation_id=args.operation_id,
+                )
+            )
+        else:
+            print(delete_strategy(args.url, args.token, args.name, args.operation_id))
+
     elif args.command == "enable":
         if not args.name:
             print("Error: --name is required")
             exit(1)
-        print(enable_strategy(args.url, args.token, args.name))
+        print(enable_strategy(args.url, args.token, args.name, args.operation_id))
 
     elif args.command == "disable":
         if not args.name:
             print("Error: --name is required")
             exit(1)
-        print(disable_strategy(args.url, args.token, args.name))
+        print(disable_strategy(args.url, args.token, args.name, args.operation_id))
 
     elif args.command == "assign":
         if not args.name:

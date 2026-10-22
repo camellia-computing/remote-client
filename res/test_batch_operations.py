@@ -12,6 +12,8 @@ from batch_operations import (
     check_batch_response,
     check_control_response,
     document_digest,
+    recover_operation,
+    replayable_request_document,
 )
 
 RES_DIR = Path(__file__).resolve().parent
@@ -60,7 +62,9 @@ def control_receipt(
     body["applied"] = requested if applied is None else applied
     if error is not None:
         body.pop("result", None)
-        body["error"] = error
+        body["code"] = "management_operation_failed"
+        body["message"] = error
+        body["retryable"] = False
     return body
 
 
@@ -72,6 +76,307 @@ def load_script(filename, module_name):
 
 
 class BatchOperationReceiptTests(unittest.TestCase):
+    def test_operation_receipt_can_be_recovered_without_replaying_mutation(self):
+        request_document = {"operation": "share_link_create", "peers": ["3"]}
+        body = receipt(
+            "share_link_create",
+            request_document,
+            {"share_links": 1},
+        )
+        body["token"] = "recovered-sensitive-token"
+        captured = {}
+
+        def get(url, *, headers):
+            captured.update(url=url, headers=headers)
+            return FakeResponse(
+                {
+                    "original_status_code": 200,
+                    "receipt": body,
+                }
+            )
+
+        with patch("batch_operations.requests.get", side_effect=get):
+            recovered = recover_operation(
+                "https://management.example.test/",
+                "token",
+                OPERATION_ID,
+            )
+
+        self.assertEqual(recovered["receipt"]["token"], "recovered-sensitive-token")
+        self.assertEqual(
+            captured["url"],
+            f"https://management.example.test/api/management-operations/{OPERATION_ID}",
+        )
+        self.assertEqual(captured["headers"], {"Authorization": "Bearer token"})
+
+    def test_device_group_update_binds_operation_and_generation(self):
+        groups = load_script("device-groups.py", "state040_device_groups_script")
+        group_guid = "22222222-2222-4222-8222-222222222222"
+        generation = 4
+        payload = {"note": "updated"}
+        request_document = {
+            "operation": "device_group_update",
+            "group": group_guid,
+            "data": payload,
+            "expected_generation": generation,
+        }
+        captured = {}
+        groups.get_group_by_name = lambda *_args: {
+            "guid": group_guid,
+            "mutation_generation": generation,
+        }
+
+        def patch_request(url, *, headers, json):
+            captured.update(url=url, headers=headers, json=json)
+            return FakeResponse(
+                control_receipt(
+                    "device_group_update",
+                    request_document,
+                    {"groups": 1},
+                )
+            )
+
+        groups.requests.patch = patch_request
+        result = groups.update_group(
+            "https://management.example.test",
+            "token",
+            "group",
+            note="updated",
+            operation_id=OPERATION_ID,
+        )
+
+        self.assertEqual(result["applied"], {"groups": 1})
+        self.assertEqual(captured["headers"]["Idempotency-Key"], OPERATION_ID)
+        self.assertEqual(captured["headers"]["If-Match"], '"4"')
+        self.assertEqual(captured["json"], payload)
+
+    def test_strategy_status_binds_operation_and_generation(self):
+        strategies = load_script("strategies.py", "state040_strategy_status_script")
+        strategy_guid = "33333333-3333-4333-8333-333333333333"
+        generation = 2
+        request_document = {
+            "operation": "strategy_status",
+            "strategy": strategy_guid,
+            "enabled": False,
+            "expected_generation": generation,
+        }
+        captured = {}
+        strategies.get_strategy_by_name = lambda *_args: {
+            "guid": strategy_guid,
+            "mutation_generation": generation,
+        }
+
+        def put(url, *, headers, json):
+            captured.update(url=url, headers=headers, json=json)
+            return FakeResponse(
+                control_receipt(
+                    "strategy_status",
+                    request_document,
+                    {"strategies": 1},
+                )
+            )
+
+        strategies.requests.put = put
+        result = strategies.disable_strategy(
+            "https://management.example.test",
+            "token",
+            "locked-down",
+            operation_id=OPERATION_ID,
+        )
+
+        self.assertEqual(result["applied"], {"strategies": 1})
+        self.assertEqual(captured["headers"]["If-Match"], '"2"')
+        self.assertIs(captured["json"], False)
+
+    def test_address_book_peer_mutation_binds_body_generation_and_operation(self):
+        address_books = load_script("ab.py", "state040_address_book_script")
+        profile_guid = "state040-client-profile"
+        payload = {"id": "741000001", "note": "note", "alias": "alias"}
+        path = f"/api/ab/peer/add/{profile_guid}"
+        request_document = replayable_request_document(
+            "address_book_peer_add",
+            "POST",
+            path,
+            payload,
+            expected_generation=5,
+        )
+        captured = {}
+
+        def post(url, *, headers, json):
+            captured.update(url=url, headers=headers, json=json)
+            return FakeResponse(
+                control_receipt(
+                    "address_book_peer_add",
+                    request_document,
+                    {"mutations": 1},
+                )
+            )
+
+        address_books.requests.post = post
+        result = address_books.add_peer(
+            "https://management.example.test",
+            "token",
+            profile_guid,
+            "741000001",
+            alias="alias",
+            note="note",
+            operation_id=OPERATION_ID,
+            expected_generation=5,
+        )
+
+        self.assertEqual(result["applied"], {"mutations": 1})
+        self.assertEqual(captured["headers"]["Idempotency-Key"], OPERATION_ID)
+        self.assertEqual(captured["headers"]["If-Match"], '"5"')
+        self.assertEqual(captured["json"], payload)
+
+    def test_address_book_profile_create_hashes_password_in_request_document(self):
+        address_books = load_script("ab.py", "state040_address_book_profile_script")
+        password = "state040-client-profile-secret"
+        request_document = {
+            "operation": "address_book_profile_create",
+            "name": "shared-book",
+            "note": "note",
+            "info": None,
+            "has_default_password": True,
+            "default_password_digest": document_digest(password),
+        }
+        captured = {}
+
+        def post(url, *, headers, json):
+            captured.update(url=url, headers=headers, json=json)
+            return FakeResponse(
+                control_receipt(
+                    "address_book_profile_create",
+                    request_document,
+                    {"profiles": 1},
+                )
+            )
+
+        address_books.requests.post = post
+        result = address_books.add_shared_ab(
+            "https://management.example.test",
+            "token",
+            " shared-book ",
+            note="note",
+            password=password,
+            operation_id=OPERATION_ID,
+        )
+
+        self.assertEqual(result["applied"], {"profiles": 1})
+        self.assertEqual(captured["json"]["default_password"], password)
+        self.assertEqual(captured["headers"]["Idempotency-Key"], OPERATION_ID)
+
+    def test_user_create_digest_and_device_assign_generation_match_server_contract(self):
+        users = load_script("users.py", "state040_user_create_script")
+        devices = load_script("devices.py", "state040_device_assign_script")
+        password = "state040-client-secret"
+        user_document = {
+            "operation": "user_create",
+            "username": "new-user",
+            "password_digest": document_digest(password),
+            "email": "",
+            "note": "",
+            "group_name": "operators",
+        }
+        users.requests.post = lambda *_args, **_kwargs: FakeResponse(
+            control_receipt("user_create", user_document, {"users": 1})
+        )
+        user_result = users.new_user(
+            "https://management.example.test",
+            "token",
+            "new-user",
+            password,
+            "operators",
+            operation_id=OPERATION_ID,
+        )
+        self.assertEqual(user_result["applied"], {"users": 1})
+
+        device_document = {
+            "operation": "device_assign",
+            "device": "8",
+            "type": "note",
+            "value": "updated",
+            "expected_generation": 3,
+        }
+        captured = {}
+
+        def post_device(url, *, headers, json):
+            captured.update(url=url, headers=headers, json=json)
+            return FakeResponse(
+                control_receipt(
+                    "device_assign",
+                    device_document,
+                    {"devices": 1},
+                )
+            )
+
+        devices.requests.post = post_device
+        device_result = devices.assign(
+            "https://management.example.test",
+            "token",
+            "8",
+            "741000001",
+            "note",
+            "updated",
+            operation_id=OPERATION_ID,
+            expected_generation=3,
+        )
+        self.assertEqual(device_result["applied"], {"devices": 1})
+        self.assertEqual(captured["headers"]["If-Match"], '"3"')
+
+    def test_device_address_book_assignment_hashes_password_in_receipt(self):
+        devices = load_script("devices.py", "state040_device_ab_assign_script")
+        password = "state040-address-book-password"
+        value = {
+            "address_book_name": "shared",
+            "address_book_tag": "production",
+            "address_book_alias": "desk",
+            "address_book_password": password,
+            "address_book_note": "note",
+        }
+        receipt_value = {
+            key: nested_value
+            for key, nested_value in value.items()
+            if key != "address_book_password"
+        }
+        receipt_value.update(
+            has_address_book_password=True,
+            address_book_password_digest=document_digest(password),
+        )
+        request_document = {
+            "operation": "device_assign",
+            "device": "8",
+            "type": "ab",
+            "value": receipt_value,
+            "expected_generation": 3,
+        }
+        captured = {}
+
+        def post(url, *, headers, json):
+            captured.update(url=url, headers=headers, json=json)
+            return FakeResponse(
+                control_receipt(
+                    "device_assign",
+                    request_document,
+                    {"devices": 1},
+                )
+            )
+
+        devices.requests.post = post
+        result = devices.assign(
+            "https://management.example.test",
+            "token",
+            "8",
+            "741000001",
+            "ab",
+            "shared,production,desk,state040-address-book-password,note",
+            operation_id=OPERATION_ID,
+            expected_generation=3,
+        )
+
+        self.assertEqual(result["applied"], {"devices": 1})
+        self.assertEqual(captured["json"]["value"]["address_book_password"], password)
+
     def test_cross_repository_canonical_request_digest_vector(self):
         self.assertEqual(
             document_digest(
@@ -81,9 +386,14 @@ class BatchOperationReceiptTests(unittest.TestCase):
                     "peers": ["3"],
                     "users": ["7"],
                     "groups": [],
+                    "expected_generations": {
+                        "devices": {"3": 0},
+                        "users": {"7": 0},
+                        "groups": {},
+                    },
                 }
             ),
-            "b3d8410e88bab3094afb36a53805c627ac7464110657382d2865700c1ed1a8d3",
+            "26c6b44fa09cf1d964dfb7a78de7ca95e65628b04332176243de9f4213649721",
         )
 
     def test_exact_receipt_is_accepted(self):
@@ -190,10 +500,27 @@ class BatchOperationReceiptTests(unittest.TestCase):
             "peers": ["3"],
             "users": ["7"],
             "groups": [group_guid],
+            "expected_generations": {
+                "devices": {"3": 2},
+                "users": {"7": 4},
+                "groups": {group_guid: 6},
+            },
         }
         expected = {"devices": 1, "users": 1, "groups": 1}
         captured = {}
         strategies.get_strategy_by_name = lambda *_args: {"guid": strategy_guid}
+        strategies.get_device_target = lambda *_args: {
+            "guid": "3",
+            "mutation_generation": 2,
+        }
+        strategies.get_user_target = lambda *_args: {
+            "guid": "7",
+            "mutation_generation": 4,
+        }
+        strategies.get_device_group_target = lambda *_args: {
+            "guid": group_guid,
+            "mutation_generation": 6,
+        }
 
         def post(url, *, headers, json):
             captured.update(url=url, headers=headers, json=json)
@@ -219,6 +546,11 @@ class BatchOperationReceiptTests(unittest.TestCase):
                 "peers": ["3"],
                 "users": ["7"],
                 "groups": [group_guid],
+                "expected_generations": {
+                    "devices": {"3": 2},
+                    "users": {"7": 4},
+                    "groups": {group_guid: 6},
+                },
             },
         )
 
@@ -235,11 +567,16 @@ class BatchOperationReceiptTests(unittest.TestCase):
             )
 
         group_guid = "22222222-2222-4222-8222-222222222222"
-        groups.get_group_by_name = lambda *_args: {"guid": group_guid}
+        generation = 3
+        groups.get_group_by_name = lambda *_args: {
+            "guid": group_guid,
+            "mutation_generation": generation,
+        }
         request_document = {
             "operation": "device_group_remove_devices",
             "group": group_guid,
             "devices": ["741000001", "741000002"],
+            "expected_generation": generation,
         }
         partial = receipt(
             "device_group_remove_devices", request_document, {"devices": 2}
@@ -274,7 +611,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
             calls.append((url, headers, json))
             action = url.rsplit("/", 1)[-1]
             operation = f"user_status_{action}"
-            request_document = {"operation": operation, "user": user_guid}
+            request_document = {"operation": operation, "user": user_guid, "expected_generation": 0}
             return FakeResponse(
                 control_receipt(
                     operation,
@@ -288,7 +625,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
             calls.append((url, headers, json))
             action = url.rsplit("/", 1)[-1]
             operation = f"device_status_{action}"
-            request_document = {"operation": operation, "device": device_guid}
+            request_document = {"operation": operation, "device": device_guid, "expected_generation": 0}
             return FakeResponse(
                 control_receipt(
                     operation,
@@ -301,7 +638,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
         def device_delete(url, *, headers, json):
             calls.append((url, headers, json))
             operation = "device_delete"
-            request_document = {"operation": operation, "device": device_guid}
+            request_document = {"operation": operation, "device": device_guid, "expected_generation": 0}
             return FakeResponse(
                 control_receipt(
                     operation,
@@ -320,6 +657,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
             user_guid,
             "alice",
             operation_id=operation_ids[0],
+            expected_generation=0,
         )
         users.enable(
             "https://management.example.test",
@@ -327,6 +665,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
             user_guid,
             "alice",
             operation_id=operation_ids[1],
+            expected_generation=0,
         )
         devices.disable(
             "https://management.example.test",
@@ -334,6 +673,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
             device_guid,
             "741000001",
             operation_id=operation_ids[2],
+            expected_generation=0,
         )
         devices.enable(
             "https://management.example.test",
@@ -341,6 +681,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
             device_guid,
             "741000001",
             operation_id=operation_ids[3],
+            expected_generation=0,
         )
         devices.delete(
             "https://management.example.test",
@@ -348,6 +689,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
             device_guid,
             "741000001",
             operation_id=operation_ids[4],
+            expected_generation=0,
         )
 
         self.assertEqual(len(calls), 5)
@@ -355,12 +697,13 @@ class BatchOperationReceiptTests(unittest.TestCase):
             self.assertEqual(headers["Authorization"], "Bearer token")
             self.assertEqual(headers["Content-Type"], "application/json")
             self.assertEqual(headers["Idempotency-Key"], operation_ids[index])
+            self.assertEqual(headers["If-Match"], '"0"')
             self.assertEqual(body, {})
 
     def test_single_control_operation_id_is_replay_safe_after_response_loss(self):
         devices = load_script("devices.py", "replay_control_devices_script")
         operation = "device_delete"
-        request_document = {"operation": operation, "device": "8"}
+        request_document = {"operation": operation, "device": "8", "expected_generation": 0}
         body = control_receipt(operation, request_document, {"devices": 1})
         calls = []
 
@@ -375,6 +718,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
             "8",
             "741000001",
             operation_id=OPERATION_ID,
+            expected_generation=0,
         )
         replayed = devices.delete(
             "https://management.example.test",
@@ -382,6 +726,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
             "8",
             "741000001",
             operation_id=OPERATION_ID,
+            expected_generation=0,
         )
 
         self.assertEqual(first, replayed)
@@ -401,7 +746,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
             self.assertIn(f"Operation ID: {operation_id}", output.getvalue())
             self.assertEqual(json, {})
             operation = "user_status_disable"
-            request_document = {"operation": operation, "user": "7"}
+            request_document = {"operation": operation, "user": "7", "expected_generation": 0}
             return FakeResponse(
                 control_receipt(
                     operation,
@@ -418,6 +763,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
                 "token",
                 "7",
                 "alice",
+                expected_generation=0,
             )
 
     def test_control_response_rejects_legacy_partial_and_malformed_receipts(self):
@@ -464,8 +810,8 @@ class BatchOperationReceiptTests(unittest.TestCase):
     def test_single_operation_id_cannot_be_reused_for_multiple_targets(self):
         users = load_script("users.py", "multi_target_users_script")
         users.view = lambda *_args: [
-            {"guid": "7", "name": "alice"},
-            {"guid": "8", "name": "bob"},
+            {"guid": "7", "name": "alice", "mutation_generation": 0},
+            {"guid": "8", "name": "bob", "mutation_generation": 0},
         ]
         argv = [
             "users.py",
@@ -483,8 +829,8 @@ class BatchOperationReceiptTests(unittest.TestCase):
     def test_multi_target_control_generates_one_operation_id_per_target(self):
         users = load_script("users.py", "multi_target_generated_users_script")
         users.view = lambda *_args: [
-            {"guid": "7", "name": "alice"},
-            {"guid": "8", "name": "bob"},
+            {"guid": "7", "name": "alice", "mutation_generation": 0},
+            {"guid": "8", "name": "bob", "mutation_generation": 0},
         ]
         calls = []
 
@@ -493,7 +839,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
             operation_id = headers["Idempotency-Key"]
             calls.append((user_guid, operation_id, json))
             operation = "user_status_disable"
-            request_document = {"operation": operation, "user": user_guid}
+            request_document = {"operation": operation, "user": user_guid, "expected_generation": 0}
             return FakeResponse(
                 control_receipt(
                     operation,
@@ -526,7 +872,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
     def test_deleted_device_receipt_can_be_replayed_by_exact_guid_without_lookup(self):
         devices = load_script("devices.py", "deleted_device_replay_script")
         devices.view = lambda *_args: self.fail("replay must not depend on inventory")
-        request_document = {"operation": "device_delete", "device": "8"}
+        request_document = {"operation": "device_delete", "device": "8", "expected_generation": 0}
         body = control_receipt("device_delete", request_document, {"devices": 1})
         calls = []
 
@@ -546,6 +892,8 @@ class BatchOperationReceiptTests(unittest.TestCase):
             "8",
             "--operation-id",
             OPERATION_ID,
+            "--expected-generation",
+            "0",
         ]
 
         with patch.object(sys, "argv", argv):
