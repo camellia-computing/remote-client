@@ -46,6 +46,7 @@ import '../common/widgets/dialog.dart';
 import 'input_model.dart';
 import 'platform_model.dart';
 import 'remote_window_geometry.dart';
+import 'reconnect_retry.dart';
 import 'package:camellia_remote_app/utils/scale.dart';
 
 import 'package:camellia_remote_app/generated_bridge.dart'
@@ -159,10 +160,9 @@ class FfiModel with ChangeNotifier {
   bool? _direct;
   bool _touchMode = false;
   late VirtualMouseMode virtualMouseMode;
-  Timer? _timer;
   Timer? _restartReconnectDelayTimer;
-  var _reconnects = 1;
-  DateTime? _offlineReconnectStartTime;
+  final _reconnectRetry = ReconnectRetry();
+  String? _retryKind;
   bool _viewOnly = false;
   bool _showMyCursor = false;
   WeakReference<FFI> parent;
@@ -292,8 +292,7 @@ class FfiModel with ChangeNotifier {
     _secure = null;
     _direct = null;
     _inputBlocked = false;
-    _timer?.cancel();
-    _timer = null;
+    resetReconnectRetry();
     resetRestartReconnectState();
     clearPermissions();
     waitForImageTimer?.cancel();
@@ -405,6 +404,7 @@ class FfiModel with ChangeNotifier {
           evt['stream_type'] ?? '',
         );
         resetRestartReconnectState();
+        resetReconnectRetry();
       } else if (name == 'switch_display') {
         // switch display is kept for backward compatibility
         handleSwitchDisplay(evt, sessionId, peerId);
@@ -1036,12 +1036,15 @@ class FfiModel with ChangeNotifier {
 
   /// Handle the message box event based on [evt] and [id].
   handleMsgBox(Map<String, dynamic> evt, SessionID sessionId, String peerId) {
-    if (parent.target == null) return;
+    if (parent.target == null || parent.target!.closed) return;
     final dialogManager = parent.target!.dialogManager;
     final type = evt['type'];
     final title = evt['title'];
     final text = evt['text'];
     final link = evt['link'];
+    if (type != 'error' || title != 'Connection Error') {
+      resetReconnectRetry();
+    }
 
     // Disable relative mouse mode on any error-type message to ensure cursor is released.
     // This includes connection errors, session-ending messages, elevation errors, etc.
@@ -1145,33 +1148,33 @@ class FfiModel with ChangeNotifier {
     _restartReconnectDelayTimer = null;
   }
 
-  /// Auto-retry check for "Remote desktop is offline" error.
-  /// returns true to auto-retry, false otherwise.
+  /// Eligibility only; timing and attempt admission belong to ReconnectRetry.
   bool shouldAutoRetryOnOffline(String type, String title, String text) {
-    if (type == 'error' &&
+    return type == 'error' &&
         title == 'Connection Error' &&
         text == 'Remote desktop is offline' &&
-        _pi.isSet.isTrue) {
-      // Auto retry for ~30s (server's peer offline threshold) when controlled peer's account changes
-      // (e.g., signout, switch user, login into OS) causes temporary offline via websocket/tcp connection.
-      // The actual wait may exceed 30s (e.g., 20s elapsed + 16s next retry = 36s), which is acceptable
-      // since the controlled side reconnects quickly after account changes.
-      // Uses time-based check instead of _reconnects count because user can manually retry.
-      // https://github.com/rustdesk/rustdesk/discussions/14048
-      if (_offlineReconnectStartTime == null) {
-        // First offline, record time and start retry
-        _offlineReconnectStartTime = DateTime.now();
-        return true;
-      } else {
-        final elapsed = DateTime.now()
-            .difference(_offlineReconnectStartTime!)
-            .inSeconds;
-        if (elapsed < 30) {
-          return true;
-        }
-      }
+        _pi.isSet.isTrue;
+  }
+
+  void resetReconnectRetry() {
+    _reconnectRetry.reset();
+    _retryKind = null;
+  }
+
+  bool _ownsReconnect(int generation, SessionID id) {
+    final ffi = parent.target;
+    return ffi != null &&
+        !ffi.closed &&
+        id == sessionId &&
+        generation == _reconnectRetry.generation;
+  }
+
+  void onReconnectLifecycleState(AppLifecycleState state) {
+    // Suspend ends the foreground operation. Resume also cancels a pending
+    // timer: some desktop platforms omit a suspend notification during sleep.
+    if (_retryKind != null && state != AppLifecycleState.inactive) {
+      _reconnectRetry.expire(notify: true);
     }
-    return false;
   }
 
   handleToast(Map<String, dynamic> evt, SessionID sessionId, String peerId) {
@@ -1206,7 +1209,7 @@ class FfiModel with ChangeNotifier {
   }
 
   /// Show a message box with [type], [title] and [text].
-  showMsgBox(
+  Future<void> showMsgBox(
     SessionID sessionId,
     String type,
     String title,
@@ -1216,11 +1219,56 @@ class FfiModel with ChangeNotifier {
     OverlayDialogManager dialogManager, {
     bool? hasCancel,
   }) async {
+    if (parent.target == null ||
+        parent.target!.closed ||
+        sessionId != this.sessionId) {
+      return;
+    }
+    final kind = '$type\u0000$title\u0000$text';
+    if (_retryKind != kind) {
+      resetReconnectRetry();
+      _retryKind = kind;
+    }
+    Duration? retryDelay;
+    if (hasRetry) {
+      retryDelay = _reconnectRetry.schedule(
+        onRetry: () {
+          if (!_ownsReconnect(_reconnectRetry.generation, sessionId)) return;
+          debugPrint(
+            'event=connection.retry event_id=CONN-RETRY-001 '
+            'attempt=${_reconnectRetry.attempts} result=scheduled',
+          );
+          _performReconnect(dialogManager, sessionId, false);
+        },
+        onExhausted: () {
+          if (parent.target?.closed != false) return;
+          debugPrint(
+            'event=connection.retry.exhausted event_id=CONN-RETRY-002 '
+            'result=budget_exhausted',
+          );
+          showMsgBox(
+            sessionId,
+            type,
+            title,
+            text,
+            link,
+            hasRetry,
+            dialogManager,
+            hasCancel: hasCancel,
+          );
+        },
+      );
+    } else {
+      _reconnectRetry.expire();
+    }
+    final owner = _reconnectRetry.generation;
+    final autoRetry = retryDelay != null;
+    final ffi = parent.target!;
     final noteAllowed =
         parent.target != null &&
         allowAskForNoteAtEndOfConnection(parent.target, false) &&
         (title == "Connection Error" || type == "restarting");
-    final showNoteEdit = noteAllowed && !hasRetry;
+    final showNoteEdit = noteAllowed && !autoRetry;
     if (showNoteEdit) {
       await showConnEndAuditDialogCloseCanceled(
         ffi: parent.target!,
@@ -1228,23 +1276,27 @@ class FfiModel with ChangeNotifier {
         title: title,
         text: text,
       );
-      closeConnection();
+      if (!_ownsReconnect(owner, sessionId)) return;
+      _reconnectRetry.expire();
+      closeConnection(id: ffi.id);
     } else {
-      VoidCallback? onSubmit;
-      if (noteAllowed && hasRetry) {
-        final ffi = parent.target!;
-        onSubmit = () async {
-          _timer?.cancel();
-          _timer = null;
+      Future<void> onSubmit() async {
+        if (!_ownsReconnect(owner, sessionId)) return;
+        _reconnectRetry.expire();
+        final closingOwner = _reconnectRetry.generation;
+        if (noteAllowed) {
           await showConnEndAuditDialogCloseCanceled(
             ffi: ffi,
             type: type,
             title: title,
             text: text,
           );
-          closeConnection();
-        };
+        }
+        if (_ownsReconnect(closingOwner, sessionId)) {
+          closeConnection(id: ffi.id);
+        }
       }
+
       msgBox(
         sessionId,
         type,
@@ -1253,20 +1305,19 @@ class FfiModel with ChangeNotifier {
         link,
         dialogManager,
         hasCancel: hasCancel,
-        reconnect: hasRetry ? reconnect : null,
-        reconnectTimeout: hasRetry ? _reconnects : null,
+        reconnect: hasRetry
+            ? (manager, id, relay) {
+                if (_ownsReconnect(owner, id)) reconnect(manager, id, relay);
+              }
+            : null,
+        reconnectTimeout: hasRetry
+            ? ((retryDelay?.inMilliseconds ?? 0) / 1000).ceil()
+            : null,
         onSubmit: onSubmit,
+        onCancel: () {
+          if (_ownsReconnect(owner, sessionId)) _reconnectRetry.expire();
+        },
       );
-    }
-    _timer?.cancel();
-    if (hasRetry) {
-      _timer = Timer(Duration(seconds: _reconnects), () {
-        reconnect(dialogManager, sessionId, false);
-      });
-      _reconnects *= 2;
-    } else {
-      _reconnects = 1;
-      _offlineReconnectStartTime = null;
     }
   }
 
@@ -1286,6 +1337,18 @@ class FfiModel with ChangeNotifier {
     SessionID sessionId,
     bool forceRelay,
   ) {
+    if (parent.target?.closed != false || sessionId != this.sessionId) return;
+    resetReconnectRetry();
+    resetRestartReconnectState();
+    _performReconnect(dialogManager, sessionId, forceRelay);
+  }
+
+  void _performReconnect(
+    OverlayDialogManager dialogManager,
+    SessionID sessionId,
+    bool forceRelay,
+  ) {
+    final owner = _reconnectRetry.generation;
     // Disable relative mouse mode before reconnecting to ensure cursor is released.
     parent.target?.inputModel.setRelativeMouseMode(false);
     _cancelPendingMonitorRestore();
@@ -1294,7 +1357,11 @@ class FfiModel with ChangeNotifier {
     dialogManager.dismissAll();
     dialogManager.showLoading(
       translate('Connecting...'),
-      onCancel: closeConnection,
+      onCancel: () {
+        if (!_ownsReconnect(owner, sessionId)) return;
+        _reconnectRetry.expire();
+        closeConnection(id: parent.target?.id);
+      },
     );
   }
 
@@ -1407,7 +1474,9 @@ class FfiModel with ChangeNotifier {
     // There are display changes on the remote side,
     // which will cause some messages to refresh the canvas and dismiss dialogs.
     // So we add a delay here to ensure the dialog is displayed.
+    final owner = _reconnectRetry.generation;
     Future.delayed(Duration(milliseconds: 3000), () {
+      if (!_ownsReconnect(owner, sessionId)) return;
       showMsgBox(sessionId, type, title, text, link, hasRetry, dialogManager);
     });
   }
@@ -1659,8 +1728,7 @@ class FfiModel with ChangeNotifier {
         );
       }
       if (displays.isNotEmpty) {
-        _reconnects = 1;
-        _offlineReconnectStartTime = null;
+        resetReconnectRetry();
         resetRestartReconnectState();
         waitForFirstImage.value = true;
         isRefreshing = false;
@@ -4227,6 +4295,7 @@ class FFI {
 
   /// Mobile reuse FFI
   void mobileReset() {
+    ffiModel.resetReconnectRetry();
     ffiModel.resetRestartReconnectState();
     ffiModel.waitForFirstImage.value = true;
     ffiModel.isRefreshing = false;
@@ -4253,6 +4322,7 @@ class FFI {
     List<int>? displays,
   }) {
     closed = false;
+    ffiModel.resetReconnectRetry();
     if (isMobile) mobileReset();
     assert(
       (!(isPortForward && isViewCamera)) &&
@@ -4416,6 +4486,7 @@ class FFI {
         if (message is EventToUI_Event) {
           if (message.field0 == "close") {
             closed = true;
+            ffiModel.resetReconnectRetry();
             debugPrint('Exit session event loop');
             return;
           }
@@ -4533,6 +4604,7 @@ class FFI {
   /// Close the remote session.
   Future<void> close({bool closeSession = true}) async {
     closed = true;
+    ffiModel.resetReconnectRetry();
     chatModel.close();
     // Close all terminal models
     for (final model in _terminalModels.values) {

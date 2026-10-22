@@ -149,10 +149,10 @@ class _RemotePageState extends State<RemotePage>
   void initState() {
     super.initState();
     _ffi = FFI(widget.sessionId);
+    WidgetsBinding.instance.addObserver(this);
     if (isMacOS) {
       // SchedulerBinding.instance.lifecycleState is null in the first connection in a new window.
       _macOSLifecycleState = SchedulerBinding.instance.lifecycleState;
-      WidgetsBinding.instance.addObserver(this);
       _tabStateSubscription =
           widget.tabController?.state.listen(_onMacOSTabStateChanged);
     }
@@ -441,6 +441,7 @@ class _RemotePageState extends State<RemotePage>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
+    _ffi.ffiModel.onReconnectLifecycleState(state);
     if (!isMacOS || _macOSLifecycleState == state) return;
     _macOSLifecycleState = state;
     if (state == AppLifecycleState.resumed) {
@@ -624,6 +625,7 @@ class _RemotePageState extends State<RemotePage>
 
   @override
   Future<void> dispose() async {
+    WidgetsBinding.instance.removeObserver(this);
     final closeSession = closeSessionOnDispose.remove(widget.id) ?? true;
 
     // https://github.com/flutter/flutter/issues/64935
@@ -633,7 +635,6 @@ class _RemotePageState extends State<RemotePage>
         _releaseMacOSRemoteInput();
       }
       _tabStateSubscription?.cancel();
-      WidgetsBinding.instance.removeObserver(this);
     }
     super.dispose();
     debugPrint("REMOTE PAGE dispose session $sessionId ${widget.id}");
