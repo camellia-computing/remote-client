@@ -41,7 +41,7 @@ impl PowerInhibitor {
 impl Drop for PowerInhibitor {
     fn drop(&mut self) {
         for id in self.0.drain(..) {
-            let result = unsafe { IOPMAssertionRelease(id) };
+            let result = IOPMAssertionRelease(id);
             if result != kIOReturnSuccess {
                 log::warn!("Unable to release session power protection ({result:#010x})");
             }
