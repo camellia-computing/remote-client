@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import plistlib
 import re
@@ -46,6 +47,22 @@ def version_tuple(value: str, source: str) -> tuple[int, int]:
         )
     major, minor = value.split(".", maxsplit=1)
     return int(major), int(minor)
+
+
+def verify_flutter_engine_floors(podhelper: str) -> None:
+    for platform, declaration in (("ios", "ios"), ("macos", "osx")):
+        values = re.findall(
+            rf"s\.{declaration}\.deployment_target\s*=\s*['\"]([^'\"]+)['\"]",
+            podhelper,
+        )
+        if len(values) != 1:
+            raise PolicyError(f"Flutter must declare one {platform} engine minimum")
+        actual = version_tuple(values[0], f"Flutter {platform} engine")
+        if actual > SUPPORTED_FLOORS[platform]:
+            raise PolicyError(
+                f"Flutter {platform} engine requires {values[0]}, exceeding "
+                "the product deployment baseline"
+            )
 
 
 def unique_values(pattern: str, text: str, source: str) -> set[str]:
@@ -734,6 +751,9 @@ def verify() -> tuple[str, str]:
 def main() -> int:
     try:
         ios_target, macos_target = verify()
+        if flutter_root := os.environ.get("FLUTTER_ROOT"):
+            helper = Path(flutter_root) / "packages/flutter_tools/bin/podhelper.rb"
+            verify_flutter_engine_floors(helper.read_text(encoding="utf-8"))
     except (
         OSError,
         json.JSONDecodeError,

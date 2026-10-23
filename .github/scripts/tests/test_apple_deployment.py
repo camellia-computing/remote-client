@@ -14,6 +14,20 @@ class AppleDeploymentPolicyTests(unittest.TestCase):
     def test_repository_policy_is_consistent(self) -> None:
         apple_policy.verify()
 
+    def test_flutter_engine_cannot_raise_product_minimum(self) -> None:
+        supported = "s.ios.deployment_target = '13.0'\ns.osx.deployment_target = '10.15'"
+        apple_policy.verify_flutter_engine_floors(supported)
+        for unsupported in (
+            supported.replace("13.0", "15.0"),
+            supported.replace("10.15", "12.0"),
+            supported + "\ns.ios.deployment_target = '13.0'",
+            "",
+        ):
+            with self.subTest(unsupported=unsupported), self.assertRaises(
+                apple_policy.PolicyError
+            ):
+                apple_policy.verify_flutter_engine_floors(unsupported)
+
     def test_version_parser_rejects_ambiguous_values(self) -> None:
         self.assertEqual(apple_policy.version_tuple("13.0", "test"), (13, 0))
         for value in ("13", "13.0.1", "latest"):

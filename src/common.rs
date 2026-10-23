@@ -747,19 +747,19 @@ pub fn run_me<T: AsRef<std::ffi::OsStr>>(args: Vec<T>) -> std::io::Result<std::p
 
 #[inline]
 pub fn username() -> String {
-    // fix bug of whoami
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    return whoami::username().trim_end_matches('\0').to_owned();
+    return whoami::username()
+        .unwrap_or_else(|_| "unknown".to_owned())
+        .trim_end_matches('\0')
+        .to_owned();
     #[cfg(any(target_os = "android", target_os = "ios"))]
     return DEVICE_NAME.lock().unwrap().clone();
 }
 
-// Exactly the implementation of "whoami::hostname()".
-// This wrapper is to suppress warnings.
 #[inline(always)]
 #[cfg(not(target_os = "ios"))]
 pub fn whoami_hostname() -> String {
-    let mut hostname = whoami::fallible::hostname().unwrap_or_else(|_| "localhost".to_string());
+    let mut hostname = whoami::hostname().unwrap_or_else(|_| "localhost".to_string());
     hostname.make_ascii_lowercase();
     hostname
 }

@@ -1542,7 +1542,7 @@ class FileFetcher {
       } else {
         await bind.sessionReadRemoteEmptyDirsRecursiveSync(
             sessionId: sessionId, path: path, includeHidden: showHidden);
-        return registerReadEmptyDirsTask(isLocal, path);
+        return await registerReadEmptyDirsTask(isLocal, path);
       }
     } catch (e) {
       return Future.error(e);
@@ -1560,7 +1560,7 @@ class FileFetcher {
       } else {
         await bind.sessionReadRemoteDir(
             sessionId: sessionId, path: path, includeHidden: showHidden);
-        return registerReadTask(isLocal, path);
+        return await registerReadTask(isLocal, path);
       }
     } catch (e) {
       return Future.error(e);
@@ -1577,7 +1577,7 @@ class FileFetcher {
           path: path,
           isRemote: !isLocal,
           showHidden: showHidden);
-      return registerReadRecursiveTask(actID);
+      return await registerReadRecursiveTask(actID);
     } catch (e) {
       return Future.error(e);
     }

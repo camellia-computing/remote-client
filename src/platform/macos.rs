@@ -1335,7 +1335,7 @@ pub fn elevate(args: Vec<&str>, prompt: &str) -> ResultType<bool> {
 }
 
 pub struct WakeLock {
-    handle: Option<keepawake::KeepAwake>,
+    handle: Option<super::power::PowerInhibitor>,
     display: bool,
     idle: bool,
     sleep: bool,
@@ -1351,15 +1351,8 @@ impl WakeLock {
         }
     }
 
-    fn acquire(display: bool, idle: bool, sleep: bool) -> keepawake::Result<keepawake::KeepAwake> {
-        keepawake::Builder::default()
-            .display(display)
-            .idle(idle)
-            .sleep(sleep)
-            .reason("Active Camellia remote session")
-            .app_name(crate::get_app_name())
-            .app_reverse_domain("com.camellia.remote")
-            .create()
+    fn acquire(display: bool, idle: bool, sleep: bool) -> ResultType<super::power::PowerInhibitor> {
+        super::power::PowerInhibitor::new(display, idle, sleep)
     }
 
     pub fn set_display(&mut self, display: bool) -> ResultType<()> {

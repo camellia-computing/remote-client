@@ -18,11 +18,11 @@ env:
   CAMELLIA_REMOTE_DOCS_HOME_URL: ${{ github.server_url }}/${{ github.repository }}
   CAMELLIA_REMOTE_LINUX_DISPLAY_DOCS_URL: ${{ github.server_url }}/${{ github.repository }}/blob/main/docs/platform-notes.md#linux-display-requirements
   CARGO_TERM_COLOR: always
-  RUST_TOOLCHAIN: "1.97.1"
+  RUST_TOOLCHAIN: "1.99.1"
   FLUTTER_CHANNEL: stable
-  FLUTTER_VERSION: "3.44.5"
+  FLUTTER_VERSION: "3.44.9"
   COCOAPODS_VERSION: "1.17.0"
-  NODE_VERSION: "24.18.0"
+  NODE_VERSION: "24.22.1"
   DEPENDENCY_MODE: locked
 
 jobs:
@@ -167,12 +167,12 @@ jobs:
           persist-credentials: false
 
       - name: Audit workflow security
-        uses: zizmorcore/zizmor-action@6fc4b006235f201fdab3722e17240ab420d580e5 # v0.6.1
+        uses: zizmorcore/zizmor-action@85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e # v0.7.1
         with:
           inputs: .github
           online-audits: false
           persona: pedantic
-          version: 1.28.0
+          version: 1.31.1
           advanced-security: false
           annotations: true
 
@@ -186,7 +186,7 @@ jobs:
             flutter/web/tools/build_web.sh
 
       - name: Install Java for Android signing tests
-        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
           java-version: "21"
@@ -235,13 +235,13 @@ jobs:
           submodules: recursive
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # zizmor: ignore[superfluous-actions] The pinned action installs the exact toolchain components consistently.
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # zizmor: ignore[superfluous-actions] The pinned action installs the exact toolchain components consistently.
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: rustfmt
 
       - name: Install Flutter
-        uses: ./.github/actions/setup-flutter
+        uses: ./.github/actions/setup-flutter # zizmor: ignore[self-repository] actionlint 1.7.12 requires this form; GitHub resolves the reviewed same-commit source.
         with:
           channel: ${{ env.FLUTTER_CHANNEL }}
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -273,7 +273,7 @@ jobs:
         run: cargo fmt --all
 
       - name: Upload generated bridge
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: bridge-generated-${{ github.sha }}
           path: |
@@ -305,7 +305,7 @@ jobs:
           submodules: recursive
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # zizmor: ignore[superfluous-actions] The pinned action installs the fixed Windows matrix target consistently.
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # zizmor: ignore[superfluous-actions] The pinned action installs the fixed Windows matrix target consistently.
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: ${{ matrix.target }}
@@ -315,6 +315,11 @@ jobs:
           cargo check --locked -p enigo
           --target ${{ matrix.target }}
           --features with_serde
+
+      - name: Check Windows session power adapter
+        run: >- # zizmor: ignore[template-injection] The target is selected only from the fixed in-repository matrix.
+          cargo check --locked -p camellia-platform-power
+          --target ${{ matrix.target }}
 
   windows_portable:
     name: Windows portable smoke check (${{ matrix.target }})
@@ -336,7 +341,7 @@ jobs:
           submodules: recursive
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # zizmor: ignore[superfluous-actions] The pinned action installs the fixed Windows matrix target consistently.
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # zizmor: ignore[superfluous-actions] The pinned action installs the fixed Windows matrix target consistently.
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: ${{ matrix.target }}
@@ -377,31 +382,31 @@ jobs:
         run: bash .github/scripts/verify-xcode.sh "$XCODE_VERSION"
 
       - name: Download generated bridge
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: bridge-generated-${{ github.sha }}
           path: .
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # zizmor: ignore[superfluous-actions] The pinned action installs the exact Apple targets consistently.
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # zizmor: ignore[superfluous-actions] The pinned action installs the exact Apple targets consistently.
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: aarch64-apple-ios
 
       - name: Restore Cargo cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: apple-native
 
       - name: Install Flutter
-        uses: ./.github/actions/setup-flutter
+        uses: ./.github/actions/setup-flutter # zizmor: ignore[self-repository] actionlint 1.7.12 requires this form; GitHub resolves the reviewed same-commit source.
         with:
           channel: ${{ env.FLUTTER_CHANNEL }}
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: true
 
       - name: Install Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -436,6 +441,12 @@ jobs:
           MACOSX_DEPLOYMENT_TARGET: "10.15"
           RUSTFLAGS: -D warnings
         run: cargo check --locked -p enigo --features with_serde
+
+      - name: Check macOS session power adapter
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "10.15"
+          RUSTFLAGS: -D warnings
+        run: cargo check --locked -p camellia-platform-power
 
       - name: Compile iOS Rust library
         env:
@@ -473,7 +484,7 @@ jobs:
           submodules: recursive
 
       - name: Download generated bridge
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: bridge-generated-${{ github.sha }}
           path: .
@@ -488,23 +499,23 @@ jobs:
             libxcb-xfixes0-dev libxdo-dev libxfixes-dev libvpx-dev libyuv-dev nasm ninja-build pkg-config unzip wget
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # zizmor: ignore[superfluous-actions] The pinned action installs the exact quality-gate components consistently.
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # zizmor: ignore[superfluous-actions] The pinned action installs the exact quality-gate components consistently.
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: rustfmt,clippy
 
       - name: Restore Cargo cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Install Flutter
-        uses: ./.github/actions/setup-flutter
+        uses: ./.github/actions/setup-flutter # zizmor: ignore[self-repository] actionlint 1.7.12 requires this form; GitHub resolves the reviewed same-commit source.
         with:
           channel: ${{ env.FLUTTER_CHANNEL }}
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: true
 
       - name: Install Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
