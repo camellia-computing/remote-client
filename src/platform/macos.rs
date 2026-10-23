@@ -1344,7 +1344,13 @@ pub struct WakeLock {
 impl WakeLock {
     pub fn new(display: bool, idle: bool, sleep: bool) -> Self {
         Self {
-            handle: Self::acquire(display, idle, sleep).ok(),
+            handle: match Self::acquire(display, idle, sleep) {
+                Ok(handle) => Some(handle),
+                Err(error) => {
+                    log::warn!("Unable to acquire session power protection: {error}");
+                    None
+                }
+            },
             display,
             idle,
             sleep,

@@ -4,10 +4,10 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 import plistlib
 import re
+import shutil
 import sys
 
 
@@ -751,8 +751,11 @@ def verify() -> tuple[str, str]:
 def main() -> int:
     try:
         ios_target, macos_target = verify()
-        if flutter_root := os.environ.get("FLUTTER_ROOT"):
-            helper = Path(flutter_root) / "packages/flutter_tools/bin/podhelper.rb"
+        if flutter_executable := shutil.which("flutter"):
+            flutter_root = Path(flutter_executable).resolve().parent.parent
+            helper = (flutter_root / "packages/flutter_tools/bin/podhelper.rb").resolve()
+            if not helper.is_relative_to(flutter_root):
+                raise PolicyError("Flutter engine policy must come from the selected SDK")
             verify_flutter_engine_floors(helper.read_text(encoding="utf-8"))
     except (
         OSError,
