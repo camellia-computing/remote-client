@@ -68,3 +68,9 @@ pulled by the power libraries. Linux tests use a private mock bus, exercise
 partial acquisition cleanup and user cancellation, and never call a host power
 service. Windows/macOS compilation is required; these tests do not request an
 actual restart or prove host power policy behavior.
+
+Apple tooling pins its JSON serializer in `.github/config/cocoapods-json-version`.
+The `pod` launcher selects that exact gem before loading CocoaPods. Local podspec
+checksums depend on JSON serialization, including empty-array formatting; relying
+on the host Ruby's bundled JSON makes equivalent specs produce different locks.
+Regenerate Pod locks with this launcher and keep the native lock-drift gate.

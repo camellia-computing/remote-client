@@ -438,6 +438,15 @@ def verify_apple_dependency_contract() -> None:
                 f"{marker!r} exactly once"
             )
 
+    json_version = read(".github/config/cocoapods-json-version").strip()
+    if not re.fullmatch(r"\d+\.\d+\.\d+", json_version):
+        raise PolicyError("CocoaPods JSON must pin one exact stable release")
+    launcher = read(".github/scripts/pod.rb")
+    if "gem 'json', json_version" not in launcher:
+        raise PolicyError("CocoaPods must select the pinned JSON serializer")
+    if '"$repository_root/.github/scripts/pod.rb" "$gem_bin/pod"' not in installer:
+        raise PolicyError("Apple builds must use the pinned CocoaPods launcher")
+
     lock_requirements = {
         "flutter/ios/Podfile.lock": (
             "DKImagePickerController/Core (4.3.9)",

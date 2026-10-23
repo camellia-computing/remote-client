@@ -1,6 +1,7 @@
 import importlib.util
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "verify_apple_deployment.py"
@@ -27,6 +28,28 @@ class AppleDeploymentPolicyTests(unittest.TestCase):
                 apple_policy.PolicyError
             ):
                 apple_policy.verify_flutter_engine_floors(unsupported)
+
+    def test_pod_serializer_pin_and_launcher_cannot_be_bypassed(self) -> None:
+        original_read = apple_policy.read
+        cases = {
+            ".github/config/cocoapods-json-version": "latest\n",
+            ".github/scripts/pod.rb": original_read(".github/scripts/pod.rb").replace(
+                "gem 'json', json_version", ""
+            ),
+            ".github/scripts/install-apple-prerequisites.sh": original_read(
+                ".github/scripts/install-apple-prerequisites.sh"
+            ).replace(
+                '"$repository_root/.github/scripts/pod.rb" "$gem_bin/pod"', ""
+            ),
+        }
+        for changed_path, changed_content in cases.items():
+            def read(path):
+                return changed_content if path == changed_path else original_read(path)
+
+            with self.subTest(path=changed_path), patch.object(
+                apple_policy, "read", side_effect=read
+            ), self.assertRaises(apple_policy.PolicyError):
+                apple_policy.verify_apple_dependency_contract()
 
     def test_version_parser_rejects_ambiguous_values(self) -> None:
         self.assertEqual(apple_policy.version_tuple("13.0", "test"), (13, 0))
