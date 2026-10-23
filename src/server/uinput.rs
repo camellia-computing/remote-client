@@ -1038,7 +1038,7 @@ mod mouce {
         io::{Error, ErrorKind, Result},
         mem::size_of,
         os::{
-            raw::{c_char, c_int, c_long, c_uint, c_ulong, c_ushort},
+            raw::{c_char, c_int, c_uint, c_ulong, c_ushort, c_void},
             unix::{fs::OpenOptionsExt, io::AsRawFd},
         },
         thread,
@@ -1126,7 +1126,7 @@ mod mouce {
 
     extern "C" {
         fn ioctl(fd: c_int, request: c_ulong, ...) -> c_int;
-        fn write(fd: c_int, buf: *mut InputEvent, count: usize) -> c_long;
+        fn write(fd: c_int, buf: *const c_void, count: usize) -> isize;
     }
 
     #[derive(Debug, Copy, Clone)]
@@ -1253,7 +1253,7 @@ mod mouce {
 
         /// Write the given event to the uinput file
         fn emit(&self, r#type: c_int, code: c_int, value: c_int) -> Result<()> {
-            let mut event = InputEvent {
+            let event = InputEvent {
                 time: TimeVal {
                     tv_sec: 0,
                     tv_usec: 0,
@@ -1266,8 +1266,8 @@ mod mouce {
 
             unsafe {
                 let count = size_of::<InputEvent>();
-                let written_bytes = write(fd, &mut event, count);
-                if written_bytes == -1 || written_bytes != count as c_long {
+                let written_bytes = write(fd, std::ptr::from_ref(&event).cast(), count);
+                if written_bytes == -1 || written_bytes != count as isize {
                     return Err(Error::new(
                         ErrorKind::Other,
                         format!("failed while trying to write to a file"),

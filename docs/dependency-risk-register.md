@@ -1,6 +1,6 @@
 # Rust dependency risk register
 
-Review date: 2026-07-29
+Review date: 2026-10-23
 Owner: Remote security maintainers
 
 ## Enforcement
@@ -39,3 +39,49 @@ The GitHub alerts for the still-resolved `atty` and `glib` versions remain open
 for visibility; they are not silently dismissed. A formal release after an
 exception expiry is a no-go until the dependency is removed or a newly reviewed
 exception with current evidence is approved.
+
+## Supported dependency constraints
+
+- iOS uses `whoami`'s platform-neutral backend because its Apple OS backend
+  links a macOS-only computer-name API. Mobile user and device names come from
+  Flutter's native device metadata, not this fallback. The feature is limited
+  to the iOS target; desktop identity queries retain their native backends.
+  Remove it when an upstream iOS backend links against the supported SDK.
+- `libc` is limited to 0.2.189 by the shared protocol manifest. Newer bindings
+  restrict `RTM_IFINFO2` to macOS, while the required `sysinfo` fork imports it
+  in its iOS network backend. Its Linux process enumeration and file-descriptor
+  limits also differ from current upstream `sysinfo`; replace that dependency
+  only with equivalent process and privilege behavior proven on every platform.
+  Keep the Apple native compilation gate and the unchanged vulnerability audit.
+- `wol-rs` stays on the 1.0 patch line: 1.1 introduces `rustc-serialize`,
+  which fails the vulnerability gate. Wake-on-LAN packet behavior is unchanged.
+- The desktop URI handler currently requires `win32_registry` 2.x. The solver
+  therefore retains compatible Win32 5.x, device-info 12.x, package-info 9.x,
+  file-picker 11.x, wake-lock 1.x and desktop-drop 0.8.x releases. Win32 6.x
+  and registry 3.x cannot be forced into this graph with overrides.
+- Flutter stays on 3.44.9, the latest stable patch that preserves the product's
+  iOS 13.0 and macOS 10.15 deployment floors. Flutter 3.47 requires iOS 15.0
+  and macOS 12.0; changing those floors is not a dependency-only update.
+  SDK-pinned packages follow the reviewed stable SDK resolution.
+  Freezed 4 and flex-color-picker 4 require Dart 3.13; use their compatible
+  3.x releases with the SDK's Dart 3.12 rather than raising deployment floors.
+  Ffigen 22+ requires a `meta` version incompatible with the SDK pin; use 21.x.
+  The Rust bridge runtime, Dart runtime and generator are all exactly 2.13.0;
+  generated sources are committed and verified together.
+- Window-manager and multi-window Git packages pin reviewed commits. Their
+  updates handle destroyed Linux windows and Windows resize/visibility recovery;
+  required native jobs must compile both integrations before merge.
+
+Session power protection uses owned native resources: a private connection and
+file descriptor on Linux, and IOPM assertion IDs on macOS. The restart adapter
+uses platform APIs without the unmaintained `zbus`/`zvariant` chains formerly
+pulled by the power libraries. Linux tests use a private mock bus, exercise
+partial acquisition cleanup and user cancellation, and never call a host power
+service. Windows/macOS compilation is required; these tests do not request an
+actual restart or prove host power policy behavior.
+
+Apple tooling pins its JSON serializer in `.github/config/cocoapods-json-version`.
+The `pod` launcher selects that exact gem before loading CocoaPods. Local podspec
+checksums depend on JSON serialization, including empty-array formatting; relying
+on the host Ruby's bundled JSON makes equivalent specs produce different locks.
+Regenerate Pod locks with this launcher and keep the native lock-drift gate.

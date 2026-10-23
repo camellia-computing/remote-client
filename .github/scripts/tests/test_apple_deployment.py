@@ -1,6 +1,8 @@
+import copy
 import importlib.util
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "verify_apple_deployment.py"
@@ -13,6 +15,61 @@ SPEC.loader.exec_module(apple_policy)
 class AppleDeploymentPolicyTests(unittest.TestCase):
     def test_repository_policy_is_consistent(self) -> None:
         apple_policy.verify()
+
+    def test_mobile_identity_fallback_is_required_and_target_scoped(self) -> None:
+        ios = 'cfg(target_os = "ios")'
+        whoami = {"version": "2", "features": ["force-stub"]}
+        valid = {"target": {ios: {"dependencies": {"whoami": whoami}}}}
+        apple_policy.verify_mobile_identity_features(valid)
+        invalid = [{}, {"target": {ios: {"dependencies": {"whoami": "2"}}}}]
+        for target in (None, 'cfg(target_os = "macos")', 'cfg(target_os = "windows")'):
+            manifest = copy.deepcopy(valid)
+            table = (
+                manifest if target is None else manifest["target"].setdefault(target, {})
+            )
+            table["dependencies"] = {"identity": {"package": "whoami", **whoami}}
+            invalid.append(manifest)
+        for manifest in invalid:
+            with self.subTest(manifest=manifest), self.assertRaises(
+                apple_policy.PolicyError
+            ):
+                apple_policy.verify_mobile_identity_features(manifest)
+
+    def test_flutter_engine_cannot_raise_product_minimum(self) -> None:
+        supported = "s.ios.deployment_target = '13.0'\ns.osx.deployment_target = '10.15'"
+        apple_policy.verify_flutter_engine_floors(supported)
+        for unsupported in (
+            supported.replace("13.0", "15.0"),
+            supported.replace("10.15", "12.0"),
+            supported + "\ns.ios.deployment_target = '13.0'",
+            "",
+        ):
+            with self.subTest(unsupported=unsupported), self.assertRaises(
+                apple_policy.PolicyError
+            ):
+                apple_policy.verify_flutter_engine_floors(unsupported)
+
+    def test_pod_serializer_pin_and_launcher_cannot_be_bypassed(self) -> None:
+        original_read = apple_policy.read
+        cases = {
+            ".github/config/cocoapods-json-version": "latest\n",
+            ".github/scripts/pod.rb": original_read(".github/scripts/pod.rb").replace(
+                "gem 'json', json_version", ""
+            ),
+            ".github/scripts/install-apple-prerequisites.sh": original_read(
+                ".github/scripts/install-apple-prerequisites.sh"
+            ).replace(
+                '"$repository_root/.github/scripts/pod.rb" "$gem_bin/pod"', ""
+            ),
+        }
+        for changed_path, changed_content in cases.items():
+            def read(path):
+                return changed_content if path == changed_path else original_read(path)
+
+            with self.subTest(path=changed_path), patch.object(
+                apple_policy, "read", side_effect=read
+            ), self.assertRaises(apple_policy.PolicyError):
+                apple_policy.verify_apple_dependency_contract()
 
     def test_version_parser_rejects_ambiguous_values(self) -> None:
         self.assertEqual(apple_policy.version_tuple("13.0", "test"), (13, 0))

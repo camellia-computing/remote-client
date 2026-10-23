@@ -23,6 +23,9 @@ pub mod linux_desktop_manager;
 #[cfg(target_os = "linux")]
 pub mod gtk_sudo;
 
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+pub use camellia_platform_power as power;
+
 #[cfg(all(
     not(all(target_os = "windows", not(target_pointer_width = "64"))),
     not(any(target_os = "android", target_os = "ios"))
