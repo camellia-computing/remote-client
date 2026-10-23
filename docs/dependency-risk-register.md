@@ -42,6 +42,11 @@ exception with current evidence is approved.
 
 ## Supported dependency constraints
 
+- iOS uses `whoami`'s platform-neutral backend because its Apple OS backend
+  links a macOS-only computer-name API. Mobile user and device names come from
+  Flutter's native device metadata, not this fallback. The feature is limited
+  to the iOS target; desktop identity queries retain their native backends.
+  Remove it when an upstream iOS backend links against the supported SDK.
 - `libc` is limited to 0.2.189 by the shared protocol manifest. Newer bindings
   restrict `RTM_IFINFO2` to macOS, while the required `sysinfo` fork imports it
   in its iOS network backend. Its Linux process enumeration and file-descriptor

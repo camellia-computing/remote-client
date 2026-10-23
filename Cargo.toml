@@ -189,6 +189,10 @@ android_logger = "0.13"
 jni = "0.21"
 android-wakelock = { git = "https://github.com/rustdesk-org/android-wakelock" }
 
+[target.'cfg(target_os = "ios")'.dependencies]
+# Flutter supplies mobile identity; macOS computer-name APIs are unavailable on iOS.
+whoami = { version = "2", features = ["force-stub"] }
+
 [workspace]
 members = ["libs/scrap", "libs/camellia_remote_protocol", "libs/enigo", "libs/clipboard", "libs/virtual_display", "libs/virtual_display/dylib", "libs/portable", "libs/remote_printer", "libs/platform_power"]
 exclude = ["vdi/host", "examples/custom_plugin"]

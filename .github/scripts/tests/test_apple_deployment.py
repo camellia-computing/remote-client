@@ -1,3 +1,4 @@
+import copy
 import importlib.util
 from pathlib import Path
 import unittest
@@ -14,6 +15,25 @@ SPEC.loader.exec_module(apple_policy)
 class AppleDeploymentPolicyTests(unittest.TestCase):
     def test_repository_policy_is_consistent(self) -> None:
         apple_policy.verify()
+
+    def test_mobile_identity_fallback_is_required_and_target_scoped(self) -> None:
+        ios = 'cfg(target_os = "ios")'
+        whoami = {"version": "2", "features": ["force-stub"]}
+        valid = {"target": {ios: {"dependencies": {"whoami": whoami}}}}
+        apple_policy.verify_mobile_identity_features(valid)
+        invalid = [{}, {"target": {ios: {"dependencies": {"whoami": "2"}}}}]
+        for target in (None, 'cfg(target_os = "macos")', 'cfg(target_os = "windows")'):
+            manifest = copy.deepcopy(valid)
+            table = (
+                manifest if target is None else manifest["target"].setdefault(target, {})
+            )
+            table["dependencies"] = {"identity": {"package": "whoami", **whoami}}
+            invalid.append(manifest)
+        for manifest in invalid:
+            with self.subTest(manifest=manifest), self.assertRaises(
+                apple_policy.PolicyError
+            ):
+                apple_policy.verify_mobile_identity_features(manifest)
 
     def test_flutter_engine_cannot_raise_product_minimum(self) -> None:
         supported = "s.ios.deployment_target = '13.0'\ns.osx.deployment_target = '10.15'"

@@ -9,6 +9,7 @@ import plistlib
 import re
 import shutil
 import sys
+import tomllib
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -63,6 +64,30 @@ def verify_flutter_engine_floors(podhelper: str) -> None:
                 f"Flutter {platform} engine requires {values[0]}, exceeding "
                 "the product deployment baseline"
             )
+
+
+def verify_mobile_identity_features(manifest: dict) -> None:
+    ios_target = 'cfg(target_os = "ios")'
+    targets = manifest.get("target", {})
+    dependency = targets.get(ios_target, {}).get("dependencies", {}).get("whoami", {})
+    if not isinstance(dependency, dict) or "force-stub" not in dependency.get(
+        "features", []
+    ):
+        raise PolicyError("iOS must not use whoami's macOS-only identity APIs")
+    tables = [manifest.get("dependencies", {})]
+    tables.extend(
+        target.get("dependencies", {})
+        for name, target in targets.items()
+        if name != ios_target
+    )
+    for table in tables:
+        for name, dependency in table.items():
+            if (
+                isinstance(dependency, dict)
+                and (name == "whoami" or dependency.get("package") == "whoami")
+                and "force-stub" in dependency.get("features", [])
+            ):
+                raise PolicyError("the whoami fallback must be limited to the iOS target")
 
 
 def unique_values(pattern: str, text: str, source: str) -> set[str]:
@@ -520,6 +545,7 @@ def verify() -> tuple[str, str]:
     verify_flutter_apple_project("macos")
     verify_apple_dependency_contract()
     verify_ios_link_anchor()
+    verify_mobile_identity_features(tomllib.loads(read("Cargo.toml")))
 
     ios_podfile = read("flutter/ios/Podfile")
     require_values(
