@@ -42,6 +42,12 @@ exception with current evidence is approved.
 
 ## Supported dependency constraints
 
+- `libc` is limited to 0.2.189 by the shared protocol manifest. Newer bindings
+  restrict `RTM_IFINFO2` to macOS, while the required `sysinfo` fork imports it
+  in its iOS network backend. Its Linux process enumeration and file-descriptor
+  limits also differ from current upstream `sysinfo`; replace that dependency
+  only with equivalent process and privilege behavior proven on every platform.
+  Keep the Apple native compilation gate and the unchanged vulnerability audit.
 - `wol-rs` stays on the 1.0 patch line: 1.1 introduces `rustc-serialize`,
   which fails the vulnerability gate. Wake-on-LAN packet behavior is unchanged.
 - The desktop URI handler currently requires `win32_registry` 2.x. The solver
