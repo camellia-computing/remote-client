@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import tomllib
 from typing import Any
 
 
@@ -60,6 +61,7 @@ def approved_warnings(
     policy: Any,
     *,
     today: date,
+    allow_expired: bool = False,
 ) -> dict[WarningIdentity, str]:
     if not isinstance(policy, dict):
         raise PolicyError("policy must be an object")
@@ -73,8 +75,8 @@ def approved_warnings(
         raise PolicyError("policy.reviewed_on must not be in the future")
 
     groups = policy["exception_groups"]
-    if not isinstance(groups, list) or not groups:
-        raise PolicyError("policy.exception_groups must be a non-empty array")
+    if not isinstance(groups, list):
+        raise PolicyError("policy.exception_groups must be an array")
 
     approved: dict[WarningIdentity, str] = {}
     group_ids: set[str] = set()
@@ -93,7 +95,7 @@ def approved_warnings(
         expires_on = date.fromisoformat(
             _nonempty_string(group["expires_on"], f"{label}.expires_on")
         )
-        if expires_on < today:
+        if expires_on < today and not allow_expired:
             raise PolicyError(
                 f"exception group {group_id} expired on {expires_on.isoformat()}"
             )
@@ -111,6 +113,43 @@ def approved_warnings(
                 )
             approved[identity] = group_id
     return approved
+
+
+def validate_publication_policy(
+    source_policy: Any,
+    authorization_policy: Any,
+    *,
+    today: date,
+    source_packages: set[tuple[str, str]],
+) -> None:
+    authorized = set(approved_warnings(authorization_policy, today=today))
+    required = {
+        identity
+        for identity in approved_warnings(source_policy, today=today, allow_expired=True)
+        if (identity[2], identity[3]) in source_packages
+    }
+    if required - authorized:
+        raise PolicyError(
+            "Current policy does not authorize all release-source warnings: "
+            + ", ".join(sorted(map(format_identity, required - authorized)))
+        )
+
+
+def lockfile_packages(path: Path) -> set[tuple[str, str]]:
+    packages = tomllib.loads(path.read_text(encoding="utf-8")).get("package")
+    if not isinstance(packages, list) or not packages:
+        raise PolicyError("Release lockfile must contain packages")
+    result: set[tuple[str, str]] = set()
+    for package in packages:
+        if not isinstance(package, dict):
+            raise PolicyError("Release lockfile package must be an object")
+        result.add(
+            (
+                _nonempty_string(package.get("name"), "lockfile package name"),
+                _nonempty_string(package.get("version"), "lockfile package version"),
+            )
+        )
+    return result
 
 
 def report_warnings(report: Any) -> set[WarningIdentity]:
@@ -194,12 +233,36 @@ def main() -> int:
         action="store_true",
         help="Validate policy structure and deadlines without running Cargo.",
     )
+    parser.add_argument(
+        "--authorization-policy",
+        type=Path,
+        help="Current trusted policy authorizing publication of the source graph.",
+    )
+    parser.add_argument(
+        "--lockfile",
+        type=Path,
+        default=Path("Cargo.lock"),
+        help="Frozen source lockfile used for publication policy validation.",
+    )
     args = parser.parse_args()
+    if args.authorization_policy and not args.policy_only:
+        parser.error("--authorization-policy requires --policy-only")
 
     try:
         policy = json.loads(args.policy.read_text(encoding="utf-8"))
         if args.policy_only:
-            approved_warnings(policy, today=date.today())
+            if args.authorization_policy:
+                authorization = json.loads(
+                    args.authorization_policy.read_text(encoding="utf-8")
+                )
+                validate_publication_policy(
+                    policy,
+                    authorization,
+                    today=date.today(),
+                    source_packages=lockfile_packages(args.lockfile),
+                )
+            else:
+                approved_warnings(policy, today=date.today())
             print("Dependency policy structure and deadlines are valid.")
             return 0
         process = subprocess.run(

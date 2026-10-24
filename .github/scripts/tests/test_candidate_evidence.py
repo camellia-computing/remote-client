@@ -292,6 +292,8 @@ class CandidateEvidenceTests(unittest.TestCase):
         publish = workflow.split("  publish:", 1)[1]
         self.assertIn("if: ${{ steps.release.outputs.release-draft == 'true' }}", prepare)
         self.assertEqual(prepare.count("audit_cargo_dependencies.py"), 2)
+        self.assertIn('--authorization-policy "$RUNNER_TEMP/cargo-audit-policy.json"', prepare)
+        self.assertIn('git show "$GITHUB_WORKFLOW_SHA:.github/config/cargo-audit-policy.json"', publish)
         self.assertLess(
             prepare.index("Validate dependency policy before building"),
             prepare.index("Validate exact CI bridge artifact"),

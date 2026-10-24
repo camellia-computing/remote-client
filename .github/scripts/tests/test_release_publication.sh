@@ -14,9 +14,11 @@ mkdir -p "$assets" "$control" "$fake_bin" "$remote" "$runner"
 cp .github/scripts/publish-client-release.sh "$control/"
 cp .github/scripts/validate-release-evidence.py "$control/"
 cp .github/scripts/audit_cargo_dependencies.py "$control/"
+cp Cargo.lock "$test_root/"
 mkdir -p "$test_root/.github/config"
 jq '.exception_groups[].expires_on = "2099-12-31"' \
   .github/config/cargo-audit-policy.json > "$test_root/.github/config/cargo-audit-policy.json"
+cp "$test_root/.github/config/cargo-audit-policy.json" "$control/"
 cat > "$control/manage-release.py" <<'PY'
 #!/usr/bin/env python3
 import json
@@ -27,7 +29,7 @@ import sys
 if len(sys.argv) < 2 or sys.argv[1] != "authorize":
     raise SystemExit("unexpected manager command")
 if os.environ.get("FAKE_EXPIRE_BEFORE_PUBLICATION") == "true":
-    path = Path(".github/config/cargo-audit-policy.json")
+    path = Path(__file__).with_name("cargo-audit-policy.json")
     policy = json.loads(path.read_text(encoding="utf-8"))
     for group in policy["exception_groups"]:
         group["expires_on"] = "2000-01-01"
@@ -273,6 +275,7 @@ set_policy_expiry() {
   jq --arg expiry "$1" '.exception_groups[].expires_on = $expiry' \
     "$test_root/.github/config/cargo-audit-policy.json" > "$test_root/policy-updated.json"
   mv "$test_root/policy-updated.json" "$test_root/.github/config/cargo-audit-policy.json"
+  cp "$test_root/.github/config/cargo-audit-policy.json" "$control/"
 }
 
 set_policy_expiry 2000-01-01
@@ -290,6 +293,9 @@ fi
 [[ "$(cat "$state")" == draft ]]
 
 set_policy_expiry 2099-12-31
+jq '.exception_groups[].expires_on = "2000-01-01"' \
+  "$test_root/.github/config/cargo-audit-policy.json" > "$test_root/frozen-policy.json"
+mv "$test_root/frozen-policy.json" "$test_root/.github/config/cargo-audit-policy.json"
 run_publisher >/dev/null
 [[ "$(cat "$state")" == published ]]
 cmp "$assets/camellia-remote-1.2.3-web.zip" \

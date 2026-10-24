@@ -43,8 +43,13 @@ exception with current evidence is approved.
 New publication checks the release source's policy deadlines before building,
 after protected-environment approval and immediately before making its draft
 public. These standard-library checks do not rerun product CI or extend an
-exception. Read-only verification and completion of an already published
-immutable release remain available after a deadline; they cannot publish new
+exception. The policy loaded from the trusted workflow commit must be unexpired
+and explicitly cover every approved warning identity whose package and version
+remain in the frozen lockfile; absent packages do not require renewed exceptions.
+Recovery from reviewed `main` can use a newly approved policy for that same scope
+without rewriting a tag or candidate; a changed dependency identity is not an
+authorization for the frozen one. Read-only verification and completion of an
+already published immutable release remain available after a deadline; they cannot publish new
 bytes or replace existing assets.
 
 ## Supported dependency constraints
