@@ -13,6 +13,7 @@ import 'package:bot_toast/bot_toast.dart';
 
 import '../utils/http_service.dart' as http;
 import '../common.dart';
+import 'address_book_snapshot.dart';
 
 String? parseSharedCredentialResponse(String body, int statusCode) {
   if (statusCode != 200) {
@@ -79,6 +80,8 @@ class AbModel {
   RxString get currentAbPushError => current.pushError;
   String? _personalAbGuid;
   String _personalAbName = _personalAddressBookName;
+  int? _personalAbGeneration;
+  int _listEpoch = 0;
 
   // Only handles peers add/remove
   final Map<String, VoidCallback> _peerIdUpdateListeners = {};
@@ -119,6 +122,10 @@ class AbModel {
 
   reset() async {
     print("reset ab model");
+    _listEpoch++;
+    for (final book in addressbooks.values.whereType<Ab>()) {
+      book.invalidateSnapshot();
+    }
     addressbooks.clear();
     _currentName.value = '';
     _listPullError.value = '';
@@ -170,9 +177,13 @@ class AbModel {
     debugPrint("pullAb, force: $force, quiet: $quiet");
     if (!listInitialized || force == ForcePullAb.listAndCurrent) {
       try {
+        final epoch = _listEpoch;
+        final token = bind.mainGetLocalOption(key: 'access_token');
+        final api = await bind.mainGetApiServer();
         // Refresh personal address book metadata on each list pull.
         _personalAbGuid = null;
         _personalAbName = _personalAddressBookName;
+        _personalAbGeneration = null;
         // `true`: continue init. `false`: stop, error already recorded.
         if (!await _getPersonalAbGuid(quiet: quiet)) {
           return;
@@ -190,21 +201,32 @@ class AbModel {
             null,
             ShareRule.read.value,
             null,
+            authorizationGeneration: _personalAbGeneration,
           ),
         );
         // get all address book name
         if (!await _getSharedAbProfiles(abProfiles, quiet: quiet)) {
           return;
         }
-        addressbooks.removeWhere(
-          (key, value) =>
-              abProfiles.firstWhereOrNull((e) => e.name == key) == null,
-        );
+        final currentApi = await bind.mainGetApiServer();
+        if (epoch != _listEpoch ||
+            api != currentApi ||
+            token != bind.mainGetLocalOption(key: 'access_token')) {
+          throw const AddressBookSnapshotException('context_changed');
+        }
+        addressbooks.removeWhere((key, value) {
+          final removed =
+              abProfiles.firstWhereOrNull((e) => e.name == key) == null;
+          if (removed && value is Ab) value.invalidateSnapshot();
+          return removed;
+        });
         for (int i = 0; i < abProfiles.length; i++) {
           AbProfile p = abProfiles[i];
-          if (addressbooks.containsKey(p.name)) {
+          if (addressbooks[p.name]?.sharedProfile()?.guid == p.guid) {
             addressbooks[p.name]?.setSharedProfile(p);
           } else {
+            final previous = addressbooks[p.name];
+            if (previous is Ab) previous.invalidateSnapshot();
             addressbooks[p.name] = Ab(p, p.guid == _personalAbGuid);
           }
         }
@@ -313,7 +335,9 @@ class AbModel {
       if (guid is! String || guid.trim().isEmpty) {
         throw 'invalid personal address book guid';
       }
+      final snapshot = AddressBookSnapshotIdentity.parse(json);
       _personalAbGuid = guid.trim();
+      _personalAbGeneration = snapshot.generation;
       final name = json['name'];
       if (name is String && name.trim().isNotEmpty) {
         _personalAbName = name.trim();
@@ -370,12 +394,16 @@ class AbModel {
         if (statusCode != 200) {
           throw 'HTTP $statusCode';
         }
+        if (json['address_book_snapshot_version'] != 1) {
+          throw const AddressBookSnapshotException('unsupported_version');
+        }
         if (json.containsKey('total')) {
           if (total == 0) total = json['total'];
           if (json.containsKey('data')) {
             final data = json['data'];
             if (data is List) {
               for (final profile in data) {
+                AddressBookSnapshotIdentity.parse(profile);
                 final u = AbProfile.fromJson(profile);
                 int index = profiles.indexWhere((e) => e.name == u.name);
                 if (index < 0) {
@@ -998,6 +1026,16 @@ class Ab extends BaseAb {
   AbProfile profile;
   late final bool personal;
   bool get emtpy => peers.isEmpty && tags.isEmpty;
+  int? _snapshotGeneration;
+  int _highestSnapshotGeneration = 0;
+  String? _snapshotToken;
+  int _snapshotEpoch = 0;
+
+  void invalidateSnapshot() {
+    _snapshotEpoch++;
+    _snapshotGeneration = null;
+    _snapshotToken = null;
+  }
 
   Ab(this.profile, this.personal);
 
@@ -1021,6 +1059,10 @@ class Ab extends BaseAb {
 
   @override
   void setSharedProfile(AbProfile profile) {
+    if (this.profile.guid != profile.guid ||
+        _snapshotGeneration != profile.authorizationGeneration) {
+      invalidateSnapshot();
+    }
     this.profile = profile;
   }
 
@@ -1032,6 +1074,11 @@ class Ab extends BaseAb {
 
   @override
   bool canWrite() {
+    if (_snapshotGeneration == null ||
+        _snapshotGeneration != profile.authorizationGeneration ||
+        _snapshotToken != bind.mainGetLocalOption(key: 'access_token')) {
+      return false;
+    }
     if (personal) {
       return true;
     } else {
@@ -1051,152 +1098,69 @@ class Ab extends BaseAb {
 
   @override
   Future<bool> pullAbImpl({quiet = false}) async {
-    // Only adopt a result the server actually delivered. A transient failure
-    // used to publish the partial list anyway, and every caller persists what
-    // it sees, so one dropped request could blank the address book on screen
-    // and overwrite the offline cache with an empty book.
-    bool ret = true;
-    List<Peer> tmpPeers = [];
-    if (await _fetchPeers(tmpPeers, quiet: quiet)) {
-      peers.value = tmpPeers;
-    } else {
-      ret = false;
-    }
-    List<AbTag> tmpTags = [];
-    if (await _fetchTags(tmpTags, quiet: quiet)) {
-      tags.value = tmpTags.map((e) => e.name).toList();
-      tagColors.value = {for (final t in tmpTags) t.name: t.color};
-    } else {
-      ret = false;
-    }
-    return ret;
-  }
-
-  Future<bool> _fetchPeers(List<Peer> tmpPeers, {quiet = false}) async {
-    final api = "${await bind.mainGetApiServer()}/api/ab/peers";
     int? statusCode;
+    invalidateSnapshot();
+    final epoch = _snapshotEpoch;
+    final guid = profile.guid;
+    final token = bind.mainGetLocalOption(key: 'access_token');
     try {
-      var uri0 = Uri.parse(api);
-      final pageSize = 100;
-      var total = 0;
-      int current = 0;
-      do {
-        current += 1;
-        var uri = Uri(
-          scheme: uri0.scheme,
-          host: uri0.host,
-          path: uri0.path,
-          port: uri0.port,
-          queryParameters: {
-            'current': current.toString(),
-            'pageSize': pageSize.toString(),
-            'ab': profile.guid,
-          },
-        );
-        var headers = getHttpHeaders();
-        headers['Content-Type'] = "application/json";
-        _setEmptyBody(headers);
-        final resp = await http.post(uri, headers: headers);
-        statusCode = resp.statusCode;
-        Map<String, dynamic> json = _jsonDecodeRespMap(
-          decode_http_response(resp),
-          resp.statusCode,
-        );
-        if (json.containsKey('error')) {
-          throw json['error'];
-        }
-        if (resp.statusCode != 200) {
-          throw 'HTTP ${resp.statusCode}';
-        }
-        if (json.containsKey('total')) {
-          if (total == 0) total = json['total'];
-          if (json.containsKey('data')) {
-            final data = json['data'];
-            if (data is List) {
-              for (final profile in data) {
-                if (profile is! Map<String, dynamic>) {
-                  debugPrint('Ignoring invalid address book peer payload');
-                  continue;
-                }
-                final u = Peer.fromJson(profile);
-                if (u.id.trim().isEmpty) {
-                  debugPrint('Ignoring address book peer without an id');
-                  continue;
-                }
-                int index = tmpPeers.indexWhere((e) => e.id == u.id);
-                if (index < 0) {
-                  tmpPeers.add(u);
-                } else {
-                  tmpPeers[index] = u;
-                }
-              }
-            }
-          }
-        }
-      } while (current * pageSize < total);
-      return true;
-    } catch (err) {
-      if (!quiet) {
-        pullError.value =
-            '${translate('pull_ab_failed_tip')}: ${translate(err.toString())}';
-      }
-    } finally {
-      // An expired or revoked token has to sign the user out however the pull
-      // was started. Gating this on pullError skipped it for background pulls,
-      // which are the ones that run after every edit - so the session stayed
-      // half-alive, showing an empty book with no way back to the login form.
-      if (statusCode == 401) {
-        gFFI.userModel.reset(resetOther: true);
-      }
-    }
-    return false;
-  }
-
-  Future<bool> _fetchTags(List<AbTag> tmpTags, {quiet = false}) async {
-    final api = "${await bind.mainGetApiServer()}/api/ab/tags/${profile.guid}";
-    int? statusCode;
-    try {
-      var uri0 = Uri.parse(api);
-      var uri = Uri(
-        scheme: uri0.scheme,
-        host: uri0.host,
-        path: uri0.path,
-        port: uri0.port,
+      final api = (await bind.mainGetApiServer()).replaceFirst(
+        RegExp(r'/+$'),
+        '',
       );
-      var headers = getHttpHeaders();
-      headers['Content-Type'] = "application/json";
+      final headers = <String, String>{
+        'Authorization': 'Bearer $token',
+        'Content-Type': 'application/json',
+      };
       _setEmptyBody(headers);
-      final resp = await http.post(uri, headers: headers);
-      statusCode = resp.statusCode;
-      List<dynamic> json = _jsonDecodeRespList(
-        decode_http_response(resp),
-        resp.statusCode,
+      final snapshot = await AddressBookContentSnapshot.read(
+        apiBase: Uri.parse(api),
+        guid: guid,
+        request: (uri) async {
+          final resp = await http.post(uri, headers: headers);
+          statusCode = resp.statusCode;
+          return decodeAddressBookSnapshotResponse(
+            resp.statusCode,
+            resp.headers,
+            resp.bodyBytes,
+          );
+        },
       );
-      if (resp.statusCode != 200) {
-        throw 'HTTP ${resp.statusCode}';
+      final currentApi = (await bind.mainGetApiServer()).replaceFirst(
+        RegExp(r'/+$'),
+        '',
+      );
+      if (epoch != _snapshotEpoch ||
+          guid != profile.guid ||
+          token != bind.mainGetLocalOption(key: 'access_token') ||
+          api != currentApi) {
+        throw const AddressBookSnapshotException('context_changed');
       }
-
-      for (final d in json) {
-        final t = AbTag.fromJson(d);
-        int index = tmpTags.indexWhere((e) => e.name == t.name);
-        if (index < 0) {
-          tmpTags.add(t);
-        } else {
-          tmpTags[index] = t;
-        }
+      if (snapshot.identity.generation <
+              (profile.authorizationGeneration ?? 0) ||
+          snapshot.identity.generation < _highestSnapshotGeneration) {
+        throw const AddressBookSnapshotException('stale_snapshot');
       }
+      // Parse everything before publishing any part of the new cache.
+      final tmpPeers = snapshot.peers.map(Peer.fromJson).toList();
+      final tmpTags = snapshot.tags.map(AbTag.fromJson).toList();
+      peers.value = tmpPeers;
+      tags.value = tmpTags.map((tag) => tag.name).toList();
+      tagColors.value = {for (final tag in tmpTags) tag.name: tag.color};
+      profile.authorizationGeneration = snapshot.identity.generation;
+      _snapshotToken = token;
+      _snapshotGeneration = snapshot.identity.generation;
+      _highestSnapshotGeneration = snapshot.identity.generation;
       return true;
     } catch (err) {
       if (!quiet) {
         pullError.value =
-            '${translate('pull_ab_failed_tip')}: ${translate(err.toString())}';
+            '${translate('pull_ab_failed_tip')}: ${err is AddressBookSnapshotException ? err : 'invalid_snapshot'}';
       }
     } finally {
-      // An expired or revoked token has to sign the user out however the pull
-      // was started. Gating this on pullError skipped it for background pulls,
-      // which are the ones that run after every edit - so the session stayed
-      // half-alive, showing an empty book with no way back to the login form.
-      if (statusCode == 401) {
+      if (statusCode == 401 &&
+          epoch == _snapshotEpoch &&
+          token == bind.mainGetLocalOption(key: 'access_token')) {
         gFFI.userModel.reset(resetOther: true);
       }
     }
@@ -1652,19 +1616,6 @@ class DummyAb extends BaseAb {
 Map<String, dynamic> _jsonDecodeRespMap(String body, int statusCode) {
   try {
     Map<String, dynamic> json = jsonDecode(body);
-    return json;
-  } catch (e) {
-    final err = body.isNotEmpty && body.length < 128 ? body : e.toString();
-    if (statusCode != 200) {
-      throw 'HTTP $statusCode, $err';
-    }
-    throw err;
-  }
-}
-
-List<dynamic> _jsonDecodeRespList(String body, int statusCode) {
-  try {
-    List<dynamic> json = jsonDecode(body);
     return json;
   } catch (e) {
     final err = body.isNotEmpty && body.length < 128 ? body : e.toString();
