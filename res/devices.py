@@ -3,7 +3,7 @@
 import argparse
 from datetime import datetime, timezone
 
-import requests
+import cli_transport as transport
 from admin_cli import (
     CliError,
     ExitCode,
@@ -55,7 +55,7 @@ def view(
     while True:
         current += 1
         params["current"] = current
-        response = requests.get(f"{url}/api/devices", headers=headers, params=params)
+        response = transport.get(f"{url}/api/devices", headers=headers, params=params)
         response_json = read_page(response)
         data = response_json["data"]
 
@@ -97,7 +97,7 @@ def _control_mutation(
     request_document = {"operation": operation, "device": str(guid)}
     if expected_generation is not None:
         request_document["expected_generation"] = expected_generation
-    response = requests.post(
+    response = transport.post(
         f"{url}/api/devices/{guid}/{action}",
         headers=operation_headers(token, operation_id, expected_generation),
         json={},
@@ -146,7 +146,7 @@ def delete(url, token, guid, id, operation_id=None, expected_generation=None):
     request_document = {"operation": operation, "device": str(guid)}
     if expected_generation is not None:
         request_document["expected_generation"] = expected_generation
-    response = requests.delete(
+    response = transport.delete(
         f"{url}/api/devices/{guid}",
         headers=operation_headers(token, operation_id, expected_generation),
         json={},
@@ -224,7 +224,7 @@ def assign(
         ),
         "expected_generation": expected_generation,
     }
-    response = requests.post(
+    response = transport.post(
         f"{url}/api/devices/{guid}/assign",
         headers=operation_headers(token, operation_id, expected_generation),
         json=data,
@@ -257,6 +257,7 @@ def main():
     parser.add_argument("--expected-generation", type=int)
     add_options(parser)
     args = parser.parse_args()
+    transport.configure(args)
     args.url = args.url.rstrip("/")
     operation_id = (
         canonical_operation_id(args.operation_id) if args.operation_id else None

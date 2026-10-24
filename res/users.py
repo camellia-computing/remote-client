@@ -2,7 +2,7 @@
 
 import argparse
 
-import requests
+import cli_transport as transport
 from admin_cli import (
     Mutation,
     add_options,
@@ -48,7 +48,7 @@ def view(
     while True:
         current += 1
         params["current"] = current
-        response = requests.get(f"{url}/api/users", headers=headers, params=params)
+        response = transport.get(f"{url}/api/users", headers=headers, params=params)
         response_json = read_page(response)
         data = response_json["data"]
         users.extend(data)
@@ -78,7 +78,7 @@ def _control_mutation(
     request_document = {"operation": operation, "user": str(guid)}
     if expected_generation is not None:
         request_document["expected_generation"] = expected_generation
-    response = requests.post(
+    response = transport.post(
         f"{url}/api/users/{guid}/{action}",
         headers=operation_headers(token, operation_id, expected_generation),
         json={},
@@ -123,7 +123,7 @@ def delete_user(url, token, guid, name, operation_id=None, expected_generation=N
     operation_id = canonical_operation_id(operation_id)
     print(f"Operation target: user {guid}", flush=True)
     print(f"Operation ID: {operation_id}", flush=True)
-    response = requests.delete(
+    response = transport.delete(
         f"{url}/api/users/{guid}",
         headers=operation_headers(token, operation_id, expected_generation),
         json={},
@@ -168,7 +168,7 @@ def new_user(
         payload["note"] = note
     operation_id = canonical_operation_id(operation_id)
     print(f"Operation ID: {operation_id}", flush=True)
-    response = requests.post(
+    response = transport.post(
         f"{url}/api/users",
         headers=operation_headers(token, operation_id),
         json=payload,
@@ -206,7 +206,7 @@ def force_logout(url, token, user_guids, operation_id=None):
         "users": user_guids,
     }
     requested = {"users": len(user_guids)}
-    response = requests.post(
+    response = transport.post(
         f"{url}/api/users/force-logout", headers=headers, json=payload
     )
     return check_batch_response(
@@ -236,6 +236,7 @@ def main():
     parser.add_argument("--expected-generation", type=int)
     add_options(parser)
     args = parser.parse_args()
+    transport.configure(args)
     args.url = args.url.rstrip("/")
     operation_id = (
         canonical_operation_id(args.operation_id) if args.operation_id else None

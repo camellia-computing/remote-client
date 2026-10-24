@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 
-import requests
 import argparse
 import json
 from datetime import datetime, timedelta, timezone
+
+import cli_transport as transport
+from admin_cli import CliError, entry
 
 
 def format_timestamp(timestamp):
@@ -150,17 +152,17 @@ def enhance_audit_data(data, audit_type):
 def check_response(response):
     """Check API response and return result"""
     if response.status_code != 200:
-        print(f"Error: HTTP {response.status_code} - {response.text}")
+        print(f"Error: HTTP {response.status_code}")
         exit(1)
 
     try:
         response_json = response.json()
         if "error" in response_json:
-            print(f"Error: {response_json['error']}")
+            print("Error: Management rejected the request")
             exit(1)
         return response_json
     except ValueError:
-        return response.text or "Success"
+        raise CliError("Management response is not JSON") from None
 
 
 def view_audits_common(url, token, endpoint, filters=None, page_size=None, current=None,
@@ -219,7 +221,7 @@ def view_audits_common(url, token, endpoint, filters=None, page_size=None, curre
         else:
             string_params[k] = v
 
-    response = requests.get(f"{url}/api/audits/{endpoint}", headers=headers, params=string_params)
+    response = transport.get(f"{url}/api/audits/{endpoint}", headers=headers, params=string_params)
     response_json = check_response(response)
 
     # Enhance the data with readable formats
@@ -310,7 +312,9 @@ def main():
     parser.add_argument("--conn-type", type=int, help="Connection type filter (for conn audits only): 0=Remote Desktop, 1=File Transfer, 2=Port Transfer, 3=View Camera, 4=Terminal")
     parser.add_argument("--operator", help="Operator filter (for console audits only)")
 
+    transport.add_options(parser)
     args = parser.parse_args()
+    transport.configure(args)
 
     # Remove trailing slashes from URL
     while args.url.endswith("/"):
@@ -371,4 +375,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    entry(main)

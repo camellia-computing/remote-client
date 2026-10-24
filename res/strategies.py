@@ -3,7 +3,7 @@
 import argparse
 import json
 
-import requests
+import cli_transport as transport
 from admin_cli import (
     ExitCode,
     Mutation,
@@ -39,7 +39,7 @@ def headers_with(token):
 def list_strategies(url, token):
     """List all strategies"""
     headers = headers_with(token)
-    r = requests.get(f"{url}/api/strategies", headers=headers)
+    r = transport.get(f"{url}/api/strategies", headers=headers)
     body = check_response(r)
     if not isinstance(body, list) or any(not isinstance(row, dict) for row in body):
         fail("Management strategies inventory is malformed")
@@ -49,7 +49,7 @@ def list_strategies(url, token):
 def get_strategy_by_guid(url, token, guid):
     """Get strategy by GUID"""
     headers = headers_with(token)
-    r = requests.get(f"{url}/api/strategies/{guid}", headers=headers)
+    r = transport.get(f"{url}/api/strategies/{guid}", headers=headers)
     return check_response(r)
 
 
@@ -83,7 +83,7 @@ def set_strategy_status(url, token, name, enabled, operation_id=None, *, target=
         "enabled": enabled,
         "expected_generation": generation,
     }
-    response = requests.put(
+    response = transport.put(
         f"{url}/api/strategies/{guid}/status", headers=headers, json=enabled
     )
     return check_control_response(
@@ -111,7 +111,7 @@ def create_strategy(
     payload = {"name": name, "config_options": config_options or {}, "enabled": enabled}
     operation_id = canonical_operation_id(operation_id)
     print(f"Operation ID: {operation_id}", flush=True)
-    response = requests.post(
+    response = transport.post(
         f"{url}/api/strategies",
         headers=operation_headers(token, operation_id),
         json=payload,
@@ -152,7 +152,7 @@ def update_strategy(
         fail("at least one update field is required", ExitCode.INVALID)
     operation_id = canonical_operation_id(operation_id)
     print(f"Operation ID: {operation_id}", flush=True)
-    response = requests.patch(
+    response = transport.patch(
         f"{url}/api/strategies/{guid}",
         headers=operation_headers(token, operation_id, generation),
         json=payload,
@@ -179,7 +179,7 @@ def delete_strategy(url, token, name, operation_id=None, *, target=None):
     generation = required_generation(strategy.get("mutation_generation"))
     operation_id = canonical_operation_id(operation_id)
     print(f"Operation ID: {operation_id}", flush=True)
-    response = requests.delete(
+    response = transport.delete(
         f"{url}/api/strategies/{guid}",
         headers=operation_headers(token, operation_id, generation),
         json={},
@@ -207,7 +207,7 @@ def _inventory_target(url, token, identifier, endpoint, field, guid_parser):
     elif identifier.startswith(field + ":"):
         identifier = identifier[len(field) + 1 :]
     params = {"pageSize": 2, "guid" if is_guid else field: identifier}
-    response = requests.get(
+    response = transport.get(
         f"{url}/api/{endpoint}", headers=headers_with(token), params=params
     )
     page = read_page(response)
@@ -353,7 +353,7 @@ def assign_strategy(
     print(f"Operation ID: {operation_id}", flush=True)
     print(f"Target snapshot digest: {document_digest(request_document)}", flush=True)
     headers = operation_headers(token, operation_id)
-    r = requests.post(f"{url}/api/strategies/assign", headers=headers, json=payload)
+    r = transport.post(f"{url}/api/strategies/assign", headers=headers, json=payload)
     return check_batch_response(
         r,
         operation="strategy_assign",
@@ -392,6 +392,7 @@ def main():
     parser.add_argument("--operation-id")
     add_options(parser)
     args = parser.parse_args()
+    transport.configure(args)
     args.url = args.url.rstrip("/")
     operation_id = (
         canonical_operation_id(args.operation_id) if args.operation_id else None

@@ -3,7 +3,7 @@
 import argparse
 import json
 
-import requests
+import cli_transport as transport
 from admin_cli import entry
 from batch_operations import (
     canonical_operation_id,
@@ -51,10 +51,10 @@ def get_personal_ab(url, token):
     """Get personal address book GUID"""
     headers = {"Authorization": f"Bearer {token}"}
 
-    response = requests.get(f"{url}/api/ab/personal", headers=headers)
+    response = transport.get(f"{url}/api/ab/personal", headers=headers)
 
     if response.status_code != 200:
-        return f"Error: {response.status_code} - {response.text}"
+        return f"Error: {response.status_code}"
 
     return response.json()
 
@@ -80,14 +80,14 @@ def view_shared_abs(url, token, name=None):
     while True:
         current += 1
         filtered_params["current"] = current
-        response = requests.get(f"{url}/api/ab/shared/profiles", headers=headers, params=filtered_params)
+        response = transport.get(f"{url}/api/ab/shared/profiles", headers=headers, params=filtered_params)
         if response.status_code != 200:
-            print(f"Error: HTTP {response.status_code} - {response.text}")
+            print(f"Error: HTTP {response.status_code}")
             exit(1)
 
         response_json = response.json()
         if "error" in response_json:
-            print(f"Error: {response_json['error']}")
+            print("Error: Management rejected the request")
             exit(1)
 
         data = response_json.get("data", [])
@@ -132,14 +132,14 @@ def view_ab_peers(url, token, ab_guid, peer_id=None, alias=None):
     while True:
         current += 1
         filtered_params["current"] = current
-        response = requests.get(f"{url}/api/ab/peers", headers=headers, params=filtered_params)
+        response = transport.get(f"{url}/api/ab/peers", headers=headers, params=filtered_params)
         if response.status_code != 200:
-            print(f"Error: HTTP {response.status_code} - {response.text}")
+            print(f"Error: HTTP {response.status_code}")
             exit(1)
 
         response_json = response.json()
         if "error" in response_json:
-            print(f"Error: {response_json['error']}")
+            print("Error: Management rejected the request")
             exit(1)
 
         data = response_json.get("data", [])
@@ -155,7 +155,7 @@ def view_ab_peers(url, token, ab_guid, peer_id=None, alias=None):
 def view_ab_tags(url, token, ab_guid):
     """View tags in an address book"""
     headers = {"Authorization": f"Bearer {token}"}
-    response = requests.get(f"{url}/api/ab/tags/{ab_guid}", headers=headers)
+    response = transport.get(f"{url}/api/ab/tags/{ab_guid}", headers=headers)
     response_json = check_response(response)
 
     # Format color values as hex
@@ -173,17 +173,17 @@ def view_ab_tags(url, token, ab_guid):
 def check_response(response):
     """Check API response and return result"""
     if response.status_code != 200:
-        print(f"Error: HTTP {response.status_code} - {response.text}")
+        print(f"Error: HTTP {response.status_code}")
         exit(1)
 
     try:
         response_json = response.json()
         if "error" in response_json:
-            print(f"Error: {response_json['error']}")
+            print("Error: Management rejected the request")
             exit(1)
         return response_json
     except ValueError:
-        return response.text or "Success"
+        fail("Management response is not JSON")
 
 
 def add_peer(
@@ -210,7 +210,7 @@ def add_peer(
         payload.update(info)
 
     return replayable_mutation(
-        requests.post, "POST", url, token, f"/api/ab/peer/add/{ab_guid}", payload,
+        transport.post, "POST", url, token, f"/api/ab/peer/add/{ab_guid}", payload,
         "address_book_peer_add", operation_id=operation_id,
         expected_generation=expected_generation,
     )
@@ -225,7 +225,7 @@ def delete_peer(
 
     print(f"Deleting peers {peer_ids} from address book")
     return replayable_mutation(
-        requests.delete, "DELETE", url, token, f"/api/ab/peer/{ab_guid}", peer_ids,
+        transport.delete, "DELETE", url, token, f"/api/ab/peer/{ab_guid}", peer_ids,
         "address_book_peer_delete", operation_id=operation_id,
         expected_generation=expected_generation,
     )
@@ -261,7 +261,7 @@ def update_peer(
         payload["note"] = note
 
     return replayable_mutation(
-        requests.put, "PUT", url, token, f"/api/ab/peer/update/{ab_guid}", payload,
+        transport.put, "PUT", url, token, f"/api/ab/peer/update/{ab_guid}", payload,
         "address_book_peer_update", operation_id=operation_id,
         expected_generation=expected_generation,
     )
@@ -339,7 +339,7 @@ def add_tag(
     }
 
     return replayable_mutation(
-        requests.post, "POST", url, token, f"/api/ab/tag/add/{ab_guid}", payload,
+        transport.post, "POST", url, token, f"/api/ab/tag/add/{ab_guid}", payload,
         "address_book_tag_add", operation_id=operation_id,
         expected_generation=expected_generation,
     )
@@ -357,7 +357,7 @@ def update_tag(
     }
 
     return replayable_mutation(
-        requests.put, "PUT", url, token, f"/api/ab/tag/update/{ab_guid}", payload,
+        transport.put, "PUT", url, token, f"/api/ab/tag/update/{ab_guid}", payload,
         "address_book_tag_update", operation_id=operation_id,
         expected_generation=expected_generation,
     )
@@ -372,7 +372,7 @@ def delete_tags(
 
     print(f"Deleting tags {tag_names} from address book")
     return replayable_mutation(
-        requests.delete, "DELETE", url, token, f"/api/ab/tag/{ab_guid}", tag_names,
+        transport.delete, "DELETE", url, token, f"/api/ab/tag/{ab_guid}", tag_names,
         "address_book_tag_delete", operation_id=operation_id,
         expected_generation=expected_generation,
     )
@@ -390,7 +390,7 @@ def add_shared_ab(url, token, name, note=None, password=None, operation_id=None)
         payload["default_password"] = password
     operation_id = canonical_operation_id(operation_id)
     print(f"Operation ID: {operation_id}", flush=True)
-    response = requests.post(
+    response = transport.post(
         f"{url}/api/ab/shared/add",
         headers=operation_headers(token, operation_id),
         json=payload,
@@ -439,7 +439,7 @@ def update_shared_ab(
     expected_generation = required_generation(expected_generation)
     operation_id = canonical_operation_id(operation_id)
     print(f"Operation ID: {operation_id}", flush=True)
-    response = requests.put(
+    response = transport.put(
         f"{url}/api/ab/shared/update/profile",
         headers=operation_headers(token, operation_id, expected_generation),
         json=payload,
@@ -479,7 +479,7 @@ def delete_shared_abs(
     print(f"Deleting shared address books {ab_guids}")
     operation_id = canonical_operation_id(operation_id)
     print(f"Operation ID: {operation_id}", flush=True)
-    response = requests.delete(
+    response = transport.delete(
         f"{url}/api/ab/shared",
         headers=operation_headers(token, operation_id, expected_generation),
         json=ab_guids,
@@ -532,14 +532,14 @@ def view_ab_rules(url, token, ab_guid):
     while True:
         current += 1
         params["current"] = current
-        response = requests.get(f"{url}/api/ab/rules", headers=headers, params=params)
+        response = transport.get(f"{url}/api/ab/rules", headers=headers, params=params)
         if response.status_code != 200:
-            print(f"Error: HTTP {response.status_code} - {response.text}")
+            print(f"Error: HTTP {response.status_code}")
             exit(1)
 
         response_json = response.json()
         if "error" in response_json:
-            print(f"Error: {response_json['error']}")
+            print("Error: Management rejected the request")
             exit(1)
 
         data = response_json.get("data", [])
@@ -577,7 +577,7 @@ def add_ab_rule(
         pass
 
     return replayable_mutation(
-        requests.post, "POST", url, token, "/api/ab/rule", payload,
+        transport.post, "POST", url, token, "/api/ab/rule", payload,
         "address_book_rule_mutation", operation_id=operation_id,
         expected_generation=expected_generation,
     )
@@ -594,7 +594,7 @@ def update_ab_rule(
     }
 
     return replayable_mutation(
-        requests.patch, "PATCH", url, token, "/api/ab/rule", payload,
+        transport.patch, "PATCH", url, token, "/api/ab/rule", payload,
         "address_book_rule_mutation", operation_id=operation_id,
         expected_generation=expected_generation,
     )
@@ -609,7 +609,7 @@ def delete_ab_rules(
 
     print(f"Deleting rules {rule_guids}")
     return replayable_mutation(
-        requests.delete, "DELETE", url, token, "/api/ab/rules", rule_guids,
+        transport.delete, "DELETE", url, token, "/api/ab/rules", rule_guids,
         "address_book_rule_delete", operation_id=operation_id,
         expected_generation=expected_generation,
     )
@@ -680,7 +680,9 @@ def main():
     parser.add_argument("--operation-id", help="Canonical UUID used to retry one mutation after response loss")
     parser.add_argument("--expected-generation", type=int, help="Address-book generation observed before mutation")
 
+    transport.add_options(parser)
     args = parser.parse_args()
+    transport.configure(args)
 
     # Remove trailing slashes from URL
     while args.url.endswith("/"):

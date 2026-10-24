@@ -61,14 +61,42 @@ mutation. Retention expiry or a missing receipt is not proof that no mutation
 occurred. `not_attempted` entries are the only requests the CLI knows it did not
 send. Mutation retries require the complete original request/generation snapshot.
 
-HTTP deadlines and standalone locked CLI packaging are separate rollout gates;
-this outcome contract does not claim that an unresponsive network is bounded or
-that arbitrary system Python environments already contain the required runtime.
+## HTTP budget and cancellation
+
+All admin HTTP calls use `res/cli_transport.py`. The command's monotonic budget
+defaults to 60 seconds (`--deadline`); each connect/TLS wait defaults to 5 seconds
+(`--connect-timeout`) and read-idle wait to 10 (`--read-timeout`). Values must be
+finite and between 0.05 and 600 seconds. Parsing, startup, confirmations, all
+pages and all targets consume one budget; a nested command cannot extend it.
+Cancellation/timeout adds bounded cleanup grace (normally below one second).
+
+A spawned, disposable worker owns the Requests Session and every socket. This
+also bounds blocked DNS and a continuously trickling body, which Requests' idle
+timeouts alone cannot bound. The same command reuses its Session/connection;
+the parent stops and joins the worker on deadline, Ctrl-C or SIGTERM. Programmatic
+multi-request callers must use `with cli_transport.command_transport():` to share
+the operation budget; individual unscoped requests remain bounded and close.
+
+There are no automatic retries, including GET/429/503, and redirects are not
+followed. Inspect Retry-After/status before running a fresh read. Mutation loss
+remains `unknown`, not rolled back; requests rejected locally before dispatch
+remain `not_attempted`. The last confirmed receipts and remaining targets stay
+in the batch report. Only the original actor's receipt can resolve an unknown ID.
+
+TLS verification cannot be disabled; HTTPS is required except for loopback HTTP
+development. Ambient proxy/netrc configuration is deliberately not inherited,
+and a command cannot switch origins. JSON requests are capped at 1MiB and
+decompressed JSON responses at 4MiB. HTML, redirects and oversized responses
+produce typed failures without printing raw bodies/URLs/exceptions. Payloads,
+tokens and passwords travel over private IPC, never a temporary request file.
+
+Standalone locked CLI packaging is still a separate rollout gate; arbitrary
+system Python environments do not yet contain a declared reproducible runtime.
 
 ## Focused tests
 
 ```sh
-PYTHONPATH=res python -m unittest -q res/test_batch_operations.py res/test_admin_cli.py
+PYTHONPATH=res python -m unittest -q res/test_cli_transport.py res/test_batch_operations.py res/test_admin_cli.py
 ```
 
 The optional `res/test_management_cli_contract.py` runs the real Django routes,

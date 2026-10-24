@@ -50,11 +50,12 @@ class ManagementCliContractTests(TestCase):
         self.auth_device = self.device("cli-auth", "840005001")
         self.target = self.device("cli-target", "840005002")
         _, self.bearer = _issue_access_token(self.admin, self.auth_device)
-        self.requests = SimpleNamespace(
+        self.transport = SimpleNamespace(
+            configure=lambda _args: None,
             **{
-                method: self.transport(method)
+                method: self.make_transport_request(method)
                 for method in ("get", "post", "patch", "put", "delete")
-            }
+            },
         )
         self.calls = []
 
@@ -72,7 +73,7 @@ class ManagementCliContractTests(TestCase):
             version="test",
         )
 
-    def transport(self, method):
+    def make_transport_request(self, method):
         def request(url, *, headers, params=None, json=None):
             path = urlsplit(url).path
             self.calls.append((method, path))
@@ -99,7 +100,7 @@ class ManagementCliContractTests(TestCase):
         module = load_script(filename, "cli_contract_" + filename.replace("-", "_"))
         stdout, stderr = io.StringIO(), io.StringIO()
         with (
-            patch.object(module, "requests", self.requests),
+            patch.object(module, "transport", self.transport),
             patch.object(
                 sys,
                 "argv",
@@ -226,21 +227,21 @@ class ManagementCliContractTests(TestCase):
         self.assertFalse(DeviceGroup.objects.filter(name__startswith="cli-").exists())
 
     def test_response_lost_after_real_commit_is_unknown_until_receipt_recovery(self):
-        post = self.requests.post
+        post = self.transport.post
 
         def lose_response(*args, **kwargs):
             response = post(*args, **kwargs)
             self.assertEqual(response.status_code, 200)
             raise requests.ConnectionError("simulated response loss")
 
-        self.requests.post = lose_response
+        self.transport.post = lose_response
         result = self.invoke(
             "devices.py", "disable", "--id", self.target.rid, expected_exit=1
         )
         self.target.refresh_from_db()
         self.assertFalse(self.target.is_active)
         self.assertEqual(result["operations"][0]["state"], "unknown")
-        with patch("batch_operations.requests.get", side_effect=self.requests.get):
+        with patch("batch_operations.transport.get", side_effect=self.transport.get):
             recovered = recover_operation(
                 "https://management.example.test",
                 self.bearer,

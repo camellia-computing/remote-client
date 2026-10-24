@@ -3,7 +3,7 @@ import json
 import re
 import uuid
 
-import requests
+import cli_transport as transport
 from admin_cli import CliError, ExitCode
 
 MANAGEMENT_OPERATION_RECEIPT_VERSION = 1
@@ -107,12 +107,12 @@ def recover_operation(url, token, operation_id):
     """Recover an immutable receipt without replaying the mutation request."""
 
     operation_id = canonical_operation_id(operation_id)
-    response = requests.get(
+    response = transport.get(
         f"{url.rstrip('/')}/api/management-operations/{operation_id}",
         headers={"Authorization": f"Bearer {token}"},
     )
     if response.status_code != 200:
-        fail(f"HTTP {response.status_code}: {response.text}")
+        fail(f"HTTP {response.status_code}")
     try:
         envelope = response.json()
     except ValueError:

@@ -3,7 +3,7 @@
 import argparse
 import json
 
-import requests
+import cli_transport as transport
 from admin_cli import (
     ExitCode,
     Mutation,
@@ -42,7 +42,7 @@ def list_groups(url, token, name=None, page_size=50):
     while True:
         current += 1
         params["current"] = current
-        r = requests.get(f"{url}/api/device-groups", headers=headers, params=params)
+        r = transport.get(f"{url}/api/device-groups", headers=headers, params=params)
         res = read_page(r)
         rows = res["data"]
         data.extend(rows)
@@ -76,7 +76,7 @@ def create_group(url, token, name, note=None, accessed_from=None, operation_id=N
         "strategy_name": "",
     }
     headers = operation_headers(token, operation_id)
-    r = requests.post(f"{url}/api/device-groups", headers=headers, json=payload)
+    r = transport.post(f"{url}/api/device-groups", headers=headers, json=payload)
     return check_control_response(
         r,
         operation="device_group_create",
@@ -120,7 +120,9 @@ def update_group(
         "expected_generation": generation,
     }
     headers = operation_headers(token, operation_id, generation)
-    r = requests.patch(f"{url}/api/device-groups/{guid}", headers=headers, json=payload)
+    r = transport.patch(
+        f"{url}/api/device-groups/{guid}", headers=headers, json=payload
+    )
     return check_control_response(
         r,
         operation="device_group_update",
@@ -135,7 +137,7 @@ def delete_group_target(url, token, group, operation_id=None):
     generation = required_generation(group.get("mutation_generation"))
     operation_id = canonical_operation_id(operation_id)
     print(f"Operation ID: {operation_id}", flush=True)
-    response = requests.delete(
+    response = transport.delete(
         f"{url}/api/device-groups/{guid}",
         headers=operation_headers(token, operation_id, generation),
         json={},
@@ -193,7 +195,7 @@ def view_devices(
     while True:
         current += 1
         params["current"] = current
-        r = requests.get(f"{url}/api/devices", headers=headers, params=params)
+        r = transport.get(f"{url}/api/devices", headers=headers, params=params)
         res = read_page(r)
         rows = res["data"]
         data.extend(rows)
@@ -223,7 +225,7 @@ def add_devices(url, token, group_name, device_ids, operation_id=None, *, target
     }
     requested = {"devices": len(payload)}
     headers = operation_headers(token, operation_id, generation)
-    r = requests.post(f"{url}/api/device-groups/{guid}", headers=headers, json=payload)
+    r = transport.post(f"{url}/api/device-groups/{guid}", headers=headers, json=payload)
     return check_batch_response(
         r,
         operation="device_group_add_devices",
@@ -255,7 +257,7 @@ def remove_devices(
     }
     requested = {"devices": len(payload)}
     headers = operation_headers(token, operation_id, generation)
-    r = requests.delete(
+    r = transport.delete(
         f"{url}/api/device-groups/{guid}/devices", headers=headers, json=payload
     )
     return check_batch_response(
@@ -307,6 +309,7 @@ def main():
     parser.add_argument("--device-username")
     add_options(parser)
     args = parser.parse_args()
+    transport.configure(args)
     args.url = args.url.rstrip("/")
     operation_id = (
         canonical_operation_id(args.operation_id) if args.operation_id else None

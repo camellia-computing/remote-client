@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 
-import requests
 import argparse
 import json
+
+import cli_transport as transport
+from admin_cli import CliError, entry
 
 
 def check_response(response):
@@ -14,7 +16,7 @@ def check_response(response):
     2. Response contains {"error": "xxx"} -> exit with error
     """
     if response.status_code != 200:
-        print(f"Error: HTTP {response.status_code}: {response.text}")
+        print(f"Error: HTTP {response.status_code}")
         exit(1)
 
     # Check for {"error": "xxx"} in response
@@ -22,11 +24,11 @@ def check_response(response):
         try:
             json_data = response.json()
             if isinstance(json_data, dict) and "error" in json_data:
-                print(f"Error: {json_data['error']}")
+                print("Error: Management rejected the request")
                 exit(1)
             return json_data
         except ValueError:
-            return response.text
+            raise CliError("Management response is not JSON") from None
 
     return None
 
@@ -46,13 +48,13 @@ def list_groups(url, token, name=None, page_size=50):
     while True:
         current += 1
         params["current"] = current
-        r = requests.get(f"{url}/api/user-groups", headers=headers, params=params)
+        r = transport.get(f"{url}/api/user-groups", headers=headers, params=params)
         if r.status_code != 200:
-            print(f"Error: HTTP {r.status_code} - {r.text}")
+            print(f"Error: HTTP {r.status_code}")
             exit(1)
         res = r.json()
         if "error" in res:
-            print(f"Error: {res['error']}")
+            print("Error: Management rejected the request")
             exit(1)
         rows = res.get("data", [])
         data.extend(rows)
@@ -79,7 +81,7 @@ def create_group(url, token, name, note=None, accessed_from=None, access_to=None
         payload["allowed_incomings"] = accessed_from
     if access_to:
         payload["allowed_outgoings"] = access_to
-    r = requests.post(f"{url}/api/user-groups", headers=headers, json=payload)
+    r = transport.post(f"{url}/api/user-groups", headers=headers, json=payload)
     return check_response(r)
 
 
@@ -99,7 +101,7 @@ def update_group(url, token, name, new_name=None, note=None, accessed_from=None,
         payload["allowed_incomings"] = accessed_from
     if access_to is not None:
         payload["allowed_outgoings"] = access_to
-    r = requests.patch(f"{url}/api/user-groups/{guid}", headers=headers, json=payload)
+    r = transport.patch(f"{url}/api/user-groups/{guid}", headers=headers, json=payload)
     check_response(r)
     return "Success"
 
@@ -114,7 +116,7 @@ def delete_groups(url, token, names):
             print(f"Error: Group '{n}' not found")
             exit(1)
         guid = g.get("guid")
-        r = requests.delete(f"{url}/api/user-groups/{guid}", headers=headers)
+        r = transport.delete(f"{url}/api/user-groups/{guid}", headers=headers)
         check_response(r)
     return "Success"
 
@@ -146,7 +148,7 @@ def view_users(url, token, group_name=None, name=None, page_size=50):
     while True:
         current += 1
         params["current"] = current
-        r = requests.get(f"{url}/api/users", headers=headers, params=params)
+        r = transport.get(f"{url}/api/users", headers=headers, params=params)
         if r.status_code != 200:
             return check_response(r)
         res = r.json()
@@ -178,7 +180,7 @@ def add_users(url, token, group_name, user_names):
     for user_name in user_names:
         # Get user by exact name match
         params = {"name": user_name, "pageSize": 50}
-        r = requests.get(f"{url}/api/users", headers=headers, params=params)
+        r = transport.get(f"{url}/api/users", headers=headers, params=params)
         if r.status_code != 200:
             errors.append(f"{user_name}: HTTP {r.status_code}")
             continue
@@ -205,7 +207,7 @@ def add_users(url, token, group_name, user_names):
         exit(1)
 
     # Add users to group using POST /api/user-groups/:guid
-    r = requests.post(f"{url}/api/user-groups/{guid}", headers=headers, json=user_guids)
+    r = transport.post(f"{url}/api/user-groups/{guid}", headers=headers, json=user_guids)
     check_response(r)
 
     success_msg = f"Success: Added {len(user_guids)} user(s) to group '{group_name}'"
@@ -252,7 +254,9 @@ def main():
     # Filters for view-users command
     parser.add_argument("--user-name", help="User name filter (for view-users, supports fuzzy search)")
 
+    transport.add_options(parser)
     args = parser.parse_args()
+    transport.configure(args)
     while args.url.endswith("/"): args.url = args.url[:-1]
 
     if args.command == "view":
@@ -299,4 +303,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    entry(main)

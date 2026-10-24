@@ -31,7 +31,7 @@ class OutcomeTests(unittest.TestCase):
         for timestamp in (None, "not-a-time", "2026-10-24T10:00:00"):
             response = FakeResponse({"data": [{"last_online": timestamp}], "total": 1})
             with (
-                patch.object(module.requests, "get", return_value=response),
+                patch.object(module.transport, "get", return_value=response),
                 self.assertRaises(CliError) as failed,
             ):
                 module.view("https://management.example.test", "test", offline_days=1)
@@ -51,7 +51,7 @@ class OutcomeTests(unittest.TestCase):
             matches = [row for row in rows if row[field] == params[field]]
             return FakeResponse({"data": matches, "total": len(matches)})
 
-        with patch.object(module.requests, "get", side_effect=get):
+        with patch.object(module.transport, "get", side_effect=get):
             self.assertEqual(
                 module.get_device_target("https://example.test", "test", "7")["guid"],
                 "1",
@@ -91,7 +91,7 @@ class OutcomeTests(unittest.TestCase):
                 captured.update(params)
                 return FakeResponse({"data": [], "total": 0})
 
-            with patch.object(module.requests, "get", side_effect=get):
+            with patch.object(module.transport, "get", side_effect=get):
                 method = (
                     module.view_devices
                     if filename == "device-groups.py"

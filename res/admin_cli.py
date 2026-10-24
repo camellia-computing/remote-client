@@ -9,6 +9,7 @@ from contextlib import redirect_stdout
 from dataclasses import dataclass, field
 from enum import IntEnum
 
+import cli_transport
 import requests
 
 
@@ -36,6 +37,7 @@ class CliError(SystemExit):
 
 
 def add_options(parser):
+    cli_transport.add_options(parser)
     parser.add_argument(
         "--json",
         action="store_true",
@@ -188,6 +190,14 @@ def run_mutations(operation, mutations, *, allow_empty=False, yes=False):
             receipt = mutation.invoke(mutation.operation_id)
         except (SystemExit, requests.RequestException, KeyboardInterrupt) as exc:
             receipt = getattr(exc, "receipt", None)
+            if (isinstance(exc, cli_transport.TransportFailure) and not exc.sent) or (
+                isinstance(exc, KeyboardInterrupt)
+                and getattr(exc, "request_sent", True) is False
+            ):
+                record["state"] = "not_attempted"
+                summary["not_attempted"].insert(0, mutation.targets)
+            if isinstance(exc, cli_transport.TransportFailure):
+                record.update(transport_failure=exc.kind, request_sent=exc.sent)
             if receipt is not None:
                 record["state"] = (
                     "partial" if any(receipt["applied"].values()) else "rejected"
@@ -201,7 +211,11 @@ def run_mutations(operation, mutations, *, allow_empty=False, yes=False):
                 else (
                     ExitCode.CANCELLED
                     if isinstance(exc, KeyboardInterrupt)
-                    else getattr(exc, "code", ExitCode.UNKNOWN)
+                    else (
+                        ExitCode.REMOTE_ERROR
+                        if record["state"] == "not_attempted"
+                        else getattr(exc, "code", ExitCode.UNKNOWN)
+                    )
                 )
             )
             if not isinstance(code, int) or code == 0:
@@ -267,7 +281,8 @@ def entry(main):
     json_output = "--json" in sys.argv[1:]
     try:
         with (
-            redirect_stdout(sys.stderr) if json_output else redirect_stdout(sys.stdout)
+            cli_transport.command_transport(),
+            redirect_stdout(sys.stderr) if json_output else redirect_stdout(sys.stdout),
         ):
             result = main()
     except CliError as exc:
@@ -282,6 +297,25 @@ def entry(main):
             file=sys.stdout if json_output else sys.stderr,
         )
         raise SystemExit(exc.code) from None
+    except cli_transport.TransportFailure as exc:
+        code = (
+            ExitCode.INVALID
+            if exc.kind == "invalid_request"
+            else ExitCode.UNKNOWN
+            if exc.sent
+            else ExitCode.REMOTE_ERROR
+        )
+        result = {
+            "version": 1,
+            "result": "failed",
+            "exit_code": int(code),
+            "message": "Management transport failed; no mutation result is confirmed",
+            "reason": exc.kind,
+            "request_sent": exc.sent,
+            "http_status": exc.status,
+        }
+        print(json.dumps(result), file=sys.stdout if json_output else sys.stderr)
+        raise SystemExit(code) from None
     except requests.RequestException:
         result = {
             "version": 1,

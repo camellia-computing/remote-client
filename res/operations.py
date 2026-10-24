@@ -3,6 +3,7 @@
 import argparse
 import json
 
+import cli_transport as transport
 from admin_cli import entry
 from batch_operations import recover_operation
 
@@ -18,7 +19,9 @@ def main():
         required=True,
         help="Canonical UUIDv4 printed before the original mutation",
     )
+    transport.add_options(parser)
     args = parser.parse_args()
+    transport.configure(args)
     recovered = recover_operation(
         args.url,
         args.token,

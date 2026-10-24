@@ -72,6 +72,22 @@ def load_script(filename, module_name):
     spec = importlib.util.spec_from_file_location(module_name, RES_DIR / filename)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    if hasattr(module, "transport"):
+        # Mutating a script fake must not replace the shared transport for later tests.
+        module.transport = SimpleNamespace(
+            **{
+                name: getattr(module.transport, name)
+                for name in (
+                    "get",
+                    "post",
+                    "put",
+                    "patch",
+                    "delete",
+                    "configure",
+                    "add_options",
+                )
+            }
+        )
     return module
 
 
@@ -95,7 +111,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
                 }
             )
 
-        with patch("batch_operations.requests.get", side_effect=get):
+        with patch("batch_operations.transport.get", side_effect=get):
             recovered = recover_operation(
                 "https://management.example.test/",
                 "token",
@@ -136,7 +152,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
                 )
             )
 
-        groups.requests.patch = patch_request
+        groups.transport.patch = patch_request
         result = groups.update_group(
             "https://management.example.test",
             "token",
@@ -176,7 +192,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
                 )
             )
 
-        strategies.requests.put = put
+        strategies.transport.put = put
         result = strategies.disable_strategy(
             "https://management.example.test",
             "token",
@@ -212,7 +228,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
                 )
             )
 
-        address_books.requests.post = post
+        address_books.transport.post = post
         result = address_books.add_peer(
             "https://management.example.test",
             "token",
@@ -252,7 +268,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
                 )
             )
 
-        address_books.requests.post = post
+        address_books.transport.post = post
         result = address_books.add_shared_ab(
             "https://management.example.test",
             "token",
@@ -280,7 +296,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
             "note": "",
             "group_name": "operators",
         }
-        users.requests.post = lambda *_args, **_kwargs: FakeResponse(
+        users.transport.post = lambda *_args, **_kwargs: FakeResponse(
             control_receipt("user_create", user_document, {"users": 1})
         )
         user_result = users.new_user(
@@ -312,7 +328,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
                 )
             )
 
-        devices.requests.post = post_device
+        devices.transport.post = post_device
         device_result = devices.assign(
             "https://management.example.test",
             "token",
@@ -364,7 +380,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
                 )
             )
 
-        devices.requests.post = post
+        devices.transport.post = post
         result = devices.assign(
             "https://management.example.test",
             "token",
@@ -463,7 +479,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
                 receipt("users_force_logout", request_document, {"users": 2})
             )
 
-        users.requests.post = post
+        users.transport.post = post
         result = users.force_logout(
             "https://management.example.test",
             "token",
@@ -528,7 +544,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
             captured.update(url=url, headers=headers, json=json)
             return FakeResponse(receipt("strategy_assign", request_document, expected))
 
-        strategies.requests.post = post
+        strategies.transport.post = post
         result = strategies.assign_strategy(
             "https://management.example.test",
             "token",
@@ -584,7 +600,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
             "device_group_remove_devices", request_document, {"devices": 2}
         )
         partial["applied"] = {"devices": 1}
-        groups.requests.delete = lambda *_args, **_kwargs: FakeResponse(partial)
+        groups.transport.delete = lambda *_args, **_kwargs: FakeResponse(partial)
 
         with self.assertRaisesRegex(SystemExit, "^4$"):
             groups.remove_devices(
@@ -662,8 +678,8 @@ class BatchOperationReceiptTests(unittest.TestCase):
                 )
             )
 
-        users.requests = SimpleNamespace(post=user_post)
-        devices.requests = SimpleNamespace(post=device_post, delete=device_delete)
+        users.transport = SimpleNamespace(post=user_post)
+        devices.transport = SimpleNamespace(post=device_post, delete=device_delete)
 
         users.disable(
             "https://management.example.test",
@@ -729,7 +745,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
             calls.append((url, headers, json))
             return FakeResponse(body)
 
-        devices.requests.delete = delete
+        devices.transport.delete = delete
         first = devices.delete(
             "https://management.example.test",
             "token",
@@ -778,7 +794,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
                 )
             )
 
-        users.requests = SimpleNamespace(post=post)
+        users.transport = SimpleNamespace(post=post, configure=lambda _args: None)
         with redirect_stdout(output):
             users.disable(
                 "https://management.example.test",
@@ -875,7 +891,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
                 )
             )
 
-        users.requests = SimpleNamespace(post=post)
+        users.transport = SimpleNamespace(post=post, configure=lambda _args: None)
         argv = [
             "users.py",
             "disable",
@@ -910,7 +926,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
             calls.append((url, headers, json))
             return FakeResponse(body)
 
-        devices.requests = SimpleNamespace(delete=delete)
+        devices.transport = SimpleNamespace(delete=delete, configure=lambda _args: None)
         argv = [
             "devices.py",
             "delete",
