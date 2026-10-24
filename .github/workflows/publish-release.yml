@@ -133,6 +133,7 @@ jobs:
         run: |
           set -euo pipefail
           for script in \
+            audit_cargo_dependencies.py \
             manage-release.py \
             validate-github-release-policy.sh
           do
@@ -160,6 +161,9 @@ jobs:
             --version "$VERSION" \
             --sha "$RELEASE_SHA" \
             --tag "$RELEASE_TAG"
+      - name: Validate dependency policy before building
+        if: ${{ steps.release.outputs.release-draft == 'true' }}
+        run: python3 "$RUNNER_TEMP/audit_cargo_dependencies.py" --policy-only
       - name: Validate exact CI bridge artifact
         id: ci
         env:
@@ -1404,6 +1408,7 @@ jobs:
         run: |
           set -euo pipefail
           for script in \
+            audit_cargo_dependencies.py \
             candidate_evidence.py \
             manage-release.py \
             publish-client-release.sh \

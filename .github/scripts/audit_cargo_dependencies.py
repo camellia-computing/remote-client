@@ -189,10 +189,19 @@ def main() -> int:
         type=Path,
         default=Path(".github/config/cargo-audit-policy.json"),
     )
+    parser.add_argument(
+        "--policy-only",
+        action="store_true",
+        help="Validate policy structure and deadlines without running Cargo.",
+    )
     args = parser.parse_args()
 
     try:
         policy = json.loads(args.policy.read_text(encoding="utf-8"))
+        if args.policy_only:
+            approved_warnings(policy, today=date.today())
+            print("Dependency policy structure and deadlines are valid.")
+            return 0
         process = subprocess.run(
             ["cargo", "audit", "--json"],
             check=False,

@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import contextlib
 from datetime import date
 import importlib.util
+import io
+import json
 from pathlib import Path
+import tempfile
 import unittest
+from unittest import mock
 
 
 SCRIPT_PATH = Path(__file__).parents[1] / "audit_cargo_dependencies.py"
@@ -65,6 +70,39 @@ def report(
 
 
 class CargoAuditPolicyTests(unittest.TestCase):
+    def test_policy_only_validates_deadlines_without_executing_cargo(self) -> None:
+        for expiry, expected in [("2099-12-31", 0), ("2026-07-28", 2)]:
+            with self.subTest(expiry=expiry), tempfile.TemporaryDirectory() as directory:
+                source = Path(directory) / "policy.json"
+                source.write_text(json.dumps(policy(expires_on=expiry)), encoding="utf-8")
+                with (
+                    mock.patch(
+                        "sys.argv",
+                        [str(SCRIPT_PATH), "--policy", str(source), "--policy-only"],
+                    ),
+                    mock.patch.object(AUDITOR, "date", wraps=date) as clock,
+                    mock.patch.object(AUDITOR.subprocess, "run") as cargo,
+                    contextlib.redirect_stdout(io.StringIO()),
+                    contextlib.redirect_stderr(io.StringIO()),
+                ):
+                    clock.today.return_value = date(2026, 7, 29)
+                    self.assertEqual(AUDITOR.main(), expected)
+                    cargo.assert_not_called()
+
+    def test_policy_only_rejects_missing_policy_without_executing_cargo(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "missing.json"
+            with (
+                mock.patch(
+                    "sys.argv",
+                    [str(SCRIPT_PATH), "--policy", str(source), "--policy-only"],
+                ),
+                mock.patch.object(AUDITOR.subprocess, "run") as cargo,
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                self.assertEqual(AUDITOR.main(), 2)
+                cargo.assert_not_called()
+
     def test_reviewed_warning_passes(self) -> None:
         errors, active, inactive = AUDITOR.evaluate_report(
             report(warnings=[warning()]),

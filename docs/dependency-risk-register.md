@@ -40,6 +40,13 @@ for visibility; they are not silently dismissed. A formal release after an
 exception expiry is a no-go until the dependency is removed or a newly reviewed
 exception with current evidence is approved.
 
+New publication checks the release source's policy deadlines before building,
+after protected-environment approval and immediately before making its draft
+public. These standard-library checks do not rerun product CI or extend an
+exception. Read-only verification and completion of an already published
+immutable release remain available after a deadline; they cannot publish new
+bytes or replace existing assets.
+
 ## Supported dependency constraints
 
 - iOS uses `whoami`'s platform-neutral backend because its Apple OS backend

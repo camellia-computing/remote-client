@@ -220,6 +220,7 @@ fi
   echo "Release remains draft but recovery has no frozen candidate" >&2
   exit 1
 }
+python3 "$script_directory/audit_cargo_dependencies.py" --policy-only
 configure_local_assets
 (
   cd "$RELEASE_ASSET_DIRECTORY"
@@ -261,6 +262,7 @@ diff -u "$expected_names" "$remote_names"
 ACTIONS_TOKEN="$ACTIONS_TOKEN" GH_TOKEN="$GH_TOKEN" \
   python3 "$script_directory/manage-release.py" authorize \
   --version "$VERSION" --sha "$RELEASE_COMMIT" --tag "$RELEASE_TAG" >/dev/null
+python3 "$script_directory/audit_cargo_dependencies.py" --policy-only
 GH_TOKEN="$GH_TOKEN" gh release edit "$RELEASE_TAG" \
   --repo "$GITHUB_REPOSITORY" \
   --draft=false
