@@ -1,10 +1,18 @@
 #!/usr/bin/env python3
 
 import argparse
-import sys
 from datetime import datetime, timezone
 
 import requests
+from admin_cli import (
+    CliError,
+    ExitCode,
+    add_options,
+    control_mutations,
+    entry,
+    read_page,
+    run_mutations,
+)
 from batch_operations import (
     canonical_model_pk,
     canonical_operation_id,
@@ -36,11 +44,8 @@ def view(
         "device_group_name": device_group_name,
     }
 
-    params = {
-        k: "%" + v + "%" if (v != "-" and "%" not in v) else v
-        for k, v in params.items()
-        if v is not None
-    }
+    # Exact filters stay exact; wildcard modes must be explicitly requested.
+    params = {key: value for key, value in params.items() if value is not None}
     params["pageSize"] = pageSize
 
     devices = []
@@ -51,24 +56,19 @@ def view(
         current += 1
         params["current"] = current
         response = requests.get(f"{url}/api/devices", headers=headers, params=params)
-        if response.status_code != 200:
-            print(f"Error: HTTP {response.status_code} - {response.text}")
-            sys.exit(1)
-
-        response_json = response.json()
-        if "error" in response_json:
-            print(f"Error: {response_json['error']}")
-            sys.exit(1)
-
-        data = response_json.get("data", [])
+        response_json = read_page(response)
+        data = response_json["data"]
 
         for device in data:
             if offline_days is None:
                 devices.append(device)
                 continue
-            last_online = datetime.strptime(
-                device["last_online"].split(".")[0], "%Y-%m-%dT%H:%M:%S"
-            ).replace(tzinfo=timezone.utc)
+            try:
+                last_online = datetime.fromisoformat(device["last_online"])
+            except (KeyError, TypeError, ValueError):
+                fail("Device last_online field is not a valid timestamp")
+            if last_online.tzinfo is None:
+                fail("Device last_online field requires a timezone")
             if (datetime.now(timezone.utc) - last_online).days >= offline_days:
                 devices.append(device)
 
@@ -77,21 +77,6 @@ def view(
             break
 
     return devices
-
-
-def check(response):
-    if response.status_code != 200:
-        print(f"Error: HTTP {response.status_code} - {response.text}")
-        sys.exit(1)
-
-    try:
-        response_json = response.json()
-        if "error" in response_json:
-            print(f"Error: {response_json['error']}")
-            sys.exit(1)
-        return response_json
-    except ValueError:
-        return response.text or "Success"
 
 
 def _control_mutation(
@@ -150,9 +135,7 @@ def enable(url, token, guid, id, operation_id=None, expected_generation=None):
     )
 
 
-def delete(
-    url, token, guid, id, operation_id=None, expected_generation=None
-):
+def delete(url, token, guid, id, operation_id=None, expected_generation=None):
     print("Delete", id)
     guid = canonical_model_pk(guid, "device GUID")
     expected_generation = required_generation(expected_generation)
@@ -180,7 +163,7 @@ def delete(
 def assign(
     url, token, guid, id, type, value, operation_id=None, expected_generation=None
 ):
-    print("assign", id, type, value)
+    print("assign", id, type)
     valid_types = [
         "ab",
         "strategy_name",
@@ -191,7 +174,10 @@ def assign(
         "device_name",
     ]
     if type not in valid_types:
-        fail(f"Invalid type, it must be one of: {', '.join(valid_types)}")
+        fail(
+            f"Invalid type, it must be one of: {', '.join(valid_types)}",
+            ExitCode.INVALID,
+        )
     if type == "ab":
         values = value.split(",")
         if len(values) != 5:
@@ -255,61 +241,57 @@ def assign(
 def main():
     parser = argparse.ArgumentParser(description="Device manager")
     parser.add_argument(
-        "command",
-        choices=["view", "disable", "enable", "delete", "assign"],
-        help="Command to execute",
+        "command", choices=["view", "disable", "enable", "delete", "assign"]
     )
-    parser.add_argument("--url", required=True, help="URL of the API")
-    parser.add_argument(
-        "--token", required=True, help="Bearer token for authentication"
-    )
-    parser.add_argument("--id", help="Device ID")
-    parser.add_argument(
-        "--guid",
-        help="Exact Management device GUID for a control replay without a list lookup",
-    )
-    parser.add_argument("--device_name", help="Device name")
-    parser.add_argument("--user_name", help="User name")
-    parser.add_argument("--group_name", help="User group name")
-    parser.add_argument("--device_group_name", help="Device group name")
-    parser.add_argument(
-        "--assign_to",
-        help=(
-            "<type>=<value>, e.g. user_name=mike, strategy_name=test, "
-            "device_group_name=group1, note=note1, device_username=username1, "
-            "device_name=name1, ab=ab1, "
-            "ab=ab1,tag1,alias1,password1,note1"
-        ),
-    )
-    parser.add_argument(
-        "--offline_days", type=int, help="Offline duration in days, e.g., 7"
-    )
-    parser.add_argument(
-        "--operation-id",
-        help="Canonical UUID used to retry one control mutation after response loss",
-    )
-    parser.add_argument(
-        "--expected-generation",
-        type=int,
-        help="Device policy generation observed before assign",
-    )
-
+    parser.add_argument("--url", required=True)
+    parser.add_argument("--token", required=True)
+    parser.add_argument("--id")
+    parser.add_argument("--guid", help="Exact Management device GUID")
+    parser.add_argument("--device_name")
+    parser.add_argument("--user_name")
+    parser.add_argument("--group_name")
+    parser.add_argument("--device_group_name")
+    parser.add_argument("--assign_to", help="<type>=<value>")
+    parser.add_argument("--offline_days", type=int)
+    parser.add_argument("--operation-id")
+    parser.add_argument("--expected-generation", type=int)
+    add_options(parser)
     args = parser.parse_args()
-
-    while args.url.endswith("/"):
-        args.url = args.url[:-1]
-
+    args.url = args.url.rstrip("/")
+    operation_id = (
+        canonical_operation_id(args.operation_id) if args.operation_id else None
+    )
+    if args.offline_days is not None and args.offline_days < 0:
+        parser.error("--offline_days must be non-negative")
+    assign_type, assign_value = None, None
+    if args.command == "assign":
+        if not args.assign_to or "=" not in args.assign_to:
+            parser.error("--assign_to must be <type>=<value>")
+        assign_type, assign_value = args.assign_to.split("=", 1)
+        if assign_type not in (
+            "ab",
+            "strategy_name",
+            "user_name",
+            "device_group_name",
+            "note",
+            "device_username",
+            "device_name",
+        ):
+            parser.error("Unknown assignment type")
+        if assign_type == "ab" and len(assign_value.split(",")) != 5:
+            parser.error("ab assignment must contain name,tag,alias,password,note")
     if args.guid:
-        if args.command not in ("disable", "enable", "delete", "assign"):
-            fail(f"--guid is not supported for {args.command}")
-        device_guid = canonical_model_pk(args.guid, "device GUID")
-        devices = [{
-            "guid": device_guid,
-            "id": args.id or device_guid,
-            "mutation_generation": args.expected_generation,
-        }]
+        if args.command == "view":
+            parser.error("--guid is only supported for mutations")
+        rows = [
+            {
+                "guid": canonical_model_pk(args.guid, "device GUID"),
+                "id": args.id or args.guid,
+                "mutation_generation": args.expected_generation,
+            }
+        ]
     else:
-        devices = view(
+        rows = view(
             args.url,
             args.token,
             args.id,
@@ -319,82 +301,47 @@ def main():
             args.device_group_name,
             args.offline_days,
         )
-
     if args.command == "view":
-        for device in devices:
-            print(device)
-    elif args.command in ["disable", "enable", "delete", "assign"]:
-        if len(devices) == 0:
-            fail(f"{args.command} matched no devices")
-        if args.operation_id and len(devices) != 1:
-            fail("--operation-id requires exactly one matched device")
-
-        # Check if we need user confirmation for multiple devices
-        if len(devices) > 1:
-            print(
-                f"Found {len(devices)} devices. Do you want to proceed with "
-                f"{args.command} operation on the devices? (Y/N)"
+        return rows
+    for row in rows:
+        canonical_model_pk(row.get("guid"), "device GUID")
+    if args.expected_generation is not None:
+        if len(rows) != 1:
+            raise CliError(
+                "--expected-generation requires exactly one device", ExitCode.INVALID
             )
-            confirmation = input("Type 'Y' to confirm: ").strip()
-            if confirmation.upper() != "Y":
-                print("Operation cancelled.")
-                return
+        rows = [{**rows[0], "mutation_generation": args.expected_generation}]
+    if args.command == "assign":
 
-        if args.command == "disable":
-            for device in devices:
-                response = disable(
-                    args.url,
-                    args.token,
-                    device["guid"],
-                    device["id"],
-                    operation_id=args.operation_id if len(devices) == 1 else None,
-                    expected_generation=device.get("mutation_generation"),
-                )
-                print(response)
-        elif args.command == "enable":
-            for device in devices:
-                response = enable(
-                    args.url,
-                    args.token,
-                    device["guid"],
-                    device["id"],
-                    operation_id=args.operation_id if len(devices) == 1 else None,
-                    expected_generation=device.get("mutation_generation"),
-                )
-                print(response)
-        elif args.command == "delete":
-            for device in devices:
-                response = delete(
-                    args.url,
-                    args.token,
-                    device["guid"],
-                    device["id"],
-                    operation_id=args.operation_id if len(devices) == 1 else None,
-                    expected_generation=device.get("mutation_generation"),
-                )
-                print(response)
-        elif args.command == "assign":
-            if "=" not in args.assign_to:
-                print("Invalid assign_to format, it must be <type>=<value>")
-                return
-            type, value = args.assign_to.split("=", 1)
-            for device in devices:
-                response = assign(
-                    args.url,
-                    args.token,
-                    device["guid"],
-                    device["id"],
-                    type,
-                    value,
-                    operation_id=args.operation_id if len(devices) == 1 else None,
-                    expected_generation=(
-                        args.expected_generation
-                        if args.expected_generation is not None
-                        else device.get("mutation_generation")
-                    ),
-                )
-                print(response)
+        def mutate(row, key):
+            return assign(
+                args.url,
+                args.token,
+                row["guid"],
+                row["id"],
+                assign_type,
+                assign_value,
+                operation_id=key,
+                expected_generation=row["mutation_generation"],
+            )
+    else:
+        action = {"disable": disable, "enable": enable, "delete": delete}[args.command]
+
+        def mutate(row, key):
+            return action(
+                args.url,
+                args.token,
+                row["guid"],
+                row["id"],
+                operation_id=key,
+                expected_generation=row["mutation_generation"],
+            )
+
+    mutations = control_mutations(rows, "devices", mutate, operation_id=operation_id)
+    return run_mutations(
+        "devices_" + args.command, mutations, allow_empty=args.allow_empty, yes=args.yes
+    )
 
 
 if __name__ == "__main__":
-    main()
+    entry(main)

@@ -4,6 +4,7 @@ import argparse
 import json
 
 import requests
+from admin_cli import entry
 from batch_operations import (
     canonical_operation_id,
     check_control_response,
@@ -978,4 +979,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    entry(main)

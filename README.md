@@ -64,6 +64,14 @@ Useful component paths:
 
 Report vulnerabilities through GitHub private vulnerability reporting as described in [SECURITY.md](SECURITY.md).
 
+## Management CLI
+
+Management control scripts expose typed nonzero outcomes, `--json` reports,
+explicit `--allow-empty`, and frozen-target confirmation with `--yes`. Numeric
+device RIDs/usernames are never guessed to be database identifiers; use
+`guid:<identifier>` for strategy-assignment GUID selectors. See the
+[CLI outcome contract](docs/admin-cli.md) before unattended administration.
+
 ## CI and release
 
 Pull requests and `main` run pinned-action checks for metadata, dependencies, Rust, Flutter, Web, scripts, and platform-specific build contracts. The Apple required gate first resolves both committed Pod locks on the owning macOS runner and prints any exact lock drift before native compilation. It then compiles both the iOS Rust library and a complete unsigned iOS archive and rejects tracked or untracked build-time mutation of the checked-out source tree. Apple plugin resolution uses exactly CocoaPods 1.17.0 with committed iOS and macOS locks; project-level Swift Package Manager integration remains explicitly disabled until every plugin provides an immutable package graph. Xcode inherits plugin linkage from CocoaPods instead of hard-coding plugin frameworks, generated bridge sources are formatted before reuse, and the iOS host uses an application-owned C ABI link anchor instead of depending on a generated header that may validly be empty. The release workflow accepts only an exact commit reachable from the default branch and reuses artifacts from its successful full default-branch CI run: either the matching push run or a maintainer-dispatched matching CI run that executes every runtime, automation, and dependency gate.

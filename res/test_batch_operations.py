@@ -266,7 +266,9 @@ class BatchOperationReceiptTests(unittest.TestCase):
         self.assertEqual(captured["json"]["default_password"], password)
         self.assertEqual(captured["headers"]["Idempotency-Key"], OPERATION_ID)
 
-    def test_user_create_digest_and_device_assign_generation_match_server_contract(self):
+    def test_user_create_digest_and_device_assign_generation_match_server_contract(
+        self,
+    ):
         users = load_script("users.py", "state040_user_create_script")
         devices = load_script("devices.py", "state040_device_assign_script")
         password = "state040-client-secret"
@@ -426,7 +428,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
         body = receipt("strategy_assign", request_document, expected)
         body["applied"] = {"devices": 1, "users": 0, "groups": 0}
 
-        with self.assertRaisesRegex(SystemExit, "1"):
+        with self.assertRaisesRegex(SystemExit, "^4$"):
             check_batch_response(
                 FakeResponse(body),
                 operation="strategy_assign",
@@ -438,7 +440,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
         body = receipt("strategy_assign", request_document, expected)
         body["requested"] = {"devices": True, "users": 1, "groups": 0}
         body["applied"] = {"devices": True, "users": 1, "groups": 0}
-        with self.assertRaisesRegex(SystemExit, "1"):
+        with self.assertRaisesRegex(SystemExit, "^1$"):
             check_batch_response(
                 FakeResponse(body),
                 operation="strategy_assign",
@@ -487,7 +489,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
             "missing",
         ]
 
-        with patch.object(sys, "argv", argv), self.assertRaisesRegex(SystemExit, "1"):
+        with patch.object(sys, "argv", argv), self.assertRaisesRegex(SystemExit, "^3$"):
             users.main()
 
     def test_strategy_assignment_validates_the_cross_type_receipt(self):
@@ -557,7 +559,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
     def test_device_group_missing_and_partial_responses_fail_nonzero(self):
         groups = load_script("device-groups.py", "batch_device_groups_script")
         groups.get_group_by_name = lambda *_args: None
-        with self.assertRaisesRegex(SystemExit, "1"):
+        with self.assertRaisesRegex(SystemExit, "^3$"):
             groups.add_devices(
                 "https://management.example.test",
                 "token",
@@ -584,7 +586,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
         partial["applied"] = {"devices": 1}
         groups.requests.delete = lambda *_args, **_kwargs: FakeResponse(partial)
 
-        with self.assertRaisesRegex(SystemExit, "1"):
+        with self.assertRaisesRegex(SystemExit, "^4$"):
             groups.remove_devices(
                 "https://management.example.test",
                 "token",
@@ -611,7 +613,11 @@ class BatchOperationReceiptTests(unittest.TestCase):
             calls.append((url, headers, json))
             action = url.rsplit("/", 1)[-1]
             operation = f"user_status_{action}"
-            request_document = {"operation": operation, "user": user_guid, "expected_generation": 0}
+            request_document = {
+                "operation": operation,
+                "user": user_guid,
+                "expected_generation": 0,
+            }
             return FakeResponse(
                 control_receipt(
                     operation,
@@ -625,7 +631,11 @@ class BatchOperationReceiptTests(unittest.TestCase):
             calls.append((url, headers, json))
             action = url.rsplit("/", 1)[-1]
             operation = f"device_status_{action}"
-            request_document = {"operation": operation, "device": device_guid, "expected_generation": 0}
+            request_document = {
+                "operation": operation,
+                "device": device_guid,
+                "expected_generation": 0,
+            }
             return FakeResponse(
                 control_receipt(
                     operation,
@@ -638,7 +648,11 @@ class BatchOperationReceiptTests(unittest.TestCase):
         def device_delete(url, *, headers, json):
             calls.append((url, headers, json))
             operation = "device_delete"
-            request_document = {"operation": operation, "device": device_guid, "expected_generation": 0}
+            request_document = {
+                "operation": operation,
+                "device": device_guid,
+                "expected_generation": 0,
+            }
             return FakeResponse(
                 control_receipt(
                     operation,
@@ -703,7 +717,11 @@ class BatchOperationReceiptTests(unittest.TestCase):
     def test_single_control_operation_id_is_replay_safe_after_response_loss(self):
         devices = load_script("devices.py", "replay_control_devices_script")
         operation = "device_delete"
-        request_document = {"operation": operation, "device": "8", "expected_generation": 0}
+        request_document = {
+            "operation": operation,
+            "device": "8",
+            "expected_generation": 0,
+        }
         body = control_receipt(operation, request_document, {"devices": 1})
         calls = []
 
@@ -746,7 +764,11 @@ class BatchOperationReceiptTests(unittest.TestCase):
             self.assertIn(f"Operation ID: {operation_id}", output.getvalue())
             self.assertEqual(json, {})
             operation = "user_status_disable"
-            request_document = {"operation": operation, "user": "7", "expected_generation": 0}
+            request_document = {
+                "operation": operation,
+                "user": "7",
+                "expected_generation": 0,
+            }
             return FakeResponse(
                 control_receipt(
                     operation,
@@ -770,7 +792,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
         request_document = {"operation": "device_delete", "device": "8"}
         expected = {"devices": 1}
 
-        with self.assertRaisesRegex(SystemExit, "1"):
+        with self.assertRaisesRegex(SystemExit, "^1$"):
             check_control_response(
                 FakeResponse({}),
                 operation="device_delete",
@@ -782,7 +804,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
         partial = control_receipt(
             "device_delete", request_document, expected, applied={"devices": 0}
         )
-        with self.assertRaisesRegex(SystemExit, "1"):
+        with self.assertRaisesRegex(SystemExit, "^4$"):
             check_control_response(
                 FakeResponse(partial),
                 operation="device_delete",
@@ -798,7 +820,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
             applied={"devices": 0},
             error="Device not found",
         )
-        with self.assertRaisesRegex(SystemExit, "1"):
+        with self.assertRaisesRegex(SystemExit, "^5$"):
             check_control_response(
                 FakeResponse(rejected, status_code=404),
                 operation="device_delete",
@@ -823,7 +845,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
             "--operation-id",
             OPERATION_ID,
         ]
-        with patch.object(sys, "argv", argv), self.assertRaisesRegex(SystemExit, "1"):
+        with patch.object(sys, "argv", argv), self.assertRaisesRegex(SystemExit, "^2$"):
             users.main()
 
     def test_multi_target_control_generates_one_operation_id_per_target(self):
@@ -839,7 +861,11 @@ class BatchOperationReceiptTests(unittest.TestCase):
             operation_id = headers["Idempotency-Key"]
             calls.append((user_guid, operation_id, json))
             operation = "user_status_disable"
-            request_document = {"operation": operation, "user": user_guid, "expected_generation": 0}
+            request_document = {
+                "operation": operation,
+                "user": user_guid,
+                "expected_generation": 0,
+            }
             return FakeResponse(
                 control_receipt(
                     operation,
@@ -872,7 +898,11 @@ class BatchOperationReceiptTests(unittest.TestCase):
     def test_deleted_device_receipt_can_be_replayed_by_exact_guid_without_lookup(self):
         devices = load_script("devices.py", "deleted_device_replay_script")
         devices.view = lambda *_args: self.fail("replay must not depend on inventory")
-        request_document = {"operation": "device_delete", "device": "8", "expected_generation": 0}
+        request_document = {
+            "operation": "device_delete",
+            "device": "8",
+            "expected_generation": 0,
+        }
         body = control_receipt("device_delete", request_document, {"devices": 1})
         calls = []
 

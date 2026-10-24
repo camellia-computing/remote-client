@@ -3,6 +3,7 @@
 import argparse
 import json
 
+from admin_cli import entry
 from batch_operations import recover_operation
 
 
@@ -27,4 +28,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    entry(main)

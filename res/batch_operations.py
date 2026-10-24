@@ -4,6 +4,7 @@ import re
 import uuid
 
 import requests
+from admin_cli import CliError, ExitCode
 
 MANAGEMENT_OPERATION_RECEIPT_VERSION = 1
 MAX_MANAGEMENT_MODEL_PK = (1 << 63) - 1
@@ -11,9 +12,8 @@ _DIGEST_RE = re.compile(r"[0-9a-f]{64}")
 _MACHINE_CODE_RE = re.compile(r"[a-z][a-z0-9_]{0,63}")
 
 
-def fail(message):
-    print(f"Error: {message}")
-    raise SystemExit(1)
+def fail(message, code=ExitCode.UNKNOWN, *, receipt=None):
+    raise CliError(message, code, receipt=receipt)
 
 
 def canonical_document(value):
@@ -118,7 +118,9 @@ def recover_operation(url, token, operation_id):
     except ValueError:
         fail("management operation recovery response is not JSON")
     receipt = envelope.get("receipt") if isinstance(envelope, dict) else None
-    original_status = envelope.get("original_status_code") if isinstance(envelope, dict) else None
+    original_status = (
+        envelope.get("original_status_code") if isinstance(envelope, dict) else None
+    )
     if (
         type(original_status) is not int
         or not 200 <= original_status < 500
@@ -167,43 +169,13 @@ def replayable_request_document(
 def check_batch_response(
     response, *, operation, operation_id, request_document, requested
 ):
-    if response.status_code != 200:
-        fail(f"HTTP {response.status_code}: {response.text}")
-    try:
-        body = response.json()
-    except ValueError:
-        fail("management batch response is not JSON")
-    expected_digest = document_digest(request_document)
-    expected_keys = set(requested)
-    valid = (
-        isinstance(body, dict)
-        and body.get("result") == "OK"
-        and "error" not in body
-        and type(body.get("management_operation_receipt_version")) is int
-        and body["management_operation_receipt_version"]
-        == MANAGEMENT_OPERATION_RECEIPT_VERSION
-        and body.get("operation") == operation
-        and body.get("operation_id") == operation_id
-        and body.get("request_digest") == expected_digest
-        and isinstance(body.get("result_digest"), str)
-        and _DIGEST_RE.fullmatch(body["result_digest"]) is not None
-        and isinstance(body.get("operation_generation"), int)
-        and not isinstance(body["operation_generation"], bool)
-        and body["operation_generation"] > 0
-        and isinstance(body.get("requested"), dict)
-        and isinstance(body.get("applied"), dict)
-        and set(body["requested"]) == expected_keys
-        and set(body["applied"]) == expected_keys
-        and all(
-            type(count) is int and count >= 0 for count in body["requested"].values()
-        )
-        and all(type(count) is int and count >= 0 for count in body["applied"].values())
-        and body["requested"] == requested
-        and body["applied"] == requested
+    return check_control_response(
+        response,
+        operation=operation,
+        operation_id=operation_id,
+        request_document=request_document,
+        requested=requested,
     )
-    if not valid:
-        fail("management batch response receipt does not match the request")
-    return body
 
 
 def _receipt_envelope_matches(
@@ -266,12 +238,14 @@ def check_control_response(
         fail("management control response receipt is invalid")
 
     if response.status_code == 200:
-        if (
-            body.get("result") != "OK"
-            or "error" in body
-            or body["applied"] != requested
-        ):
-            fail("management control response receipt is not fully applied")
+        if body.get("result") != "OK" or "error" in body:
+            fail("management control success receipt is malformed")
+        if body["applied"] != requested:
+            fail(
+                "management control response receipt is not fully applied",
+                ExitCode.PARTIAL,
+                receipt=body,
+            )
         return body
 
     code = body.get("code")
@@ -287,4 +261,4 @@ def check_control_response(
         or body["applied"] == requested
     ):
         fail("management control error receipt is invalid")
-    fail(f"HTTP {response.status_code} [{code}]: {message}")
+    fail(f"HTTP {response.status_code} [{code}]", ExitCode.REMOTE_ERROR, receipt=body)
