@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import contextlib
 from datetime import date
 import importlib.util
+import io
+import json
 from pathlib import Path
+import tempfile
 import unittest
+from unittest import mock
 
 
 SCRIPT_PATH = Path(__file__).parents[1] / "audit_cargo_dependencies.py"
@@ -65,6 +70,95 @@ def report(
 
 
 class CargoAuditPolicyTests(unittest.TestCase):
+    def test_empty_budget_is_strict_for_every_warning(self) -> None:
+        strict_policy = policy()
+        strict_policy["exception_groups"] = []
+        errors, active, inactive = AUDITOR.evaluate_report(
+            report(), strict_policy, today=date(2026, 7, 29)
+        )
+        self.assertEqual((errors, active, inactive), ([], set(), set()))
+        errors, _, _ = AUDITOR.evaluate_report(
+            report(warnings=[warning()]), strict_policy, today=date(2026, 7, 29)
+        )
+        self.assertRegex(errors[0], "Unapproved cargo-audit warning")
+
+    def test_current_authorization_can_renew_the_frozen_scope(self) -> None:
+        source = policy(expires_on="2026-07-28")
+        source["reviewed_on"] = "2026-07-01"
+        AUDITOR.validate_publication_policy(
+            source, policy(), today=date(2026, 7, 29),
+            source_packages={("example", "1.0.0")},
+        )
+
+    def test_current_authorization_must_cover_every_frozen_warning(self) -> None:
+        authorization = policy()
+        authorization["exception_groups"][0]["warnings"][0]["version"] = "2.0.0"
+        with self.assertRaisesRegex(AUDITOR.PolicyError, "does not authorize"):
+            AUDITOR.validate_publication_policy(
+                policy(), authorization, today=date(2026, 7, 29),
+                source_packages={("example", "1.0.0")},
+            )
+
+    def test_expired_current_authorization_cannot_publish(self) -> None:
+        with self.assertRaisesRegex(AUDITOR.PolicyError, "expired"):
+            AUDITOR.validate_publication_policy(
+                policy(), policy(expires_on="2026-07-28"), today=date(2026, 7, 29),
+                source_packages={("example", "1.0.0")},
+            )
+
+    def test_inactive_source_warning_does_not_need_reauthorization(self) -> None:
+        source = policy()
+        inactive = policy_warning()
+        inactive["package"] = "absent"
+        source["exception_groups"][0]["warnings"].append(inactive)
+        AUDITOR.validate_publication_policy(
+            source, policy(), today=date(2026, 7, 29),
+            source_packages={("example", "1.0.0")},
+        )
+
+    def test_publication_lockfile_is_required_and_well_formed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "Cargo.lock"
+            for text in ["version = 4\n", "[[package]]\nname = 7\nversion = '1.0.0'\n"]:
+                source.write_text(text, encoding="utf-8")
+                with self.assertRaises(AUDITOR.PolicyError):
+                    AUDITOR.lockfile_packages(source)
+            source.write_text("[[package]]\nname = 'example'\nversion = '1.0.0'\n", encoding="utf-8")
+            self.assertEqual(AUDITOR.lockfile_packages(source), {("example", "1.0.0")})
+
+    def test_policy_only_validates_deadlines_without_executing_cargo(self) -> None:
+        for expiry, expected in [("2099-12-31", 0), ("2026-07-28", 2)]:
+            with self.subTest(expiry=expiry), tempfile.TemporaryDirectory() as directory:
+                source = Path(directory) / "policy.json"
+                source.write_text(json.dumps(policy(expires_on=expiry)), encoding="utf-8")
+                with (
+                    mock.patch(
+                        "sys.argv",
+                        [str(SCRIPT_PATH), "--policy", str(source), "--policy-only"],
+                    ),
+                    mock.patch.object(AUDITOR, "date", wraps=date) as clock,
+                    mock.patch.object(AUDITOR.subprocess, "run") as cargo,
+                    contextlib.redirect_stdout(io.StringIO()),
+                    contextlib.redirect_stderr(io.StringIO()),
+                ):
+                    clock.today.return_value = date(2026, 7, 29)
+                    self.assertEqual(AUDITOR.main(), expected)
+                    cargo.assert_not_called()
+
+    def test_policy_only_rejects_missing_policy_without_executing_cargo(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "missing.json"
+            with (
+                mock.patch(
+                    "sys.argv",
+                    [str(SCRIPT_PATH), "--policy", str(source), "--policy-only"],
+                ),
+                mock.patch.object(AUDITOR.subprocess, "run") as cargo,
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                self.assertEqual(AUDITOR.main(), 2)
+                cargo.assert_not_called()
+
     def test_reviewed_warning_passes(self) -> None:
         errors, active, inactive = AUDITOR.evaluate_report(
             report(warnings=[warning()]),

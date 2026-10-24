@@ -1,4 +1,4 @@
-# Rust dependency risk register
+# Dependency risk register
 
 Review date: 2026-10-23
 Owner: Remote security maintainers
@@ -18,6 +18,14 @@ The machine-readable exception set is
 `.github/config/cargo-audit-policy.json`. It is a warning budget, not an
 advisory ignore list: `cargo-audit` still reports every item, and any new item
 fails CI. Resolved entries may be removed at any time.
+
+Portable packaging pins its Python dependencies in `libs/portable/requirements.txt`.
+The Python auditor has one version source in `requirements-audit.txt`, runs in an
+isolated disposable environment, and checks both product CI and the scheduled
+security workflow without importing the audited package. Requirement changes
+also enter dependency review and weekly Dependabot updates. The Brotli 1.2.1
+security patch fixes [GHSA-9v8h-qqgm-4m35](https://github.com/advisories/GHSA-9v8h-qqgm-4m35);
+the archive format and Rust decoder remain unchanged.
 
 Workspace-member lock files are forbidden because Cargo ignores them when a
 member is built from the root. The stale `libs/virtual_display/Cargo.lock`
@@ -39,6 +47,18 @@ The GitHub alerts for the still-resolved `atty` and `glib` versions remain open
 for visibility; they are not silently dismissed. A formal release after an
 exception expiry is a no-go until the dependency is removed or a newly reviewed
 exception with current evidence is approved.
+
+New publication checks the release source's policy deadlines before building,
+after protected-environment approval and immediately before making its draft
+public. These standard-library checks do not rerun product CI or extend an
+exception. The policy loaded from the trusted workflow commit must be unexpired
+and explicitly cover every approved warning identity whose package and version
+remain in the frozen lockfile; absent packages do not require renewed exceptions.
+Recovery from reviewed `main` can use a newly approved policy for that same scope
+without rewriting a tag or candidate; a changed dependency identity is not an
+authorization for the frozen one. Read-only verification and completion of an
+already published immutable release remain available after a deadline; they cannot publish new
+bytes or replace existing assets.
 
 ## Supported dependency constraints
 

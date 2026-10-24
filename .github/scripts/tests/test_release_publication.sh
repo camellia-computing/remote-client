@@ -13,12 +13,27 @@ mkdir -p "$assets" "$control" "$fake_bin" "$remote" "$runner"
 
 cp .github/scripts/publish-client-release.sh "$control/"
 cp .github/scripts/validate-release-evidence.py "$control/"
+cp .github/scripts/audit_cargo_dependencies.py "$control/"
+cp Cargo.lock "$test_root/"
+mkdir -p "$test_root/.github/config"
+jq '.exception_groups[].expires_on = "2099-12-31"' \
+  .github/config/cargo-audit-policy.json > "$test_root/.github/config/cargo-audit-policy.json"
+cp "$test_root/.github/config/cargo-audit-policy.json" "$control/"
 cat > "$control/manage-release.py" <<'PY'
 #!/usr/bin/env python3
+import json
+import os
+from pathlib import Path
 import sys
 
 if len(sys.argv) < 2 or sys.argv[1] != "authorize":
     raise SystemExit("unexpected manager command")
+if os.environ.get("FAKE_EXPIRE_BEFORE_PUBLICATION") == "true":
+    path = Path(__file__).with_name("cargo-audit-policy.json")
+    policy = json.loads(path.read_text(encoding="utf-8"))
+    for group in policy["exception_groups"]:
+        group["expires_on"] = "2000-01-01"
+    path.write_text(json.dumps(policy), encoding="utf-8")
 PY
 chmod +x "$control"/*
 
@@ -237,7 +252,8 @@ export FAKE_TITLE='Camellia Remote Client 1.2.3'
 export FAKE_UPLOADER="$FAKE_APP"
 printf 'draft\n' > "$state"
 
-run_publisher() {
+run_publisher() (
+  cd "$test_root"
   PATH="$fake_bin:$PATH" \
   ACTIONS_TOKEN=actions-token \
   GH_TOKEN=test-token \
@@ -253,13 +269,39 @@ run_publisher() {
   RUNNER_TEMP="$runner" \
   VERSION=1.2.3 \
     bash "$control/publish-client-release.sh"
+)
+
+set_policy_expiry() {
+  jq --arg expiry "$1" '.exception_groups[].expires_on = $expiry' \
+    "$test_root/.github/config/cargo-audit-policy.json" > "$test_root/policy-updated.json"
+  mv "$test_root/policy-updated.json" "$test_root/.github/config/cargo-audit-policy.json"
+  cp "$test_root/.github/config/cargo-audit-policy.json" "$control/"
 }
 
+set_policy_expiry 2000-01-01
+if run_publisher >/dev/null 2>&1; then
+  echo "Publisher accepted an expired policy" >&2
+  exit 1
+fi
+[[ "$(cat "$state")" == draft && -z "$(find "$remote" -mindepth 1 -print -quit)" ]]
+
+set_policy_expiry 2099-12-31
+if FAKE_EXPIRE_BEFORE_PUBLICATION=true run_publisher >/dev/null 2>&1; then
+  echo "Publisher missed a policy expiry before the public commit" >&2
+  exit 1
+fi
+[[ "$(cat "$state")" == draft ]]
+
+set_policy_expiry 2099-12-31
+jq '.exception_groups[].expires_on = "2000-01-01"' \
+  "$test_root/.github/config/cargo-audit-policy.json" > "$test_root/frozen-policy.json"
+mv "$test_root/frozen-policy.json" "$test_root/.github/config/cargo-audit-policy.json"
 run_publisher >/dev/null
 [[ "$(cat "$state")" == published ]]
 cmp "$assets/camellia-remote-1.2.3-web.zip" \
   "$remote/camellia-remote-1.2.3-web.zip"
 
+set_policy_expiry 2000-01-01
 VERIFY_PUBLISHED_ONLY=true run_publisher >/dev/null
 
 printf 'tampered\n' > "$remote/camellia-remote-1.2.3-web.zip"
