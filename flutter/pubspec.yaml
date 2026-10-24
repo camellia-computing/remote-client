@@ -93,7 +93,7 @@ dependencies:
       ref: 08a471bb8ceccdd50483c81cdfa8b81b07b14b87
   uuid: ^4.6.0
   auto_size_text_field: ^2.2.1
-  flex_color_picker: ^3.8.0
+  flex_color_picker: ^4.0.0
   dynamic_layouts:
     git:
       url: https://github.com/rustdesk-org/dynamic_layouts.git
@@ -105,17 +105,17 @@ dependencies:
   # No Dart import: the macOS Runner registers SqflitePlugin natively
   # (macos/Runner/MainFlutterWindow.swift), so the plugin must be resolved.
   sqflite: ^2.2.0
-  vector_math: ^2.1.4
+  vector_math: ^2.4.3
   web: ^1.1.1
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  build_runner: ^2.15.1
-  freezed: ^3.2.3
+  build_runner: ^2.17.1
+  freezed: ^4.0.3
   flutter_lints: ^6.0.0
   # Newer ffigen requires meta 1.19 through native_toolchain_c; Flutter pins 1.18.
-  ffigen: ^21.0.0
+  ffigen: ^23.0.0
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
