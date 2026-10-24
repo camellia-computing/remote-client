@@ -643,6 +643,17 @@ class RustdeskImpl {
     required String header,
   }) =>
       ffi.mainHttpRequest(url: url, method: method, body: body, header: header);
+  Future<String> mainManagementOperationJournal({
+    required String action,
+    required String operationId,
+    required String scope,
+    required String createdAtMs,
+  }) => ffi.mainManagementOperationJournal(
+    action: action,
+    operationId: operationId,
+    scope: scope,
+    createdAtMs: createdAtMs,
+  );
   String mainGetLocalOption({required String key}) =>
       ffi.mainGetLocalOption(key: key);
   bool mainGetUseTextureRender() => ffi.mainGetUseTextureRender();

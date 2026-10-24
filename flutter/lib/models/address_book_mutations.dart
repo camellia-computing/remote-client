@@ -263,13 +263,17 @@ bool _mutationCount(Object? value, int count) =>
 
 class AddressBookMutationReceipt {
   final String operationId;
+  final String operation;
   final int status;
   final int? generation;
+  final String? guid;
   final String? rejectionCode;
   const AddressBookMutationReceipt._(
     this.operationId,
+    this.operation,
     this.status,
     this.generation,
+    this.guid,
     this.rejectionCode,
   );
   bool get succeeded => status == 200;
@@ -277,63 +281,129 @@ class AddressBookMutationReceipt {
   static AddressBookMutationReceipt verify(
     AddressBookMutationCommand command,
     AddressBookMutationResponse response,
+  ) => _validated(
+    _decodeReceipt(response),
+    response.status,
+    operationId: command.operationId,
+    expectedOperation: command.kind.operation,
+    expectedDigest: command.requestDigest,
+    expectedGuid: command.guid,
+    expectedGeneration: command.expectedGeneration,
+  );
+
+  /// After restart only metadata remains. The original actor's authenticated
+  /// receipt GET is the authority, not a reconstructed/guessed mutation body.
+  /// The result MUST NOT advance the generation of a stale displayed cache.
+  static AddressBookMutationReceipt recover(
+    PendingAddressBookOperation pending,
+    AddressBookMutationResponse response,
   ) {
-    final body = _decodeReceipt(response);
+    if (response.status != 200) {
+      throw AddressBookMutationException(
+        response.status == 404
+            ? 'operation_not_found'
+            : const [401, 403].contains(response.status)
+            ? 'recovery_denied'
+            : 'recovery_unavailable',
+      );
+    }
+    final envelope = _decodeReceipt(response);
+    final status = envelope['original_status_code'];
+    final body = envelope['receipt'];
+    if (!_versionOne(envelope['response_schema_version']) ||
+        envelope.containsKey('error') ||
+        status is! int ||
+        !(status == 200 || (status >= 400 && status < 500)) ||
+        body is! Map<String, dynamic>) {
+      throw const AddressBookMutationException('invalid_receipt');
+    }
+    return _validated(body, status, operationId: pending.operationId);
+  }
+
+  static AddressBookMutationReceipt _validated(
+    Map<String, dynamic> body,
+    int status, {
+    required String operationId,
+    String? expectedOperation,
+    String? expectedDigest,
+    String? expectedGuid,
+    int? expectedGeneration,
+  }) {
+    final operation = body['operation'];
+    final requestDigest = body['request_digest'];
     if (!_versionOne(body['response_schema_version']) ||
         !_versionOne(body['management_operation_receipt_version']) ||
-        body['operation_id'] != command.operationId ||
-        body['operation'] != command.kind.operation ||
-        body['request_digest'] != command.requestDigest ||
+        body['operation_id'] != operationId ||
+        operation is! String ||
+        !AddressBookMutationKind.values.any(
+          (kind) => kind.operation == operation,
+        ) ||
+        (expectedOperation != null && operation != expectedOperation) ||
+        requestDigest is! String ||
+        !_isDigest(requestDigest) ||
+        (expectedDigest != null && requestDigest != expectedDigest) ||
         body['result_digest'] is! String ||
         !_isDigest(body['result_digest']) ||
         !_positiveInteger(body['operation_generation']) ||
         !_mutationCount(body['requested'], 1)) {
       throw const AddressBookMutationException('invalid_receipt');
     }
-    if (response.status == 200) {
+    if (status == 200) {
       final generations = body['mutation_generations'];
       final generation = body['mutation_generation'];
       if (body['result'] != 'OK' ||
           body.containsKey('error') ||
           !_mutationCount(body['applied'], 1) ||
-          generation is! int ||
-          generation != command.expectedGeneration + 1 ||
+          !_positiveInteger(generation) ||
+          (expectedGeneration != null &&
+              generation != expectedGeneration + 1) ||
           generations is! Map<String, dynamic> ||
-          generations.length != 1 ||
-          generations[command.guid] is! int ||
-          generations[command.guid] != generation) {
+          generations.length != 1) {
+        throw const AddressBookMutationException('invalid_receipt');
+      }
+      final guid = generations.keys.single;
+      if (_guid.stringMatch(guid) != guid ||
+          (expectedGuid != null && guid != expectedGuid) ||
+          generations[guid] is! int ||
+          generations[guid] != generation) {
         throw const AddressBookMutationException('invalid_receipt');
       }
       return AddressBookMutationReceipt._(
-        command.operationId,
-        response.status,
-        generation,
+        operationId,
+        operation,
+        status,
+        generation as int,
+        guid,
         null,
       );
     }
     final code = body['code'];
     final message = body['message'];
-    if (response.status < 400 ||
-        body['result'] == 'OK' ||
+    if (status < 400 ||
+        status >= 500 ||
+        body.containsKey('result') ||
+        body.containsKey('error') ||
         !_mutationCount(body['applied'], 0) ||
         code is! String ||
         RegExp(r'^[a-z][a-z0-9_]{0,63}$').stringMatch(code) != code ||
         message is! String ||
         message.isEmpty ||
-        message.length > 256 ||
+        message.runes.length > 256 ||
         body['retryable'] is! bool) {
       throw const AddressBookMutationException('invalid_receipt');
     }
     return AddressBookMutationReceipt._(
-      command.operationId,
-      response.status,
+      operationId,
+      operation,
+      status,
       null,
+      expectedGuid,
       code,
     );
   }
 }
 
-class PendingAddressBookOperation {
+final class PendingAddressBookOperation {
   final String operationId;
   final String scope;
   final int createdAt;
@@ -345,12 +415,40 @@ class PendingAddressBookOperation {
       throw const AddressBookMutationException('invalid_journal_record');
     }
   }
+
+  factory PendingAddressBookOperation.fromJson(Object? value) {
+    if (value is! Map<String, dynamic> ||
+        value.length != 3 ||
+        value['operation_id'] is! String ||
+        value['scope'] is! String ||
+        value['created_at'] is! int) {
+      throw const AddressBookMutationException('invalid_journal_record');
+    }
+    return PendingAddressBookOperation(
+      value['operation_id'],
+      value['scope'],
+      value['created_at'],
+    );
+  }
+
+  Map<String, Object> toJson() => {
+    'operation_id': operationId,
+    'scope': scope,
+    'created_at': createdAt,
+  };
+  bool matches(PendingAddressBookOperation other) =>
+      operationId == other.operationId &&
+      scope == other.scope &&
+      createdAt == other.createdAt;
 }
 
 abstract interface class AddressBookMutationJournal {
   /// Atomic across all writers: if ANY unresolved record exists, fail before
   /// send. Success means durable metadata (ID/time/opaque scope only), not RAM.
   Future<void> reserve(PendingAddressBookOperation operation);
+  Future<List<PendingAddressBookOperation>> readPending();
+
+  /// Idempotent if absent; an existing different ID/scope/time must never be removed.
   Future<void> acknowledge(PendingAddressBookOperation operation);
 }
 
@@ -402,6 +500,20 @@ typedef AddressBookMutationSend =
       AddressBookMutationCommand command,
     );
 
+class AddressBookRecoveryOutcome {
+  final PendingAddressBookOperation pending;
+  final AddressBookMutationReceipt? receipt;
+  final String code;
+  final bool pendingCleanup;
+  const AddressBookRecoveryOutcome(
+    this.pending,
+    this.code, {
+    this.receipt,
+    this.pendingCleanup = false,
+  });
+  bool get resolved => receipt != null;
+}
+
 class AddressBookMutationService {
   final AddressBookMutationJournal journal;
   final AddressBookMutationSend send;
@@ -418,6 +530,76 @@ class AddressBookMutationService {
       return currentScope() == scope;
     } catch (_) {
       return false;
+    }
+  }
+
+  Future<AddressBookRecoveryOutcome> recover(
+    PendingAddressBookOperation pending, {
+    required Uri apiBase,
+    required Future<AddressBookMutationResponse> Function(Uri uri) read,
+    Duration budget = const Duration(seconds: 30),
+  }) async {
+    if (_busy) return AddressBookRecoveryOutcome(pending, 'operation_busy');
+    if (!_validApiBase(apiBase) || !_sameScope(pending.scope)) {
+      return AddressBookRecoveryOutcome(pending, 'context_changed');
+    }
+    if (budget <= Duration.zero || budget > const Duration(minutes: 10)) {
+      return AddressBookRecoveryOutcome(pending, 'invalid_budget');
+    }
+    _busy = true;
+    final watch = Stopwatch()..start();
+    Duration remaining() {
+      final left = budget - watch.elapsed;
+      if (left <= Duration.zero) {
+        throw const AddressBookMutationException('deadline');
+      }
+      return left;
+    }
+
+    try {
+      // Receipt lookup is independent of local inventory: another window may
+      // already have acknowledged this ID, or the local journal may be damaged.
+      // Only acknowledgement needs the exact local identity, after verification.
+      final prefix = apiBase.path.replaceFirst(RegExp(r'/+$'), '');
+      final uri = apiBase.replace(
+        path: '$prefix/api/management-operations/${pending.operationId}',
+      );
+      final response = await read(uri).timeout(remaining());
+      final receipt = AddressBookMutationReceipt.recover(pending, response);
+      var pendingCleanup = false;
+      try {
+        await journal.acknowledge(pending).timeout(remaining());
+      } catch (_) {
+        pendingCleanup = true;
+      }
+      return AddressBookRecoveryOutcome(
+        pending,
+        receipt.rejectionCode ?? 'confirmed',
+        receipt: receipt,
+        pendingCleanup: pendingCleanup,
+      );
+    } catch (error) {
+      final code =
+          error is AddressBookMutationException &&
+              const {
+                'invalid_receipt',
+                'operation_not_found',
+                'recovery_denied',
+                'recovery_unavailable',
+                'deadline',
+                'journal_busy',
+                'journal_unavailable',
+                'journal_corrupt',
+              }.contains(error.code)
+          ? error.code
+          : error is TimeoutException
+          ? 'deadline'
+          : 'recovery_unavailable';
+      // A failed/late read, including 404/retention expiry, cannot prove that the
+      // ORIGINAL mutation was not sent. Keep it unknown and keep the record.
+      return AddressBookRecoveryOutcome(pending, code);
+    } finally {
+      _busy = false;
     }
   }
 

@@ -1,8 +1,9 @@
 # Native address book mutation protocol (implementation in progress)
 
 `flutter/lib/models/address_book_mutations.dart` is the pure-Dart protocol core
-for the seven Management peer/tag write routes. Its runtime Native/Web adapters
-and GUI integration are **not implemented yet**; STATE-044 remains open. The
+for the seven Management peer/tag write routes. Storage adapters and read-only
+receipt recovery are implemented. GUI/transport lifecycle integration is
+**not implemented yet**; STATE-044 remains open. The
 in-memory journal in the unit tests is a test seam, not a persistence fallback.
 
 Each command freezes its UUIDv4, method, path, exact UTF-8 JSON body, observed
@@ -31,7 +32,34 @@ Malformed/HTML/oversized/5xx/timeout/lost responses remain unknown. Only strict
 immutable receipts release reservations. Failed cleanup preserves the confirmed
 outcome but keeps admission blocked. Recovery must use GET for the original ID
 and original actor/endpoint; 404 or retention expiry is not proof of no commit.
-Recovery and durable adapters are the next implementation step.
+Recovery never reconstructs or replays a write. It takes the original
+ID/scope/time, checks the original actor's immutable receipt and only then
+acknowledges that same record. Lookup does not require a local record still to
+exist: another window may have acknowledged it already. A different local
+reservation is never removed. The returned generation is historical evidence,
+not an editable cache version. A failed recovery stays unknown; it is not
+reported as proof that the original mutation was never sent.
+
+## Storage boundary
+
+Native uses `src/management_operation_journal.rs` through one generated bridge
+method. A process mutex and nonblocking OS file lock serialize all engines and
+processes. The journal is under the application's private config directory in
+`management-operation-journal-v1` (Unix 0700/0600). An operation's UUID is also its
+filename, so a failed/partial write does not erase its identity. Reservations use
+exclusive file creation, file sync and Unix directory sync; only an exact
+ID/scope/time acknowledgement removes a record. Other records, malformed files,
+symlinks and unexpected entries are never automatically repaired or evicted.
+Native Windows/macOS crash durability still needs owning-platform validation.
+
+The browser adapter uses same-origin Web Locks with fail-fast exclusive admission
+and canonical, checksummed localStorage metadata. Storage/quota/lock failure
+prevents send. Both adapters intentionally allow only one unresolved operation
+at a time, including another actor/endpoint's record; this is a fail-closed
+availability tradeoff, not a queue that discards older operations. Corruption
+requires preserving the original IDs and operator reconciliation, not a reset
+based on 404, age or a changed clock. The native lock is not implemented with
+[Dart's process-level POSIX advisory locks](https://api.dart.dev/dart-io/RandomAccessFile/lock.html).
 
 The seven-vector `flutter/test/fixtures/address_book_mutations_v1.json` corpus is
 also checked by Management's canonical-document implementation. Dart VM tests
@@ -45,5 +73,8 @@ node ../.github/scripts/test-address-book-mutations-js.cjs /private/cache/mutati
 ```
 
 That Node probe is not a real-browser/Web Locks, network, platform or GUI test.
+The analogous `address_book_journal_web_probe.dart` and
+`test-address-book-journal-web.cjs` run the compiled browser adapter against
+DOM/storage/lock substitutes for deterministic competition and fault injection.
 The production transport still requires the RES-001 cancellation/request-identity
 boundary; timing out a Future alone does not reclaim its underlying worker.

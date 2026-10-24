@@ -1200,6 +1200,67 @@ pub fn main_http_request(url: String, method: String, body: Option<String>, head
     http_request(url, method, body, header)
 }
 
+/// Native-only durable reservation backend. Error envelopes contain stable
+/// codes, never filesystem paths, raw I/O errors, request bodies or credentials.
+pub fn main_management_operation_journal(
+    action: String,
+    operation_id: String,
+    scope: String,
+    created_at_ms: String,
+) -> String {
+    use crate::management_operation_journal::{self as journal, JournalError, PendingOperation};
+    let result = (|| {
+        let directory = config::Config::path("management-operation-journal-v1");
+        if action == "pending" {
+            if !operation_id.is_empty() || !scope.is_empty() || !created_at_ms.is_empty() {
+                return Err(JournalError::InvalidRecord);
+            }
+            return journal::pending(&directory);
+        }
+        if !matches!(action.as_str(), "reserve" | "acknowledge")
+            || operation_id.len() != 36
+            || scope.len() != 64
+            || created_at_ms.len() > 16
+        {
+            return Err(JournalError::InvalidRecord);
+        }
+        let timestamp: u64 = created_at_ms
+            .parse()
+            .map_err(|_| JournalError::InvalidRecord)?;
+        if timestamp.to_string() != created_at_ms {
+            return Err(JournalError::InvalidRecord);
+        }
+        let record = PendingOperation {
+            operation_id,
+            scope,
+            created_at_ms: timestamp,
+        };
+        if action == "reserve" {
+            journal::reserve(&directory, &record)?;
+            Ok(Some(record))
+        } else {
+            journal::acknowledge(&directory, &record)?;
+            Ok(None)
+        }
+    })();
+    match result {
+        Ok(pending) => {
+            let pending: Vec<_> = pending
+                .into_iter()
+                .map(|record| {
+                    serde_json::json!({
+                        "operation_id": record.operation_id,
+                        "scope": record.scope,
+                        "created_at": record.created_at_ms,
+                    })
+                })
+                .collect();
+            serde_json::json!({"journal_version": 1, "code": "ok", "pending": pending}).to_string()
+        }
+        Err(error) => serde_json::json!({"journal_version": 1, "code": error.code()}).to_string(),
+    }
+}
+
 #[frb(sync)]
 pub fn main_get_local_option(key: String) -> String {
     get_local_option(key)

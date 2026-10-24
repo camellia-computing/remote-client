@@ -62,6 +62,23 @@ Matcher protocolError(String code) => throwsA(
   ),
 );
 
+AddressBookMutationResponse recoveredResponse(
+  AddressBookMutationCommand command, {
+  int status = 200,
+  int originalStatus = 200,
+  Map<String, dynamic>? receipt,
+}) => AddressBookMutationResponse(
+  status,
+  {'Content-Type': 'application/json'},
+  utf8.encode(
+    jsonEncode({
+      'response_schema_version': 1,
+      'original_status_code': originalStatus,
+      'receipt': receipt ?? receiptBody(command, status: originalStatus),
+    }),
+  ),
+);
+
 /// A test seam, not production persistence. The actual Native/Web adapters must
 /// enforce this contract across processes/isolate engines/tabs and reloads.
 class MemoryJournal implements AddressBookMutationJournal {
@@ -71,6 +88,9 @@ class MemoryJournal implements AddressBookMutationJournal {
   bool rejectReserve = false;
   bool rejectAcknowledge = false;
   Future<void>? reservationGate;
+  @override
+  Future<List<PendingAddressBookOperation>> readPending() async =>
+      pending == null ? [] : [pending!];
   @override
   Future<void> reserve(PendingAddressBookOperation operation) async {
     reservations++;
@@ -82,10 +102,10 @@ class MemoryJournal implements AddressBookMutationJournal {
   @override
   Future<void> acknowledge(PendingAddressBookOperation operation) async {
     acknowledgements++;
-    if (rejectAcknowledge ||
-        pending?.operationId != operation.operationId ||
-        pending?.scope != operation.scope ||
-        pending?.createdAt != operation.createdAt) {
+    if (rejectAcknowledge) throw StateError('STORAGE-SECRET');
+    final current = pending;
+    if (current == null) return;
+    if (!current.matches(operation)) {
       throw StateError('STORAGE-SECRET');
     }
     pending = null;
@@ -360,6 +380,35 @@ void main() {
           protocolError('invalid_receipt'),
         );
       }
+    },
+  );
+
+  test(
+    'provider error message budget counts Unicode code points, not UTF-16 code units',
+    () {
+      final original = command();
+      final body = {
+        ...receiptBody(original, status: 409),
+        'message': List.filled(256, '😀').join(),
+      };
+      expect(
+        AddressBookMutationReceipt.verify(
+          original,
+          response(original, status: 409, body: body),
+        ).succeeded,
+        isFalse,
+      );
+      expect(
+        () => AddressBookMutationReceipt.verify(
+          original,
+          response(
+            original,
+            status: 409,
+            body: {...body, 'message': List.filled(257, '😀').join()},
+          ),
+        ),
+        protocolError('invalid_receipt'),
+      );
     },
   );
 
@@ -722,6 +771,279 @@ void main() {
       expect(result.state, AddressBookMutationState.unknown);
       expect(result.code, 'transport_failed');
       expect(journal.pending?.operationId, id);
+    },
+  );
+
+  test(
+    'unknown committed write recovers with one read of its original ID, never a new POST',
+    () async {
+      final journal = MemoryJournal();
+      var sends = 0;
+      final original = command();
+      final service = AddressBookMutationService(
+        journal: journal,
+        currentScope: () => scope,
+        send: (_) async {
+          sends++;
+          throw StateError('COMMIT-RESPONSE-LOST');
+        },
+      );
+      expect(
+        (await service.execute(original, scope: scope)).state,
+        AddressBookMutationState.unknown,
+      );
+      final pending = journal.pending!;
+      var reads = 0;
+      final result = await service.recover(
+        pending,
+        apiBase: Uri.parse('https://management.invalid/remote'),
+        read: (uri) async {
+          reads++;
+          expect(uri.path, '/remote/api/management-operations/$id');
+          expect(uri.hasQuery, isFalse);
+          return recoveredResponse(original);
+        },
+      );
+      expect(result.resolved, isTrue);
+      expect(result.receipt?.operation, original.kind.operation);
+      expect(result.receipt?.guid, original.guid);
+      expect(result.receipt?.generation, 3);
+      expect(journal.pending, isNull);
+      expect([sends, reads], [1, 1]);
+    },
+  );
+
+  test(
+    'restart recovery needs only metadata and accepts an immutable rejected receipt',
+    () async {
+      final original = command(payload: {'id': '123', 'alias': 'old intent'});
+      final metadata = PendingAddressBookOperation.fromJson(
+        PendingAddressBookOperation(id, scope, 1).toJson(),
+      );
+      final journal = MemoryJournal()..pending = metadata;
+      final service = AddressBookMutationService(
+        journal: journal,
+        currentScope: () => scope,
+        send: (_) async => throw StateError('must_not_send'),
+      );
+      final result = await service.recover(
+        metadata,
+        apiBase: Uri.parse('https://management.invalid'),
+        read: (_) async => recoveredResponse(original, originalStatus: 409),
+      );
+      expect(result.resolved, isTrue);
+      expect(result.receipt?.succeeded, isFalse);
+      expect(result.code, 'resource_generation_conflict');
+      expect(journal.pending, isNull);
+    },
+  );
+
+  test('scope mismatch before recovery prevents any receipt GET', () async {
+    final metadata = PendingAddressBookOperation(id, scope, 1);
+    final journal = MemoryJournal()..pending = metadata;
+    var activeScope = scope;
+    var reads = 0;
+    final service = AddressBookMutationService(
+      journal: journal,
+      currentScope: () => activeScope,
+      send: (_) async => throw StateError('must_not_send'),
+    );
+    activeScope = List.filled(64, 'c').join();
+    final result = await service.recover(
+      metadata,
+      apiBase: Uri.parse('https://management.invalid'),
+      read: (_) async {
+        reads++;
+        return recoveredResponse(command());
+      },
+    );
+    expect(result.resolved, isFalse);
+    expect(result.code, 'context_changed');
+    expect(reads, 0);
+    expect(journal.pending, metadata);
+  });
+
+  test(
+    'receipt lookup still resolves if another window already acknowledged the original ID',
+    () async {
+      final metadata = PendingAddressBookOperation(id, scope, 1);
+      final journal = MemoryJournal();
+      final service = AddressBookMutationService(
+        journal: journal,
+        currentScope: () => scope,
+        send: (_) async => throw StateError('must_not_send'),
+      );
+      final result = await service.recover(
+        metadata,
+        apiBase: Uri.parse('https://management.invalid'),
+        read: (_) async => recoveredResponse(command()),
+      );
+      expect(result.resolved, isTrue);
+      expect(result.pendingCleanup, isFalse);
+      expect(journal.pending, isNull);
+    },
+  );
+
+  test(
+    'lookup of an older original receipt cannot acknowledge another window\'s new operation',
+    () async {
+      final metadata = PendingAddressBookOperation(id, scope, 1);
+      final newer = PendingAddressBookOperation(
+        newAddressBookOperationId(),
+        scope,
+        2,
+      );
+      final journal = MemoryJournal()..pending = newer;
+      final service = AddressBookMutationService(
+        journal: journal,
+        currentScope: () => scope,
+        send: (_) async => throw StateError('must_not_send'),
+      );
+      final result = await service.recover(
+        metadata,
+        apiBase: Uri.parse('https://management.invalid'),
+        read: (_) async => recoveredResponse(command()),
+      );
+      expect(result.resolved, isTrue);
+      expect(result.pendingCleanup, isTrue);
+      expect(journal.pending, newer);
+    },
+  );
+
+  test(
+    '404, revoked auth, server failure and receipt expiry never release the original unknown operation',
+    () async {
+      final metadata = PendingAddressBookOperation(id, scope, 1);
+      final journal = MemoryJournal()..pending = metadata;
+      final service = AddressBookMutationService(
+        journal: journal,
+        currentScope: () => scope,
+        send: (_) async => throw StateError('must_not_send'),
+      );
+      for (final status in [401, 403, 404, 500]) {
+        final result = await service.recover(
+          metadata,
+          apiBase: Uri.parse('https://management.invalid'),
+          read: (_) async => recoveredResponse(command(), status: status),
+        );
+        expect(result.resolved, isFalse);
+        expect(
+          result.code,
+          status == 404
+              ? 'operation_not_found'
+              : status == 500
+              ? 'recovery_unavailable'
+              : 'recovery_denied',
+        );
+        expect(journal.pending, metadata);
+      }
+      expect(journal.acknowledgements, 0);
+    },
+  );
+
+  test(
+    'invalid or wrong-operation recovery receipts never acknowledge pending metadata',
+    () async {
+      final metadata = PendingAddressBookOperation(id, scope, 1);
+      final journal = MemoryJournal()..pending = metadata;
+      final service = AddressBookMutationService(
+        journal: journal,
+        currentScope: () => scope,
+        send: (_) async => throw StateError('must_not_send'),
+      );
+      final original = command();
+      for (final changes in [
+        {'operation_id': newAddressBookOperationId()},
+        {'operation': 'address_book_profile_create'},
+        {'request_digest': 'invalid'},
+        {'management_operation_receipt_version': 2},
+        {'mutation_generation': 0},
+        {
+          'mutation_generations': {'personal-7': 3, 'other': 3},
+        },
+        {
+          'applied': {'mutations': 0},
+        },
+      ]) {
+        final result = await service.recover(
+          metadata,
+          apiBase: Uri.parse('https://management.invalid'),
+          read: (_) async => recoveredResponse(
+            original,
+            receipt: {...receiptBody(original), ...changes},
+          ),
+        );
+        expect(result.resolved, isFalse);
+        expect(result.code, 'invalid_receipt');
+        expect(journal.pending, metadata);
+      }
+      final unknown = await service.recover(
+        metadata,
+        apiBase: Uri.parse('https://management.invalid'),
+        read: (_) async => recoveredResponse(
+          original,
+          originalStatus: 409,
+          receipt: {...receiptBody(original, status: 409), 'result': 'unknown'},
+        ),
+      );
+      expect(unknown.resolved, isFalse);
+      expect(journal.acknowledgements, 0);
+    },
+  );
+
+  test(
+    'a late receipt GET cannot clear the original record after the recovery deadline',
+    () async {
+      final metadata = PendingAddressBookOperation(id, scope, 1);
+      final journal = MemoryJournal()..pending = metadata;
+      final gate = Completer<AddressBookMutationResponse>();
+      final service = AddressBookMutationService(
+        journal: journal,
+        currentScope: () => scope,
+        send: (_) async => throw StateError('must_not_send'),
+      );
+      final result = await service.recover(
+        metadata,
+        apiBase: Uri.parse('https://management.invalid'),
+        budget: const Duration(milliseconds: 20),
+        read: (_) => gate.future,
+      );
+      expect(result.resolved, isFalse);
+      expect(result.code, 'deadline');
+      gate.complete(recoveredResponse(command()));
+      await Future<void>.delayed(Duration.zero);
+      expect(journal.acknowledgements, 0);
+      expect(journal.pending, metadata);
+    },
+  );
+
+  test(
+    'recovery preserves the immutable outcome if durable cleanup fails',
+    () async {
+      final metadata = PendingAddressBookOperation(id, scope, 1);
+      final journal = MemoryJournal()
+        ..pending = metadata
+        ..rejectAcknowledge = true;
+      final service = AddressBookMutationService(
+        journal: journal,
+        currentScope: () => scope,
+        send: (_) async => throw StateError('must_not_send'),
+      );
+      final result = await service.recover(
+        metadata,
+        apiBase: Uri.parse('https://management.invalid'),
+        read: (_) async => recoveredResponse(command()),
+      );
+      expect(result.resolved, isTrue);
+      expect(result.pendingCleanup, isTrue);
+      expect(journal.pending, metadata);
+      expect(
+        (await service.execute(
+          command(operationId: newAddressBookOperationId()),
+          scope: scope,
+        )).state,
+        AddressBookMutationState.notSent,
+      );
     },
   );
 

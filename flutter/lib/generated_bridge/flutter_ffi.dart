@@ -950,6 +950,20 @@ Future<void> mainHttpRequest({
   header: header,
 );
 
+/// Native-only durable reservation backend. Error envelopes contain stable
+/// codes, never filesystem paths, raw I/O errors, request bodies or credentials.
+Future<String> mainManagementOperationJournal({
+  required String action,
+  required String operationId,
+  required String scope,
+  required String createdAtMs,
+}) => RustLib.instance.api.crateFlutterFfiMainManagementOperationJournal(
+  action: action,
+  operationId: operationId,
+  scope: scope,
+  createdAtMs: createdAtMs,
+);
+
 String mainGetLocalOption({required String key}) =>
     RustLib.instance.api.crateFlutterFfiMainGetLocalOption(key: key);
 
