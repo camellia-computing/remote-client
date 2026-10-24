@@ -162,7 +162,7 @@ fn make_tray() -> camellia_remote_protocol::ResultType<()> {
                 .with_icon(icon.clone());
             #[cfg(target_os = "macos")]
             {
-                builder = builder.with_icon_as_template(true);
+                builder = builder.with_icon_templated(icon.clone());
             }
             #[cfg(target_os = "windows")]
             {

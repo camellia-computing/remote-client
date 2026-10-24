@@ -73,7 +73,8 @@ fon = "0.6"
 shutdown_hooks = "0.1"
 totp-rs = { version = "5.4", default-features = false, features = ["gen_secret", "otpauth"] }
 stunclient = "0.4"
-kcp-sys= { git = "https://github.com/rustdesk-org/kcp-sys"}
+# Preserve bounded segmentation and fallible transport handling; review KCP 2 with mixed-peer tests.
+kcp-sys= { git = "https://github.com/rustdesk-org/kcp-sys", rev = "32a6c09fc6223f54aea83981a6aa8995931d29be" }
 reqwest = { version = "0.12", features = ["blocking", "socks", "json", "rustls-tls", "rustls-tls-native-roots", "gzip"], default-features=false }
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
@@ -148,7 +149,7 @@ piet-coregraphics = "0.6"
 foreign-types = "0.3"
 
 [target.'cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))'.dependencies]
-tray-icon = { git = "https://github.com/tauri-apps/tray-icon", version = "0.24.1" }
+tray-icon = "0.26.1"
 tao = "0.37.1"
 image = "0.24"
 

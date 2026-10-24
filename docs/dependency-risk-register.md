@@ -65,12 +65,30 @@ exception with current evidence is approved.
   SDK-pinned packages follow the reviewed stable SDK resolution.
   Freezed 4 and flex-color-picker 4 require Dart 3.13; use their compatible
   3.x releases with the SDK's Dart 3.12 rather than raising deployment floors.
-  Ffigen 22+ requires a `meta` version incompatible with the SDK pin; use 21.x.
+  Build-runner 2.17 requires analyzer 14, while resolved Freezed 3.2.5 requires
+  analyzer 9 or 10; update both with their compatible Dart SDK rather than
+  forcing an analyzer override. Vector-math follows the SDK's exact 2.2 pin.
+  Ffigen 22+ requires `code_assets` 2; compatible native-toolchain-c versions
+  then require meta 1.19, while this Flutter SDK pins meta 1.18. The actual Pub
+  solver rejects ffigen 23 even though its direct meta range is broad; use 21.x
+  until the complete SDK/toolchain graph resolves without overrides.
   The Rust bridge runtime, Dart runtime and generator are all exactly 2.13.0;
   generated sources are committed and verified together.
 - Window-manager and multi-window Git packages pin reviewed commits. Their
   updates handle destroyed Linux windows and Windows resize/visibility recovery;
   required native jobs must compile both integrations before merge.
+- Tray integration uses the maintained stable registry release, not a moving
+  Git branch whose declared version can drift out of range. The macOS builder
+  uses the current template-icon API; native Windows and Apple gates still
+  validate the shared menu and icon integration.
+- KCP pins `32a6c09`: the current upstream KCP 2 path removes bounded send
+  segmentation and replaces fallible send/receive handling with panics. Advancing
+  it requires preserving those controls and proving bounded large-frame exchange,
+  cancellation and interoperability with supported peers, not just compilation.
+- Hardware codecs pin `778df1f`: the 0.8 series replaces direct NVENC/AMF/MediaSDK
+  VRAM implementations with FFmpeg paths and changes native SDK/build inputs.
+  Advance the adapter and reviewed ports together only after native vendor-parity,
+  fallback, bitrate and cleanup tests; ordinary non-GPU CI is not that evidence.
 
 Session power protection uses owned native resources: a private connection and
 file descriptor on Linux, and IOPM assertion IDs on macOS. The restart adapter
@@ -85,3 +103,9 @@ The `pod` launcher selects that exact gem before loading CocoaPods. Local podspe
 checksums depend on JSON serialization, including empty-array formatting; relying
 on the host Ruby's bundled JSON makes equivalent specs produce different locks.
 Regenerate Pod locks with this launcher and keep the native lock-drift gate.
+
+Dependabot reviews Dart generators and SDK-pinned packages as one toolchain
+cohort, and the Win32/URI/platform plugins as another. Routine compatible packages
+remain separately updatable. The groups do not ignore major versions or authorize
+overrides: a new proposal on either side must recheck the complete dependency
+chain and native platform floors before these constraints can be removed.

@@ -1092,7 +1092,7 @@ fn disable_av1() -> bool {
 #[cfg(not(target_os = "ios"))]
 pub fn test_av1() {
     use camellia_remote_protocol::config::keys::OPTION_AV1_TEST;
-    use camellia_remote_protocol::rand::Rng;
+    use camellia_remote_protocol::rand::RngExt;
     use std::{sync::Once, time::Duration};
 
     if disable_av1() || !Config::get_option(OPTION_AV1_TEST).is_empty() {
@@ -1109,7 +1109,7 @@ pub fn test_av1() {
             let move_step = 50;
             let generate_fake_data =
                 |frame_index: u32, dst_fmt: EncodeYuvFormat| -> ResultType<Vec<u8>> {
-                    let mut rng = camellia_remote_protocol::rand::thread_rng();
+                    let mut rng = camellia_remote_protocol::rand::rng();
                     let mut bgra = vec![0u8; (width * height * 4) as usize];
                     let gradient = frame_index as f32 / frame_count as f32;
                     // floating block
@@ -1120,7 +1120,7 @@ pub fn test_av1() {
                         for x in 0..block_size {
                             let index = (((y0 + y) * width + x0 + x) * 4) as usize;
                             if index + 3 < bgra.len() {
-                                let noise = rng.gen_range(0..255) as f32 / 255.0;
+                                let noise = rng.random_range(0..255) as f32 / 255.0;
                                 let value = (255.0 * gradient + noise * 50.0) as u8;
                                 bgra[index] = value;
                                 bgra[index + 1] = value;

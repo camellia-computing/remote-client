@@ -15,7 +15,7 @@
   },
   "dependencies": {
     "fzstd": "^0.1.1",
-    "protobufjs": "8.7.1",
+    "protobufjs": "8.8.1",
     "tweetnacl": "^1.0.3"
   },
   "devDependencies": {

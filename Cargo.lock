@@ -939,7 +939,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "backtrace",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "chrono",
  "clap 4.6.7",
@@ -959,14 +959,14 @@ dependencies = [
  "httparse",
  "lazy_static",
  "libc",
- "libloading 0.8.9",
+ "libloading 0.9.0",
  "log",
  "mac_address",
  "machine-uid",
  "osascript",
  "protobuf",
  "protobuf-codegen",
- "rand 0.8.8",
+ "rand 0.10.3",
  "regex",
  "rustls-native-certs",
  "rustls-pki-types",
@@ -979,17 +979,17 @@ dependencies = [
  "socket2 0.3.19",
  "subtle",
  "sysinfo",
- "thiserror 1.0.69",
+ "thiserror 2.0.21",
  "tokio",
  "tokio-rustls",
  "tokio-socks",
  "tokio-tungstenite",
  "tokio-util",
- "toml 0.7.8",
+ "toml 1.1.8+spec-1.1.0",
  "url",
  "uuid",
  "uzers",
- "webpki-roots 1.0.10",
+ "webpki-roots 1.0.11",
  "whoami",
  "winapi",
  "x11 2.21.0",
@@ -999,9 +999,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.9.0"
+version = "1.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "877bf67ac8e52449eb2f9e98a344ea163beb70dd1f9eebe3cc5357dcfeaee4df"
+checksum = "86e055fa6e3e40ad6187ba25b6855eeb635d5271f8e0f0e1e9a5826b8d75bea0"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -1200,7 +1200,7 @@ dependencies = [
 [[package]]
 name = "clipboard-master"
 version = "4.0.0-beta.6"
-source = "git+https://github.com/rustdesk-org/clipboard-master#7762d74e38db37cfeb6ded88c964b9cdbddfb6db"
+source = "git+https://github.com/rustdesk-org/clipboard-master#522fafb65edfe7939cf63fa797f916569ecab595"
 dependencies = [
  "objc",
  "objc-foundation",
@@ -1594,7 +1594,7 @@ dependencies = [
 [[package]]
 name = "cpal"
 version = "0.15.3"
-source = "git+https://github.com/rustdesk-org/cpal?branch=osx-screencapturekit#6b374bcaed076750ca8fce6da518ab39b882e14a"
+source = "git+https://github.com/rustdesk-org/cpal?branch=osx-screencapturekit#96d4da121b7d949677ac5b6887413a9185fd7f39"
 dependencies = [
  "alsa",
  "cidre",
@@ -2130,9 +2130,9 @@ dependencies = [
 
 [[package]]
 name = "dirs"
-version = "6.0.0"
+version = "7.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3e8aa94d75141228480295a7d0e7feb620b1a5ad9f12bc40be62411e38cce4e"
+checksum = "8d57d423b3c82e89b9a24ca3091fee61f456a26edbd28d26c65906f4bc1dcd8f"
 dependencies = [
  "dirs-sys 0.5.0",
 ]
@@ -3631,7 +3631,7 @@ checksum = "15cdd26707701c53297e2fa6afb323d55fbc1d0810c3aec078ae3ef0424c3c15"
 [[package]]
 name = "hwcodec"
 version = "0.7.1"
-source = "git+https://github.com/rustdesk-org/hwcodec#778df1f99597722473b29443bac22ae6c23946fe"
+source = "git+https://github.com/rustdesk-org/hwcodec?rev=778df1f99597722473b29443bac22ae6c23946fe#778df1f99597722473b29443bac22ae6c23946fe"
 dependencies = [
  "bindgen 0.59.2",
  "cc",
@@ -3683,7 +3683,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tower-service",
- "webpki-roots 1.0.10",
+ "webpki-roots 1.0.11",
 ]
 
 [[package]]
@@ -4131,7 +4131,7 @@ dependencies = [
 [[package]]
 name = "kcp-sys"
 version = "0.1.0"
-source = "git+https://github.com/rustdesk-org/kcp-sys#32a6c09fc6223f54aea83981a6aa8995931d29be"
+source = "git+https://github.com/rustdesk-org/kcp-sys?rev=32a6c09fc6223f54aea83981a6aa8995931d29be#32a6c09fc6223f54aea83981a6aa8995931d29be"
 dependencies = [
  "anyhow",
  "auto_impl",
@@ -4153,13 +4153,12 @@ dependencies = [
 
 [[package]]
 name = "keyboard-types"
-version = "0.7.0"
+version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b750dcadc39a09dbadd74e118f6dd6598df77fa01df0cfcdc52c28dece74528a"
+checksum = "0fbe853b403ae61a04233030ae8a79d94975281ed9770a1f9e246732b534b28d"
 dependencies = [
  "bitflags 2.13.2",
  "serde 1.0.229",
- "unicode-segmentation",
 ]
 
 [[package]]
@@ -4249,6 +4248,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "libloading"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "754ca22de805bb5744484a5b151a9e1a8e837d5dc232c2d7d8c2e3492edc8b60"
+dependencies = [
+ "cfg-if 1.0.5",
+ "windows-link 0.2.1",
+]
+
+[[package]]
 name = "libm"
 version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4312,15 +4321,6 @@ dependencies = [
  "libc",
  "plain",
  "redox_syscall 0.9.5",
-]
-
-[[package]]
-name = "libxdo"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "00333b8756a3d28e78def82067a377de7fa61b24909000aeaa2b446a948d14db"
-dependencies = [
- "libxdo-sys",
 ]
 
 [[package]]
@@ -4595,20 +4595,19 @@ dependencies = [
 
 [[package]]
 name = "muda"
-version = "0.19.3"
+version = "0.21.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1dd04e60bc0b07438a6771710ee1698f98f6ebbc7f89b61264af1563b8aeb878"
+checksum = "4340e89c178916e62879c5c36b7f699019369be413e496178a6983ce91b8bc03"
 dependencies = [
  "crossbeam-channel",
  "dpi",
  "gtk",
  "keyboard-types",
- "libxdo",
+ "libc",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
- "once_cell",
  "png 0.18.1",
  "thiserror 2.0.21",
  "windows-sys 0.61.2",
@@ -6624,7 +6623,7 @@ dependencies = [
 [[package]]
 name = "rdev"
 version = "0.5.0-2"
-source = "git+https://github.com/rustdesk-org/rdev#23e24dd6b35452a495dae0ae6d99395e9755ab0f"
+source = "git+https://github.com/rustdesk-org/rdev#0904f23ce496e255461a98848b85c11fa5a62eab"
 dependencies = [
  "cocoa 0.24.1",
  "core-foundation 0.9.4",
@@ -6794,7 +6793,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
- "webpki-roots 1.0.10",
+ "webpki-roots 1.0.11",
 ]
 
 [[package]]
@@ -7221,6 +7220,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_spanned"
+version = "1.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4e7523beb55eece201a2356bee0bbca0d1ab466c14c07703b2e0ee6d42cb0c2c"
+dependencies = [
+ "serde_core",
+]
+
+[[package]]
 name = "serde_urlencoded"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7441,9 +7449,9 @@ dependencies = [
 
 [[package]]
 name = "smallvec"
-version = "1.16.3"
+version = "1.16.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b3dc8af474f516a851ff4bd12db780f948b9250ad37211e4eec0bccea54e01b"
+checksum = "d0d5d4b1981b8bbbb7aed204cae5726d683d5d6ac7e74ec54122ea28f315e7c8"
 
 [[package]]
 name = "smithay-client-toolkit"
@@ -7806,9 +7814,9 @@ dependencies = [
 
 [[package]]
 name = "tao"
-version = "0.37.1"
+version = "0.37.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f37f381f4e048e6cdf038b5705f8cf14ad108279d46eb968140a7b291aba9400"
+checksum = "d5777b06fe6435126ae8d816eba269e050e1e10d302cf5461e9c49eccabc3548"
 dependencies = [
  "bitflags 2.13.2",
  "block2 0.6.2",
@@ -8201,26 +8209,29 @@ dependencies = [
 
 [[package]]
 name = "toml"
-version = "0.7.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dd79e69d3b627db300ff956027cc6c3798cef26d22526befdfcd12feeb6d2257"
-dependencies = [
- "serde 1.0.229",
- "serde_spanned",
- "toml_datetime 0.6.3",
- "toml_edit 0.19.15",
-]
-
-[[package]]
-name = "toml"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "185d8ab0dfbb35cf1399a6344d8484209c088f75f8f68230da55d48d95d43e3d"
 dependencies = [
  "serde 1.0.229",
- "serde_spanned",
+ "serde_spanned 0.6.9",
  "toml_datetime 0.6.3",
  "toml_edit 0.20.2",
+]
+
+[[package]]
+name = "toml"
+version = "1.1.8+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "20489e00e4d8741d6be680764cc12e270655e375a20d1011e844a9c3379e678d"
+dependencies = [
+ "indexmap",
+ "serde_core",
+ "serde_spanned 1.1.2",
+ "toml_datetime 1.1.2+spec-1.1.0",
+ "toml_parser",
+ "toml_writer",
+ "winnow 1.0.4",
 ]
 
 [[package]]
@@ -8248,8 +8259,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1b5bb770da30e5cbfde35a2d7b9b8a2c4b8ef89548a7a6aeab5c9a576e3e7421"
 dependencies = [
  "indexmap",
- "serde 1.0.229",
- "serde_spanned",
  "toml_datetime 0.6.3",
  "winnow 0.5.40",
 ]
@@ -8262,7 +8271,7 @@ checksum = "396e4d48bbb2b7554c944bde63101b5ae446cff6ec4a24227428f15eb72ef338"
 dependencies = [
  "indexmap",
  "serde 1.0.229",
- "serde_spanned",
+ "serde_spanned 0.6.9",
  "toml_datetime 0.6.3",
  "winnow 0.5.40",
 ]
@@ -8287,6 +8296,12 @@ checksum = "baa693a8032d7e1cada7d0041e96126df243179ff061456783ac7f12bda4744c"
 dependencies = [
  "winnow 1.0.4",
 ]
+
+[[package]]
+name = "toml_writer"
+version = "1.1.3+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "06bdbd8cfc056b8d2e2e85f29b56a3bdbecb527cef81eb39e3e7b98af4652770"
 
 [[package]]
 name = "totp-rs"
@@ -8433,11 +8448,12 @@ dependencies = [
 
 [[package]]
 name = "tray-icon"
-version = "0.24.1"
-source = "git+https://github.com/tauri-apps/tray-icon#9826ff42e52be0ac92e0803eed16d517299ec7c0"
+version = "0.26.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4f5cc5858ecf9574ddd8f0032a2ff7ffd6f7724d2b81e48b9374984b3fd6ddc9"
 dependencies = [
  "crossbeam-channel",
- "dirs 6.0.0",
+ "dirs 7.0.0",
  "libappindicator",
  "muda",
  "objc2 0.6.5",
@@ -8634,9 +8650,9 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "uuid"
-version = "1.28.0"
+version = "1.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7cc1186384beb7dd8eedea376413fd654937285ea6c9cfbb928dc3043ea4b606"
+checksum = "4a0e2d11620c50695fe12bbbfde96b3477fe606e7284c22d505c12ce51214514"
 dependencies = [
  "getrandom 0.4.3",
  "js-sys",
@@ -9011,9 +9027,9 @@ dependencies = [
 
 [[package]]
 name = "webpki-root-certs"
-version = "1.0.10"
+version = "1.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "58ec80e73fd8baf57bf0d9615554c75348bda990d6d5bbeab964dd068319fecb"
+checksum = "e49d0e65abc00c142e8f9428da991da9f1a250c39be97459901eb12b9b49f62a"
 dependencies = [
  "rustls-pki-types",
 ]
@@ -9024,14 +9040,14 @@ version = "0.26.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9"
 dependencies = [
- "webpki-roots 1.0.10",
+ "webpki-roots 1.0.11",
 ]
 
 [[package]]
 name = "webpki-roots"
-version = "1.0.10"
+version = "1.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c1c8e20c8a38fc7d65abfe74eb7280e4aa667e8eec8bc84996d2874810748d9"
+checksum = "f5f280bbb2b287bc8e7de7e3852945a0ff50d1bbcb5ed42b6c7a568c546df171"
 dependencies = [
  "rustls-pki-types",
 ]
