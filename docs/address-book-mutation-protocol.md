@@ -1,9 +1,9 @@
 # Native address book mutation protocol (implementation in progress)
 
 `flutter/lib/models/address_book_mutations.dart` is the pure-Dart protocol core
-for the seven Management peer/tag write routes. Storage adapters and read-only
-receipt recovery are implemented. GUI/transport lifecycle integration is
-**not implemented yet**; STATE-044 remains open. The
+for the seven Management peer/tag write routes. The GUI and recent-session sync
+now use this service, durable adapters and read-only recovery. **STATE-044 remains
+open** pending the underlying transport boundary and owning-platform checks. The
 in-memory journal in the unit tests is a test seam, not a persistence fallback.
 
 Each command freezes its UUIDv4, method, path, exact UTF-8 JSON body, observed
@@ -39,6 +39,29 @@ exist: another window may have acknowledged it already. A different local
 reservation is never removed. The returned generation is historical evidence,
 not an editable cache version. A failed recovery stays unknown; it is not
 reported as proof that the original mutation was never sent.
+
+## GUI ownership and recovery
+
+The model has one write owner across all books, including background sync. The
+complete selection is frozen synchronously using its editable snapshot's server,
+GUID and generation. After durable reservation, an async preflight rechecks the
+server, token, personal-book actor identity, book object and view/snapshot epochs.
+A failed preflight is definitely unsent and acknowledges only its own reservation.
+Each batch child is checked again; a 409 never triggers a new-ID retry. Switching
+accounts, servers or books discards stale UI results. A receipt cannot promote an
+old cache to an editable generation. One full content read follows the batch;
+recent-session sync builds patches without modifying visible peers before ACK.
+
+Unresolved metadata or a storage failure disables writes, not saved content or
+connections. The operation panel shows confirmed/rejected/unknown/not-sent batch
+counts and the original unknown ID. `Look up receipt` only reads the original ID
+under the original actor/server scope. For unavailable receipts, manual clearing
+requires entering that complete ID and explicitly confirming that the original
+resulting state was verified. It does not retry a write; 404, age or network
+failure never auto-clears the journal. Corrupt storage is retained for operator
+inspection, not silently reset. Cross-book copying projects only Management
+fields, omits an unobserved `same_server`, and excludes credentials and local RDP/
+relay options.
 
 ## Storage boundary
 
@@ -78,3 +101,6 @@ The analogous `address_book_journal_web_probe.dart` and
 DOM/storage/lock substitutes for deterministic competition and fault injection.
 The production transport still requires the RES-001 cancellation/request-identity
 boundary; timing out a Future alone does not reclaim its underlying worker.
+Both compiled probes also run via `bash .github/scripts/check-address-book-contract.sh`
+in the existing CI quality job. Generated probe output is temporary and removed
+after the run; no extra source checkout is created.

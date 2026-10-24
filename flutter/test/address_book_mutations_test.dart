@@ -113,6 +113,104 @@ class MemoryJournal implements AddressBookMutationJournal {
 }
 
 void main() {
+  test(
+    'async preflight runs after durable reserve; context loss sends nothing',
+    () async {
+      final journal = MemoryJournal();
+      final entered = Completer<void>();
+      final gate = Completer<bool>();
+      var sends = 0;
+      var current = scope;
+      final service = AddressBookMutationService(
+        journal: journal,
+        currentScope: () => current,
+        beforeSend: () {
+          expect(journal.pending?.operationId, id);
+          entered.complete();
+          return gate.future;
+        },
+        send: (request) async {
+          sends++;
+          return response(request);
+        },
+      );
+      final running = service.execute(command(), scope: scope);
+      await entered.future;
+      current = '';
+      gate.complete(true);
+      final outcome = await running;
+      expect(outcome.state, AddressBookMutationState.notSent);
+      expect(outcome.code, 'context_changed');
+      expect(outcome.pendingCleanup, isFalse);
+      expect(sends, 0);
+      expect(journal.pending, isNull);
+    },
+  );
+
+  test(
+    'failed preflight is definitely unsent and clears only its own reservation',
+    () async {
+      for (final throws in [false, true]) {
+        final journal = MemoryJournal();
+        var sends = 0;
+        final service = AddressBookMutationService(
+          journal: journal,
+          currentScope: () => scope,
+          beforeSend: () async {
+            if (throws) throw StateError('PRIVATE-ENDPOINT');
+            return false;
+          },
+          send: (request) async {
+            sends++;
+            return response(request);
+          },
+        );
+        final outcome = await service.execute(command(), scope: scope);
+        expect(outcome.state, AddressBookMutationState.notSent);
+        expect(outcome.code, 'context_changed');
+        expect(sends, 0);
+        expect(journal.pending, isNull);
+      }
+    },
+  );
+
+  test(
+    'batch repeats async ownership check for every child, never retries intent',
+    () async {
+      final journal = MemoryJournal();
+      var checks = 0;
+      final sent = <AddressBookMutationCommand>[];
+      final service = AddressBookMutationService(
+        journal: journal,
+        currentScope: () => scope,
+        beforeSend: () async => ++checks == 1,
+        send: (request) async {
+          sent.add(request);
+          return response(request);
+        },
+      );
+      final batch = AddressBookMutationBatch(
+        apiBase: Uri.parse('https://management.invalid/remote'),
+        guid: 'personal-7',
+        expectedGeneration: 2,
+        inputs: List.generate(
+          3,
+          (i) => AddressBookMutationInput(AddressBookMutationKind.peerUpdate, {
+            'id': '$i',
+            'alias': 'new',
+          }),
+        ),
+      );
+      final outcome = await service.executeBatch(batch, scope: scope);
+      expect(outcome.confirmed, 1);
+      expect(outcome.notAttempted, 2);
+      expect(outcome.unknownOperationIds, isEmpty);
+      expect(sent.single.operationId, batch.commands.first.operationId);
+      expect(checks, 2);
+      expect(journal.pending, isNull);
+    },
+  );
+
   AddressBookMutationBatch batch(List<AddressBookMutationInput> inputs) =>
       AddressBookMutationBatch(
         apiBase: Uri.parse('https://management.invalid/remote'),

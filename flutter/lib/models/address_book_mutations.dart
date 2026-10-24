@@ -518,11 +518,16 @@ class AddressBookMutationService {
   final AddressBookMutationJournal journal;
   final AddressBookMutationSend send;
   final String Function() currentScope;
+
+  /// Revalidate async account/endpoint/frame state AFTER durable reservation,
+  /// before crossing the transport uncertainty boundary. Must not send traffic.
+  final Future<bool> Function()? beforeSend;
   bool _busy = false;
   AddressBookMutationService({
     required this.journal,
     required this.send,
     required this.currentScope,
+    this.beforeSend,
   });
 
   bool _sameScope(String scope) {
@@ -714,7 +719,15 @@ class AddressBookMutationService {
           pendingCleanup: true,
         );
       }
-      if (!_sameScope(scope) || watch.elapsed >= budget) {
+      var allowed = true;
+      try {
+        if (beforeSend != null) {
+          allowed = await beforeSend!().timeout(remaining());
+        }
+      } catch (_) {
+        allowed = false;
+      }
+      if (!allowed || !_sameScope(scope) || watch.elapsed >= budget) {
         try {
           await journal.acknowledge(pending).timeout(remaining());
         } catch (_) {

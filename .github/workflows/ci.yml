@@ -549,6 +549,9 @@ jobs:
         working-directory: flutter
         run: flutter test
 
+      - name: Compiled Web address book protocol and journal contracts
+        run: bash .github/scripts/check-address-book-contract.sh
+
       - name: Web bridge lint
         working-directory: flutter/web/js
         run: npm run lint

@@ -82,6 +82,45 @@ class Peer {
     return res;
   }
 
+  /// Management content fields only. Copying to another book never re-shares
+  /// credentials or local connection options; unknown server identity is absent,
+  /// not a JSON null (the provider requires a boolean when supplied).
+  Map<String, dynamic> toAddressBookCopyJson() => {
+    'id': id,
+    'username': username,
+    'hostname': hostname,
+    'platform': platform,
+    'alias': alias,
+    'tags': List<dynamic>.of(tags),
+    'loginName': loginName,
+    'device_group_name': device_group_name,
+    'note': note,
+    if (sameServer != null) 'same_server': sameServer,
+  };
+
+  /// Build an intent without changing the visible peer before confirmation.
+  Map<String, dynamic>? addressBookRecentPatch(
+    Peer recent, {
+    required bool personal,
+  }) {
+    final patch = <String, dynamic>{};
+    if (sameServer != true) {
+      if (recent.username.isNotEmpty && username != recent.username) {
+        patch['username'] = recent.username;
+      }
+      if (recent.hostname.isNotEmpty && hostname != recent.hostname) {
+        patch['hostname'] = recent.hostname;
+      }
+      if (recent.platform.isNotEmpty && platform != recent.platform) {
+        patch['platform'] = recent.platform;
+      }
+    }
+    if (personal && recent.hash.isNotEmpty && hash != recent.hash) {
+      patch['hash'] = recent.hash;
+    }
+    return patch.isEmpty ? null : {'id': id, ...patch};
+  }
+
   Map<String, dynamic> toGroupCacheJson() {
     return <String, dynamic>{
       "id": id,
