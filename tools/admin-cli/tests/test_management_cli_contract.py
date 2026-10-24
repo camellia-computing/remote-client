@@ -20,7 +20,6 @@ import requests
 if os.environ.get("CAMELLIA_REMOTE_MANAGEMENT_CONTRACT_TESTS") != "1":
     raise unittest.SkipTest("requires explicit Management contract-test environment")
 
-from admin_cli import entry
 from api.models import (
     DeviceGroup,
     ManagementBatchOperation,
@@ -29,7 +28,8 @@ from api.models import (
     UserProfile,
 )
 from api.views_api import _issue_access_token
-from batch_operations import recover_operation
+from camellia_remote_admin.batch_operations import recover_operation
+from camellia_remote_admin.outcomes import entry
 from django.test import TestCase, override_settings
 from test_batch_operations import load_script
 
@@ -179,13 +179,13 @@ class ManagementCliContractTests(TestCase):
         self.assertFalse(RemoteDevice.objects.filter(pk=self.target.pk).exists())
 
     def test_group_lifecycle_and_membership_match_real_receipts(self):
-        self.invoke("device-groups.py", "add", "--name", "cli-group")
+        self.invoke("device_groups.py", "add", "--name", "cli-group")
         self.invoke(
-            "device-groups.py", "update", "--name", "cli-group", "--note", "new-note"
+            "device_groups.py", "update", "--name", "cli-group", "--note", "new-note"
         )
         self.assertEqual(DeviceGroup.objects.get(name="cli-group").note, "new-note")
         self.invoke(
-            "device-groups.py",
+            "device_groups.py",
             "add-devices",
             "--name",
             "cli-group",
@@ -195,7 +195,7 @@ class ManagementCliContractTests(TestCase):
         self.target.refresh_from_db()
         self.assertEqual(self.target.device_group.name, "cli-group")
         self.invoke(
-            "device-groups.py",
+            "device_groups.py",
             "remove-devices",
             "--name",
             "cli-group",
@@ -204,14 +204,14 @@ class ManagementCliContractTests(TestCase):
         )
         self.target.refresh_from_db()
         self.assertIsNone(self.target.device_group_id)
-        self.invoke("device-groups.py", "delete", "--name", "cli-group")
+        self.invoke("device_groups.py", "delete", "--name", "cli-group")
         self.assertFalse(DeviceGroup.objects.filter(name="cli-group").exists())
 
     def test_all_group_deletions_are_preflighted_and_multi_target_counts_match(self):
         for name in ("cli-one", "cli-two", "cli-three"):
             DeviceGroup.objects.create(name=name)
         self.invoke(
-            "device-groups.py",
+            "device_groups.py",
             "delete",
             "--name",
             "cli-one,cli-missing",
@@ -220,7 +220,7 @@ class ManagementCliContractTests(TestCase):
         self.assertFalse(any(method == "delete" for method, _ in self.calls))
         self.assertTrue(DeviceGroup.objects.filter(name="cli-one").exists())
         result = self.invoke(
-            "device-groups.py", "delete", "--name", "cli-one,cli-two,cli-three"
+            "device_groups.py", "delete", "--name", "cli-one,cli-two,cli-three"
         )
         self.assertEqual(result["applied"], {"groups": 3})
         self.assertEqual(len(result["operations"]), 3)
@@ -241,7 +241,10 @@ class ManagementCliContractTests(TestCase):
         self.target.refresh_from_db()
         self.assertFalse(self.target.is_active)
         self.assertEqual(result["operations"][0]["state"], "unknown")
-        with patch("batch_operations.transport.get", side_effect=self.transport.get):
+        with patch(
+            "camellia_remote_admin.batch_operations.transport.get",
+            side_effect=self.transport.get,
+        ):
             recovered = recover_operation(
                 "https://management.example.test",
                 self.bearer,

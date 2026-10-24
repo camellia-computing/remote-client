@@ -16,8 +16,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
-import cli_transport as transport
-from admin_cli import CliError, ExitCode, Mutation, run_mutations
+from camellia_remote_admin import transport
+from camellia_remote_admin.outcomes import CliError, ExitCode, Mutation, run_mutations
 
 
 def stalled_dns_worker(connection):
@@ -143,7 +143,10 @@ class TransportTests(unittest.TestCase):
                 with contextlib.ExitStack() as stack:
                     if stage == "dns":
                         stack.enter_context(
-                            patch("cli_transport._worker", stalled_dns_worker)
+                            patch(
+                                "camellia_remote_admin.transport._worker",
+                                stalled_dns_worker,
+                            )
                         )
                     client = stack.enter_context(
                         transport.Transport(deadline=0.8, read_timeout=5)
@@ -241,11 +244,12 @@ class TransportTests(unittest.TestCase):
             self.assertNotIn("canary", str(failed.exception))
 
     def test_cli_deadline_has_nonzero_safe_json_exit_without_traceback(self):
-        script = Path(__file__).with_name("devices.py")
         result = subprocess.run(
             [
                 sys.executable,
-                str(script),
+                "-m",
+                "camellia_remote_admin",
+                "devices",
                 "view",
                 "--url",
                 self.url + "/slow-headers",
@@ -354,13 +358,14 @@ class TransportTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "posix", "POSIX process-group signal contract")
     def test_sigint_group_and_sigterm_release_socket_worker_and_exit_nonzero(self):
-        script = Path(__file__).with_name("devices.py")
         for cancellation in (signal.SIGINT, signal.SIGTERM):
             start = len(self.server.seen)
             process = subprocess.Popen(
                 [
                     sys.executable,
-                    str(script),
+                    "-m",
+                    "camellia_remote_admin",
+                    "devices",
                     "view",
                     "--url",
                     self.url + "/slow-headers",

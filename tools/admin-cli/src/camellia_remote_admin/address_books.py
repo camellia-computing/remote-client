@@ -1,11 +1,8 @@
-#!/usr/bin/env python3
-
 import argparse
 import json
 
-import cli_transport as transport
-from admin_cli import entry
-from batch_operations import (
+from . import transport
+from .batch_operations import (
     canonical_operation_id,
     check_control_response,
     document_digest,
@@ -47,6 +44,7 @@ def replayable_mutation(
         requested={"mutations": 1},
     )
 
+
 def get_personal_ab(url, token):
     """Get personal address book GUID"""
     headers = {"Authorization": f"Bearer {token}"}
@@ -80,7 +78,9 @@ def view_shared_abs(url, token, name=None):
     while True:
         current += 1
         filtered_params["current"] = current
-        response = transport.get(f"{url}/api/ab/shared/profiles", headers=headers, params=filtered_params)
+        response = transport.get(
+            f"{url}/api/ab/shared/profiles", headers=headers, params=filtered_params
+        )
         if response.status_code != 200:
             print(f"Error: HTTP {response.status_code}")
             exit(1)
@@ -132,7 +132,9 @@ def view_ab_peers(url, token, ab_guid, peer_id=None, alias=None):
     while True:
         current += 1
         filtered_params["current"] = current
-        response = transport.get(f"{url}/api/ab/peers", headers=headers, params=filtered_params)
+        response = transport.get(
+            f"{url}/api/ab/peers", headers=headers, params=filtered_params
+        )
         if response.status_code != 200:
             print(f"Error: HTTP {response.status_code}")
             exit(1)
@@ -187,8 +189,16 @@ def check_response(response):
 
 
 def add_peer(
-    url, token, ab_guid, peer_id, alias=None, note=None, tags=None, password=None,
-    operation_id=None, expected_generation=None
+    url,
+    token,
+    ab_guid,
+    peer_id,
+    alias=None,
+    note=None,
+    tags=None,
+    password=None,
+    operation_id=None,
+    expected_generation=None,
 ):
     """Add a peer to address book"""
     print(f"Adding peer {peer_id} to address book")
@@ -210,8 +220,14 @@ def add_peer(
         payload.update(info)
 
     return replayable_mutation(
-        transport.post, "POST", url, token, f"/api/ab/peer/add/{ab_guid}", payload,
-        "address_book_peer_add", operation_id=operation_id,
+        transport.post,
+        "POST",
+        url,
+        token,
+        f"/api/ab/peer/add/{ab_guid}",
+        payload,
+        "address_book_peer_add",
+        operation_id=operation_id,
         expected_generation=expected_generation,
     )
 
@@ -225,14 +241,29 @@ def delete_peer(
 
     print(f"Deleting peers {peer_ids} from address book")
     return replayable_mutation(
-        transport.delete, "DELETE", url, token, f"/api/ab/peer/{ab_guid}", peer_ids,
-        "address_book_peer_delete", operation_id=operation_id,
+        transport.delete,
+        "DELETE",
+        url,
+        token,
+        f"/api/ab/peer/{ab_guid}",
+        peer_ids,
+        "address_book_peer_delete",
+        operation_id=operation_id,
         expected_generation=expected_generation,
     )
 
+
 def update_peer(
-    url, token, ab_guid, peer_id, alias=None, note=None, tags=None, password=None,
-    operation_id=None, expected_generation=None
+    url,
+    token,
+    ab_guid,
+    peer_id,
+    alias=None,
+    note=None,
+    tags=None,
+    password=None,
+    operation_id=None,
+    expected_generation=None,
 ):
     """Update a peer in address book"""
     print(f"Updating peer {peer_id} in address book")
@@ -261,8 +292,14 @@ def update_peer(
         payload["note"] = note
 
     return replayable_mutation(
-        transport.put, "PUT", url, token, f"/api/ab/peer/update/{ab_guid}", payload,
-        "address_book_peer_update", operation_id=operation_id,
+        transport.put,
+        "PUT",
+        url,
+        token,
+        f"/api/ab/peer/update/{ab_guid}",
+        payload,
+        "address_book_peer_update",
+        operation_id=operation_id,
         expected_generation=expected_generation,
     )
 
@@ -317,8 +354,13 @@ def str2color(tag_name, existing_colors=None):
 
 
 def add_tag(
-    url, token, ab_guid, tag_name, color=None, operation_id=None,
-    expected_generation=None
+    url,
+    token,
+    ab_guid,
+    tag_name,
+    color=None,
+    operation_id=None,
+    expected_generation=None,
 ):
     """Add a tag to address book"""
     print(f"Adding tag '{tag_name}' to address book")
@@ -339,15 +381,20 @@ def add_tag(
     }
 
     return replayable_mutation(
-        transport.post, "POST", url, token, f"/api/ab/tag/add/{ab_guid}", payload,
-        "address_book_tag_add", operation_id=operation_id,
+        transport.post,
+        "POST",
+        url,
+        token,
+        f"/api/ab/tag/add/{ab_guid}",
+        payload,
+        "address_book_tag_add",
+        operation_id=operation_id,
         expected_generation=expected_generation,
     )
 
 
 def update_tag(
-    url, token, ab_guid, tag_name, color, operation_id=None,
-    expected_generation=None
+    url, token, ab_guid, tag_name, color, operation_id=None, expected_generation=None
 ):
     """Update a tag in address book"""
     print(f"Updating tag '{tag_name}' in address book")
@@ -357,8 +404,14 @@ def update_tag(
     }
 
     return replayable_mutation(
-        transport.put, "PUT", url, token, f"/api/ab/tag/update/{ab_guid}", payload,
-        "address_book_tag_update", operation_id=operation_id,
+        transport.put,
+        "PUT",
+        url,
+        token,
+        f"/api/ab/tag/update/{ab_guid}",
+        payload,
+        "address_book_tag_update",
+        operation_id=operation_id,
         expected_generation=expected_generation,
     )
 
@@ -372,8 +425,14 @@ def delete_tags(
 
     print(f"Deleting tags {tag_names} from address book")
     return replayable_mutation(
-        transport.delete, "DELETE", url, token, f"/api/ab/tag/{ab_guid}", tag_names,
-        "address_book_tag_delete", operation_id=operation_id,
+        transport.delete,
+        "DELETE",
+        url,
+        token,
+        f"/api/ab/tag/{ab_guid}",
+        tag_names,
+        "address_book_tag_delete",
+        operation_id=operation_id,
         expected_generation=expected_generation,
     )
 
@@ -414,8 +473,15 @@ def add_shared_ab(url, token, name, note=None, password=None, operation_id=None)
 
 
 def update_shared_ab(
-    url, token, ab_guid, name=None, note=None, owner=None, password=None,
-    operation_id=None, expected_generation=None
+    url,
+    token,
+    ab_guid,
+    name=None,
+    note=None,
+    owner=None,
+    password=None,
+    operation_id=None,
+    expected_generation=None,
 ):
     """Update a shared address book"""
     print(f"Updating shared address book {ab_guid}")
@@ -452,7 +518,8 @@ def update_shared_ab(
             "operation": "address_book_profile_update",
             "guid": str(ab_guid),
             "data": {
-                key: value for key, value in payload.items()
+                key: value
+                for key, value in payload.items()
                 if key != "default_password"
             },
             "has_default_password": password is not None,
@@ -500,9 +567,9 @@ def delete_shared_abs(
 def permission_to_string(permission):
     """Convert numeric permission to string representation"""
     permission_map = {
-        1: "ro",      # Read
-        2: "rw",      # ReadWrite
-        3: "full"     # FullControl
+        1: "ro",  # Read
+        2: "rw",  # ReadWrite
+        3: "full",  # FullControl
     }
     return permission_map.get(permission, str(permission))
 
@@ -510,9 +577,9 @@ def permission_to_string(permission):
 def string_to_permission(permission_str):
     """Convert string permission to numeric representation"""
     permission_map = {
-        "ro": 1,      # Read
-        "rw": 2,      # ReadWrite
-        "full": 3     # FullControl
+        "ro": 1,  # Read
+        "rw": 2,  # ReadWrite
+        "full": 3,  # FullControl
     }
     return permission_map.get(permission_str.lower(), None)
 
@@ -558,8 +625,15 @@ def view_ab_rules(url, token, ab_guid):
 
 
 def add_ab_rule(
-    url, token, ab_guid, rule_type, user=None, group=None, rule=1,
-    operation_id=None, expected_generation=None
+    url,
+    token,
+    ab_guid,
+    rule_type,
+    user=None,
+    group=None,
+    rule=1,
+    operation_id=None,
+    expected_generation=None,
 ):
     """Add a rule to address book"""
     print(f"Adding {rule_type} rule to address book")
@@ -577,8 +651,14 @@ def add_ab_rule(
         pass
 
     return replayable_mutation(
-        transport.post, "POST", url, token, "/api/ab/rule", payload,
-        "address_book_rule_mutation", operation_id=operation_id,
+        transport.post,
+        "POST",
+        url,
+        token,
+        "/api/ab/rule",
+        payload,
+        "address_book_rule_mutation",
+        operation_id=operation_id,
         expected_generation=expected_generation,
     )
 
@@ -594,8 +674,14 @@ def update_ab_rule(
     }
 
     return replayable_mutation(
-        transport.patch, "PATCH", url, token, "/api/ab/rule", payload,
-        "address_book_rule_mutation", operation_id=operation_id,
+        transport.patch,
+        "PATCH",
+        url,
+        token,
+        "/api/ab/rule",
+        payload,
+        "address_book_rule_mutation",
+        operation_id=operation_id,
         expected_generation=expected_generation,
     )
 
@@ -609,16 +695,22 @@ def delete_ab_rules(
 
     print(f"Deleting rules {rule_guids}")
     return replayable_mutation(
-        transport.delete, "DELETE", url, token, "/api/ab/rules", rule_guids,
-        "address_book_rule_delete", operation_id=operation_id,
+        transport.delete,
+        "DELETE",
+        url,
+        token,
+        "/api/ab/rules",
+        rule_guids,
+        "address_book_rule_delete",
+        operation_id=operation_id,
         expected_generation=expected_generation,
     )
 
 
-def main():
+def main(argv=None):
     def parse_color(value):
         """Parse color value - supports both hex (0xFF00FF00) and decimal"""
-        if value.startswith('0x') or value.startswith('0X'):
+        if value.startswith("0x") or value.startswith("0X"):
             return int(value, 16)
         else:
             return int(value)
@@ -632,21 +724,40 @@ def main():
             f"Invalid permission value: {value}. Must be one of: ro, rw, full"
         )
 
-    parser = argparse.ArgumentParser(description="Address Book manager")
+    parser = argparse.ArgumentParser(
+        prog="camellia-remote-admin address-books", description="Address Book manager"
+    )
 
     # Required arguments
     parser.add_argument(
         "command",
-        choices=["view-ab", "add-ab", "update-ab", "delete-ab", "get-personal-ab",
-                "view-peer", "add-peer", "update-peer", "delete-peer",
-                "view-tag", "add-tag", "update-tag", "delete-tag",
-                "view-rule", "add-rule", "update-rule", "delete-rule"],
+        choices=[
+            "view-ab",
+            "add-ab",
+            "update-ab",
+            "delete-ab",
+            "get-personal-ab",
+            "view-peer",
+            "add-peer",
+            "update-peer",
+            "delete-peer",
+            "view-tag",
+            "add-tag",
+            "update-tag",
+            "delete-tag",
+            "view-rule",
+            "add-rule",
+            "update-rule",
+            "delete-rule",
+        ],
         help="Command to execute",
     )
 
     # Global arguments (used by all commands)
     parser.add_argument("--url", required=True, help="URL of the API")
-    parser.add_argument("--token", required=True, help="Bearer token for authentication")
+    parser.add_argument(
+        "--token", required=True, help="Bearer token for authentication"
+    )
 
     # Address book identification (used by most commands except get-personal-ab)
     parser.add_argument("--ab-name", help="Address book name (for identification)")
@@ -661,27 +772,49 @@ def main():
     # Peer management arguments
     parser.add_argument("--peer-id", help="Peer ID")
     parser.add_argument("--alias", help="Peer alias")
-    parser.add_argument("--tags", help="Peer tags (supports both 'tag1,tag2' and '[tag1,tag2]' formats, use '[]' to clear tags)")
+    parser.add_argument(
+        "--tags",
+        help="Peer tags (supports both 'tag1,tag2' and '[tag1,tag2]' formats, use '[]' to clear tags)",
+    )
 
     # Tag management arguments
     parser.add_argument("--tag-name", help="Tag name")
-    parser.add_argument("--tag-color", type=parse_color, help="Tag color (hex number like 0xFF00FF00 or decimal, auto-generated if not specified)")
+    parser.add_argument(
+        "--tag-color",
+        type=parse_color,
+        help="Tag color (hex number like 0xFF00FF00 or decimal, auto-generated if not specified)",
+    )
 
     # Rule management arguments
-    parser.add_argument("--rule-type", choices=["user", "group", "everyone"], help="Rule type (auto-detected if not specified)")
-    parser.add_argument("--rule-user", help="Rule target user name (auto-sets rule-type=user)")
-    parser.add_argument("--rule-group", help="Rule target group name (auto-sets rule-type=group)")
+    parser.add_argument(
+        "--rule-type",
+        choices=["user", "group", "everyone"],
+        help="Rule type (auto-detected if not specified)",
+    )
+    parser.add_argument(
+        "--rule-user", help="Rule target user name (auto-sets rule-type=user)"
+    )
+    parser.add_argument(
+        "--rule-group", help="Rule target group name (auto-sets rule-type=group)"
+    )
     parser.add_argument(
         "--rule-permission",
         type=parse_permission,
         help="Rule permission (ro=Read, rw=ReadWrite, full=FullControl)",
     )
     parser.add_argument("--rule-guid", help="Rule GUID (for update/delete)")
-    parser.add_argument("--operation-id", help="Canonical UUID used to retry one mutation after response loss")
-    parser.add_argument("--expected-generation", type=int, help="Address-book generation observed before mutation")
+    parser.add_argument(
+        "--operation-id",
+        help="Canonical UUID used to retry one mutation after response loss",
+    )
+    parser.add_argument(
+        "--expected-generation",
+        type=int,
+        help="Address-book generation observed before mutation",
+    )
 
     transport.add_options(parser)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     transport.configure(args)
 
     # Remove trailing slashes from URL
@@ -706,7 +839,11 @@ def main():
                 return
 
             result = add_shared_ab(
-                args.url, args.token, args.ab_name, args.note, args.password,
+                args.url,
+                args.token,
+                args.ab_name,
+                args.note,
+                args.password,
                 operation_id=args.operation_id,
             )
             print(f"Result: {result}")
@@ -741,8 +878,14 @@ def main():
 
             if args.command == "update-ab":
                 result = update_shared_ab(
-                    args.url, args.token, ab_guid, args.ab_update_name, args.note,
-                    args.owner, args.password, operation_id=args.operation_id,
+                    args.url,
+                    args.token,
+                    ab_guid,
+                    args.ab_update_name,
+                    args.note,
+                    args.owner,
+                    args.password,
+                    operation_id=args.operation_id,
                     expected_generation=profile_generation,
                 )
                 print(f"Result: {result}")
@@ -757,7 +900,20 @@ def main():
                 )
                 print(f"Result: {result}")
 
-    elif args.command in ["view-peer", "add-peer", "update-peer", "delete-peer", "view-tag", "add-tag", "update-tag", "delete-tag", "view-rule", "add-rule", "update-rule", "delete-rule"]:
+    elif args.command in [
+        "view-peer",
+        "add-peer",
+        "update-peer",
+        "delete-peer",
+        "view-tag",
+        "add-tag",
+        "update-tag",
+        "delete-tag",
+        "view-rule",
+        "add-rule",
+        "update-rule",
+        "delete-rule",
+    ]:
         if not args.ab_name and not args.ab_guid:
             print("Error: --ab-name or --ab-guid is required for this command")
             return
@@ -786,7 +942,9 @@ def main():
             print(f"Working with address book: {args.ab_name} (GUID: {ab_guid})")
 
         if args.command == "view-peer":
-            peers = view_ab_peers(args.url, args.token, ab_guid, args.peer_id, args.alias)
+            peers = view_ab_peers(
+                args.url, args.token, ab_guid, args.peer_id, args.alias
+            )
             print(json.dumps(peers, indent=2))
 
         elif args.command == "add-peer":
@@ -802,7 +960,7 @@ def main():
                 else:
                     # Remove brackets if present and split by comma
                     tags_str = args.tags.strip()
-                    if tags_str.startswith('[') and tags_str.endswith(']'):
+                    if tags_str.startswith("[") and tags_str.endswith("]"):
                         tags_str = tags_str[1:-1]  # Remove brackets
                     tags = [tag.strip() for tag in tags_str.split(",") if tag.strip()]
 
@@ -833,7 +991,7 @@ def main():
                 else:
                     # Remove brackets if present and split by comma
                     tags_str = args.tags.strip()
-                    if tags_str.startswith('[') and tags_str.endswith(']'):
+                    if tags_str.startswith("[") and tags_str.endswith("]"):
                         tags_str = tags_str[1:-1]  # Remove brackets
                     tags = [tag.strip() for tag in tags_str.split(",") if tag.strip()]
 
@@ -857,7 +1015,10 @@ def main():
                 return
 
             result = delete_peer(
-                args.url, args.token, ab_guid, args.peer_id,
+                args.url,
+                args.token,
+                ab_guid,
+                args.peer_id,
                 operation_id=args.operation_id,
                 expected_generation=profile_generation,
             )
@@ -873,7 +1034,11 @@ def main():
                 return
 
             result = add_tag(
-                args.url, args.token, ab_guid, args.tag_name, args.tag_color,
+                args.url,
+                args.token,
+                ab_guid,
+                args.tag_name,
+                args.tag_color,
                 operation_id=args.operation_id,
                 expected_generation=profile_generation,
             )
@@ -885,7 +1050,11 @@ def main():
                 return
 
             result = update_tag(
-                args.url, args.token, ab_guid, args.tag_name, args.tag_color,
+                args.url,
+                args.token,
+                ab_guid,
+                args.tag_name,
+                args.tag_color,
                 operation_id=args.operation_id,
                 expected_generation=profile_generation,
             )
@@ -897,7 +1066,10 @@ def main():
                 return
 
             result = delete_tags(
-                args.url, args.token, ab_guid, args.tag_name,
+                args.url,
+                args.token,
+                ab_guid,
+                args.tag_name,
                 operation_id=args.operation_id,
                 expected_generation=profile_generation,
             )
@@ -922,7 +1094,9 @@ def main():
                 elif args.rule_group:
                     rule_type = "group"
                 else:
-                    print("Error: Must specify --rule-type=everyone, --rule-user, or --rule-group")
+                    print(
+                        "Error: Must specify --rule-type=everyone, --rule-user, or --rule-group"
+                    )
                     return
             else:
                 rule_type = args.rule_type
@@ -941,12 +1115,19 @@ def main():
                     print("Error: Cannot specify --rule-user when rule-type=group")
                     return
                 elif rule_type == "everyone" and (args.rule_user or args.rule_group):
-                    print("Error: Cannot specify --rule-user or --rule-group when rule-type=everyone")
+                    print(
+                        "Error: Cannot specify --rule-user or --rule-group when rule-type=everyone"
+                    )
                     return
 
             result = add_ab_rule(
-                args.url, args.token, ab_guid, rule_type, args.rule_user,
-                args.rule_group, args.rule_permission,
+                args.url,
+                args.token,
+                ab_guid,
+                rule_type,
+                args.rule_user,
+                args.rule_group,
+                args.rule_permission,
                 operation_id=args.operation_id,
                 expected_generation=profile_generation,
             )
@@ -961,7 +1142,10 @@ def main():
                 return
 
             result = update_ab_rule(
-                args.url, args.token, args.rule_guid, args.rule_permission,
+                args.url,
+                args.token,
+                args.rule_guid,
+                args.rule_permission,
                 operation_id=args.operation_id,
                 expected_generation=profile_generation,
             )
@@ -973,12 +1157,10 @@ def main():
                 return
 
             result = delete_ab_rules(
-                args.url, args.token, args.rule_guid,
+                args.url,
+                args.token,
+                args.rule_guid,
                 operation_id=args.operation_id,
                 expected_generation=profile_generation,
             )
             print(f"Result: {result}")
-
-
-if __name__ == "__main__":
-    entry(main)

@@ -8,11 +8,10 @@ import threading
 import unittest
 from contextlib import redirect_stdout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import urlsplit
 
-from admin_cli import (
+from camellia_remote_admin.outcomes import (
     CliError,
     ExitCode,
     Mutation,
@@ -21,8 +20,6 @@ from admin_cli import (
     split_targets,
 )
 from test_batch_operations import FakeResponse, control_receipt, load_script
-
-RES = Path(__file__).resolve().parent
 
 
 class OutcomeTests(unittest.TestCase):
@@ -79,7 +76,7 @@ class OutcomeTests(unittest.TestCase):
             ("users.py", {"name": "alice"}, {"name": "alice"}),
             ("devices.py", {"id": "840005002"}, {"id": "840005002"}),
             (
-                "device-groups.py",
+                "device_groups.py",
                 {"id": "840005002", "group_name": "group"},
                 {"id": "840005002", "device_group_name": "group"},
             ),
@@ -94,7 +91,7 @@ class OutcomeTests(unittest.TestCase):
             with patch.object(module.transport, "get", side_effect=get):
                 method = (
                     module.view_devices
-                    if filename == "device-groups.py"
+                    if filename == "device_groups.py"
                     else module.view
                 )
                 method("https://management.example.test", "test-only", **options)
@@ -270,7 +267,9 @@ class SubprocessOutcomeTests(unittest.TestCase):
     def argv(self, script, command, *args):
         return [
             sys.executable,
-            str(RES / script),
+            "-m",
+            "camellia_remote_admin",
+            script.removesuffix(".py").replace("_", "-"),
             command,
             "--url",
             self.url,
@@ -348,8 +347,8 @@ class SubprocessOutcomeTests(unittest.TestCase):
             ("devices.py", "assign", []),
             ("devices.py", "assign", ["--assign_to", "note"]),
             ("devices.py", "assign", ["--assign_to", "invalid=value"]),
-            ("device-groups.py", "delete", ["--name", ", ,"]),
-            ("device-groups.py", "add-devices", ["--name", "g", "--ids", ",,"]),
+            ("device_groups.py", "delete", ["--name", ", ,"]),
+            ("device_groups.py", "add-devices", ["--name", "g", "--ids", ",,"]),
             ("strategies.py", "assign", ["--name", "p", "--peers", "x,"]),
             ("users.py", "invite", []),
         ):
@@ -360,9 +359,9 @@ class SubprocessOutcomeTests(unittest.TestCase):
 
     def test_empty_group_and_strategy_batches_only_succeed_with_allow_empty(self):
         for script, command in (
-            ("device-groups.py", "delete"),
-            ("device-groups.py", "add-devices"),
-            ("device-groups.py", "remove-devices"),
+            ("device_groups.py", "delete"),
+            ("device_groups.py", "add-devices"),
+            ("device_groups.py", "remove-devices"),
             ("strategies.py", "unassign"),
         ):
             with self.subTest(script=script, command=command):

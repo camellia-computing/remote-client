@@ -9,8 +9,9 @@ from contextlib import redirect_stdout
 from dataclasses import dataclass, field
 from enum import IntEnum
 
-import cli_transport
 import requests
+
+from . import transport
 
 
 class ExitCode(IntEnum):
@@ -37,7 +38,7 @@ class CliError(SystemExit):
 
 
 def add_options(parser):
-    cli_transport.add_options(parser)
+    transport.add_options(parser)
     parser.add_argument(
         "--json",
         action="store_true",
@@ -190,13 +191,13 @@ def run_mutations(operation, mutations, *, allow_empty=False, yes=False):
             receipt = mutation.invoke(mutation.operation_id)
         except (SystemExit, requests.RequestException, KeyboardInterrupt) as exc:
             receipt = getattr(exc, "receipt", None)
-            if (isinstance(exc, cli_transport.TransportFailure) and not exc.sent) or (
+            if (isinstance(exc, transport.TransportFailure) and not exc.sent) or (
                 isinstance(exc, KeyboardInterrupt)
                 and getattr(exc, "request_sent", True) is False
             ):
                 record["state"] = "not_attempted"
                 summary["not_attempted"].insert(0, mutation.targets)
-            if isinstance(exc, cli_transport.TransportFailure):
+            if isinstance(exc, transport.TransportFailure):
                 record.update(transport_failure=exc.kind, request_sent=exc.sent)
             if receipt is not None:
                 record["state"] = (
@@ -277,11 +278,12 @@ def control_mutations(rows, resource, callback, *, operation_id=None):
     return mutations
 
 
-def entry(main):
-    json_output = "--json" in sys.argv[1:]
+def entry(main, *, json_output=None):
+    if json_output is None:
+        json_output = "--json" in sys.argv[1:]
     try:
         with (
-            cli_transport.command_transport(),
+            transport.command_transport(),
             redirect_stdout(sys.stderr) if json_output else redirect_stdout(sys.stdout),
         ):
             result = main()
@@ -297,7 +299,7 @@ def entry(main):
             file=sys.stdout if json_output else sys.stderr,
         )
         raise SystemExit(exc.code) from None
-    except cli_transport.TransportFailure as exc:
+    except transport.TransportFailure as exc:
         code = (
             ExitCode.INVALID
             if exc.kind == "invalid_request"

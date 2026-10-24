@@ -1,15 +1,13 @@
-#!/usr/bin/env python3
-
 import argparse
 import json
 
-import cli_transport as transport
-from admin_cli import entry
-from batch_operations import recover_operation
+from . import transport
+from .batch_operations import recover_operation
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(
+        prog="camellia-remote-admin operations",
         description="Recover a durable management mutation receipt after response loss",
     )
     parser.add_argument("--url", required=True, help="Management server URL")
@@ -20,7 +18,7 @@ def main():
         help="Canonical UUIDv4 printed before the original mutation",
     )
     transport.add_options(parser)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     transport.configure(args)
     recovered = recover_operation(
         args.url,
@@ -28,7 +26,3 @@ def main():
         args.operation_id,
     )
     print(json.dumps(recovered, ensure_ascii=False, sort_keys=True))
-
-
-if __name__ == "__main__":
-    entry(main)

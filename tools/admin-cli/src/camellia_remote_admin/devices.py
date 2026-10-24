@@ -1,19 +1,8 @@
-#!/usr/bin/env python3
-
 import argparse
 from datetime import datetime, timezone
 
-import cli_transport as transport
-from admin_cli import (
-    CliError,
-    ExitCode,
-    add_options,
-    control_mutations,
-    entry,
-    read_page,
-    run_mutations,
-)
-from batch_operations import (
+from . import transport
+from .batch_operations import (
     canonical_model_pk,
     canonical_operation_id,
     check_control_response,
@@ -21,6 +10,14 @@ from batch_operations import (
     fail,
     operation_headers,
     required_generation,
+)
+from .outcomes import (
+    CliError,
+    ExitCode,
+    add_options,
+    control_mutations,
+    read_page,
+    run_mutations,
 )
 
 
@@ -238,8 +235,10 @@ def assign(
     )
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Device manager")
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        prog="camellia-remote-admin devices", description="Device manager"
+    )
     parser.add_argument(
         "command", choices=["view", "disable", "enable", "delete", "assign"]
     )
@@ -256,7 +255,7 @@ def main():
     parser.add_argument("--operation-id")
     parser.add_argument("--expected-generation", type=int)
     add_options(parser)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     transport.configure(args)
     args.url = args.url.rstrip("/")
     operation_id = (
@@ -342,7 +341,3 @@ def main():
     return run_mutations(
         "devices_" + args.command, mutations, allow_empty=args.allow_empty, yes=args.yes
     )
-
-
-if __name__ == "__main__":
-    entry(main)

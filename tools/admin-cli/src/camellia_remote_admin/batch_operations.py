@@ -3,8 +3,8 @@ import json
 import re
 import uuid
 
-import cli_transport as transport
-from admin_cli import CliError, ExitCode
+from . import transport
+from .outcomes import CliError, ExitCode
 
 MANAGEMENT_OPERATION_RECEIPT_VERSION = 1
 MAX_MANAGEMENT_MODEL_PK = (1 << 63) - 1

@@ -1,20 +1,8 @@
-#!/usr/bin/env python3
-
 import argparse
 import json
 
-import cli_transport as transport
-from admin_cli import (
-    ExitCode,
-    Mutation,
-    add_options,
-    control_mutations,
-    entry,
-    read_page,
-    run_mutations,
-    split_targets,
-)
-from batch_operations import (
+from . import transport
+from .batch_operations import (
     canonical_operation_id,
     canonical_uuid,
     check_batch_response,
@@ -23,6 +11,15 @@ from batch_operations import (
     operation_headers,
     require_unique,
     required_generation,
+)
+from .outcomes import (
+    ExitCode,
+    Mutation,
+    add_options,
+    control_mutations,
+    read_page,
+    run_mutations,
+    split_targets,
 )
 
 
@@ -281,8 +278,10 @@ def parse_rules(value):
     return rules
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Device Group manager")
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        prog="camellia-remote-admin device-groups", description="Device Group manager"
+    )
     parser.add_argument(
         "command",
         choices=[
@@ -308,7 +307,7 @@ def main():
     parser.add_argument("--user-name")
     parser.add_argument("--device-username")
     add_options(parser)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     transport.configure(args)
     args.url = args.url.rstrip("/")
     operation_id = (
@@ -405,7 +404,3 @@ def main():
         allow_empty=args.allow_empty,
         yes=args.yes,
     )
-
-
-if __name__ == "__main__":
-    entry(main)

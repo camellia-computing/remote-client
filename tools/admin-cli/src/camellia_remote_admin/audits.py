@@ -1,11 +1,9 @@
-#!/usr/bin/env python3
-
 import argparse
 import json
 from datetime import datetime, timedelta, timezone
 
-import cli_transport as transport
-from admin_cli import CliError, entry
+from . import transport
+from .outcomes import CliError
 
 
 def format_timestamp(timestamp):
@@ -48,7 +46,7 @@ def get_connection_type_name(conn_type):
         1: "File Transfer",
         2: "Port Transfer",
         3: "View Camera",
-        4: "Terminal"
+        4: "Terminal",
     }
     return type_map.get(conn_type, f"Unknown ({conn_type})")
 
@@ -59,7 +57,7 @@ def get_console_type_name(console_type):
         0: "Group Management",
         1: "User Management",
         2: "Device Management",
-        3: "Address Book Management"
+        3: "Address Book Management",
     }
     return type_map.get(console_type, f"Unknown ({console_type})")
 
@@ -89,7 +87,7 @@ def get_console_operation_name(operation_code):
         19: "Empty Address Book Recycle Bin",
         20: "Add Address Book Permission",
         21: "Delete Address Book Permission",
-        22: "Update Address Book Permission"
+        22: "Update Address Book Permission",
     }
     return operation_map.get(operation_code, f"Unknown ({operation_code})")
 
@@ -102,7 +100,7 @@ def get_alarm_type_name(alarm_type):
         2: "Multiple access attempts within one minute",
         3: "Over 30 consecutive login attempts",
         4: "Multiple login attempts within one minute",
-        5: "Multiple login attempts within one hour"
+        5: "Multiple login attempts within one hour",
     }
     return type_map.get(alarm_type, f"Unknown ({alarm_type})")
 
@@ -117,32 +115,36 @@ def enhance_audit_data(data, audit_type):
         enhanced_item = item.copy()
 
         # Convert timestamps - replace original values
-        if 'created_at' in enhanced_item:
-            enhanced_item['created_at'] = format_timestamp(enhanced_item['created_at'])
-        if 'end_time' in enhanced_item:
-            enhanced_item['end_time'] = format_timestamp(enhanced_item['end_time'])
+        if "created_at" in enhanced_item:
+            enhanced_item["created_at"] = format_timestamp(enhanced_item["created_at"])
+        if "end_time" in enhanced_item:
+            enhanced_item["end_time"] = format_timestamp(enhanced_item["end_time"])
 
         # Add type-specific enhancements - replace original values
-        if audit_type == 'conn':
-            if 'conn_type' in enhanced_item:
-                enhanced_item['conn_type'] = get_connection_type_name(enhanced_item['conn_type'])
+        if audit_type == "conn":
+            if "conn_type" in enhanced_item:
+                enhanced_item["conn_type"] = get_connection_type_name(
+                    enhanced_item["conn_type"]
+                )
             else:
-                enhanced_item['conn_type'] = "Not Logged In"
+                enhanced_item["conn_type"] = "Not Logged In"
 
-        elif audit_type == 'console':
-            if 'typ' in enhanced_item:
+        elif audit_type == "console":
+            if "typ" in enhanced_item:
                 # Replace typ field with type and convert to readable name
-                enhanced_item['type'] = get_console_type_name(enhanced_item['typ'])
-                del enhanced_item['typ']
-            if 'iop' in enhanced_item:
+                enhanced_item["type"] = get_console_type_name(enhanced_item["typ"])
+                del enhanced_item["typ"]
+            if "iop" in enhanced_item:
                 # Replace iop field with operation and convert to readable name
-                enhanced_item['operation'] = get_console_operation_name(enhanced_item['iop'])
-                del enhanced_item['iop']
+                enhanced_item["operation"] = get_console_operation_name(
+                    enhanced_item["iop"]
+                )
+                del enhanced_item["iop"]
 
-        elif audit_type == 'alarm' and 'typ' in enhanced_item:
+        elif audit_type == "alarm" and "typ" in enhanced_item:
             # Replace typ field with type and convert to readable name
-            enhanced_item['type'] = get_alarm_type_name(enhanced_item['typ'])
-            del enhanced_item['typ']
+            enhanced_item["type"] = get_alarm_type_name(enhanced_item["typ"])
+            del enhanced_item["typ"]
 
         enhanced_data.append(enhanced_item)
 
@@ -165,8 +167,17 @@ def check_response(response):
         raise CliError("Management response is not JSON") from None
 
 
-def view_audits_common(url, token, endpoint, filters=None, page_size=None, current=None,
-                       created_at=None, days_ago=None, non_wildcard_fields=None):
+def view_audits_common(
+    url,
+    token,
+    endpoint,
+    filters=None,
+    page_size=None,
+    current=None,
+    created_at=None,
+    days_ago=None,
+    non_wildcard_fields=None,
+):
     """Common function for viewing audits"""
     headers = {"Authorization": f"Bearer {token}"}
 
@@ -176,10 +187,7 @@ def view_audits_common(url, token, endpoint, filters=None, page_size=None, curre
     if current is None:
         current = 1
 
-    params = {
-        "pageSize": page_size,
-        "current": current
-    }
+    params = {"pageSize": page_size, "current": current}
 
     # Add filter parameters if provided
     if filters:
@@ -221,7 +229,9 @@ def view_audits_common(url, token, endpoint, filters=None, page_size=None, curre
         else:
             string_params[k] = v
 
-    response = transport.get(f"{url}/api/audits/{endpoint}", headers=headers, params=string_params)
+    response = transport.get(
+        f"{url}/api/audits/{endpoint}", headers=headers, params=string_params
+    )
     response_json = check_response(response)
 
     # Enhance the data with readable formats
@@ -231,89 +241,161 @@ def view_audits_common(url, token, endpoint, filters=None, page_size=None, curre
         "data": data,
         "total": response_json.get("total", 0),
         "current": current,
-        "pageSize": page_size
+        "pageSize": page_size,
     }
 
 
-def view_conn_audits(url, token, remote=None, conn_type=None,
-                     page_size=None, current=None, created_at=None, days_ago=None):
+def view_conn_audits(
+    url,
+    token,
+    remote=None,
+    conn_type=None,
+    page_size=None,
+    current=None,
+    created_at=None,
+    days_ago=None,
+):
     """View connection audits"""
-    filters = {
-        "remote": remote,
-        "conn_type": conn_type
-    }
+    filters = {"remote": remote, "conn_type": conn_type}
     non_wildcard_fields = {"conn_type"}
 
     return view_audits_common(
-        url, token, "conn", filters, page_size, current, created_at, days_ago, non_wildcard_fields
+        url,
+        token,
+        "conn",
+        filters,
+        page_size,
+        current,
+        created_at,
+        days_ago,
+        non_wildcard_fields,
     )
 
 
-def view_file_audits(url, token, remote=None,
-                     page_size=None, current=None, created_at=None, days_ago=None):
+def view_file_audits(
+    url,
+    token,
+    remote=None,
+    page_size=None,
+    current=None,
+    created_at=None,
+    days_ago=None,
+):
     """View file audits"""
-    filters = {
-        "remote": remote
-    }
+    filters = {"remote": remote}
     non_wildcard_fields = set()
 
     return view_audits_common(
-        url, token, "file", filters, page_size, current, created_at, days_ago, non_wildcard_fields
+        url,
+        token,
+        "file",
+        filters,
+        page_size,
+        current,
+        created_at,
+        days_ago,
+        non_wildcard_fields,
     )
 
 
-def view_alarm_audits(url, token, device=None,
-                      page_size=None, current=None, created_at=None, days_ago=None):
+def view_alarm_audits(
+    url,
+    token,
+    device=None,
+    page_size=None,
+    current=None,
+    created_at=None,
+    days_ago=None,
+):
     """View alarm audits"""
-    filters = {
-        "device": device
-    }
+    filters = {"device": device}
     non_wildcard_fields = set()
 
     return view_audits_common(
-        url, token, "alarm", filters, page_size, current, created_at, days_ago, non_wildcard_fields
+        url,
+        token,
+        "alarm",
+        filters,
+        page_size,
+        current,
+        created_at,
+        days_ago,
+        non_wildcard_fields,
     )
 
 
-def view_console_audits(url, token, operator=None,
-                        page_size=None, current=None, created_at=None, days_ago=None):
+def view_console_audits(
+    url,
+    token,
+    operator=None,
+    page_size=None,
+    current=None,
+    created_at=None,
+    days_ago=None,
+):
     """View console audits"""
-    filters = {
-        "operator": operator
-    }
+    filters = {"operator": operator}
     non_wildcard_fields = set()
 
     return view_audits_common(
-        url, token, "console", filters, page_size, current, created_at, days_ago, non_wildcard_fields
+        url,
+        token,
+        "console",
+        filters,
+        page_size,
+        current,
+        created_at,
+        days_ago,
+        non_wildcard_fields,
     )
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Audits manager")
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        prog="camellia-remote-admin audits", description="Audits manager"
+    )
     parser.add_argument(
         "command",
         choices=["view-conn", "view-file", "view-alarm", "view-console"],
         help="Command to execute",
     )
     parser.add_argument("--url", required=True, help="URL of the API")
-    parser.add_argument("--token", required=True, help="Bearer token for authentication")
+    parser.add_argument(
+        "--token", required=True, help="Bearer token for authentication"
+    )
 
     # Pagination parameters
-    parser.add_argument("--page-size", type=int, default=10, help="Number of records per page (default: 10)")
-    parser.add_argument("--current", type=int, default=1, help="Current page number (default: 1)")
+    parser.add_argument(
+        "--page-size",
+        type=int,
+        default=10,
+        help="Number of records per page (default: 10)",
+    )
+    parser.add_argument(
+        "--current", type=int, default=1, help="Current page number (default: 1)"
+    )
 
     # Time filtering parameters
-    parser.add_argument("--created-at", help="Filter by creation time in local time (format: 2025-09-16 14:15:57 or 2025-09-16 14:15:57.000)")
-    parser.add_argument("--days-ago", type=int, help="Filter by days ago (e.g., 7 for last 7 days)")
+    parser.add_argument(
+        "--created-at",
+        help="Filter by creation time in local time (format: 2025-09-16 14:15:57 or 2025-09-16 14:15:57.000)",
+    )
+    parser.add_argument(
+        "--days-ago", type=int, help="Filter by days ago (e.g., 7 for last 7 days)"
+    )
 
     # Audit filters (simplified)
     parser.add_argument("--remote", help="Remote peer ID filter (for conn/file audits)")
     parser.add_argument("--device", help="Device ID filter (for alarm audits)")
-    parser.add_argument("--conn-type", type=int, help="Connection type filter (for conn audits only): 0=Remote Desktop, 1=File Transfer, 2=Port Transfer, 3=View Camera, 4=Terminal")
+    parser.add_argument(
+        "--conn-type",
+        type=int,
+        help="Connection type filter (for conn audits only): 0=Remote Desktop, 1=File Transfer, 2=Port Transfer, 3=View Camera, 4=Terminal",
+    )
     parser.add_argument("--operator", help="Operator filter (for console audits only)")
 
     transport.add_options(parser)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     transport.configure(args)
 
     # Remove trailing slashes from URL
@@ -330,7 +412,7 @@ def main():
             args.page_size,
             args.current,
             args.created_at,
-            args.days_ago
+            args.days_ago,
         )
         print(json.dumps(result, indent=2))
 
@@ -343,7 +425,7 @@ def main():
             args.page_size,
             args.current,
             args.created_at,
-            args.days_ago
+            args.days_ago,
         )
         print(json.dumps(result, indent=2))
 
@@ -356,7 +438,7 @@ def main():
             args.page_size,
             args.current,
             args.created_at,
-            args.days_ago
+            args.days_ago,
         )
         print(json.dumps(result, indent=2))
 
@@ -369,10 +451,6 @@ def main():
             args.page_size,
             args.current,
             args.created_at,
-            args.days_ago
+            args.days_ago,
         )
         print(json.dumps(result, indent=2))
-
-
-if __name__ == "__main__":
-    entry(main)

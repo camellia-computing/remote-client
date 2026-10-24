@@ -8,7 +8,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from batch_operations import (
+import camellia_remote_admin
+from camellia_remote_admin.batch_operations import (
     check_batch_response,
     check_control_response,
     document_digest,
@@ -16,7 +17,7 @@ from batch_operations import (
     replayable_request_document,
 )
 
-RES_DIR = Path(__file__).resolve().parent
+PACKAGE_DIR = Path(camellia_remote_admin.__file__).resolve().parent
 OPERATION_ID = "11111111-1111-4111-8111-111111111111"
 
 
@@ -69,7 +70,10 @@ def control_receipt(
 
 
 def load_script(filename, module_name):
-    spec = importlib.util.spec_from_file_location(module_name, RES_DIR / filename)
+    module_name = module_name.replace(".", "_").replace("-", "_")
+    spec = importlib.util.spec_from_file_location(
+        "camellia_remote_admin." + module_name, PACKAGE_DIR / filename
+    )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     if hasattr(module, "transport"):
@@ -111,7 +115,9 @@ class BatchOperationReceiptTests(unittest.TestCase):
                 }
             )
 
-        with patch("batch_operations.transport.get", side_effect=get):
+        with patch(
+            "camellia_remote_admin.batch_operations.transport.get", side_effect=get
+        ):
             recovered = recover_operation(
                 "https://management.example.test/",
                 "token",
@@ -126,7 +132,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
         self.assertEqual(captured["headers"], {"Authorization": "Bearer token"})
 
     def test_device_group_update_binds_operation_and_generation(self):
-        groups = load_script("device-groups.py", "state040_device_groups_script")
+        groups = load_script("device_groups.py", "state040_device_groups_script")
         group_guid = "22222222-2222-4222-8222-222222222222"
         generation = 4
         payload = {"note": "updated"}
@@ -205,7 +211,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
         self.assertIs(captured["json"], False)
 
     def test_address_book_peer_mutation_binds_body_generation_and_operation(self):
-        address_books = load_script("ab.py", "state040_address_book_script")
+        address_books = load_script("address_books.py", "state040_address_book_script")
         profile_guid = "state040-client-profile"
         payload = {"id": "741000001", "note": "note", "alias": "alias"}
         path = f"/api/ab/peer/add/{profile_guid}"
@@ -246,7 +252,9 @@ class BatchOperationReceiptTests(unittest.TestCase):
         self.assertEqual(captured["json"], payload)
 
     def test_address_book_profile_create_hashes_password_in_request_document(self):
-        address_books = load_script("ab.py", "state040_address_book_profile_script")
+        address_books = load_script(
+            "address_books.py", "state040_address_book_profile_script"
+        )
         password = "state040-client-profile-secret"
         request_document = {
             "operation": "address_book_profile_create",
@@ -573,7 +581,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
         )
 
     def test_device_group_missing_and_partial_responses_fail_nonzero(self):
-        groups = load_script("device-groups.py", "batch_device_groups_script")
+        groups = load_script("device_groups.py", "batch_device_groups_script")
         groups.get_group_by_name = lambda *_args: None
         with self.assertRaisesRegex(SystemExit, "^3$"):
             groups.add_devices(

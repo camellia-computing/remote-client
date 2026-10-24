@@ -1,21 +1,8 @@
-#!/usr/bin/env python3
-
 import argparse
 import json
 
-import cli_transport as transport
-from admin_cli import (
-    ExitCode,
-    Mutation,
-    add_options,
-    control_mutations,
-    entry,
-    read_page,
-    run_mutations,
-    split_targets,
-)
-from admin_cli import read_json as check_response
-from batch_operations import (
+from . import transport
+from .batch_operations import (
     canonical_model_pk,
     canonical_operation_id,
     canonical_uuid,
@@ -27,6 +14,16 @@ from batch_operations import (
     require_unique,
     required_generation,
 )
+from .outcomes import (
+    ExitCode,
+    Mutation,
+    add_options,
+    control_mutations,
+    read_page,
+    run_mutations,
+    split_targets,
+)
+from .outcomes import read_json as check_response
 
 
 def headers_with(token):
@@ -363,8 +360,10 @@ def assign_strategy(
     )
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Strategy manager")
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        prog="camellia-remote-admin strategies", description="Strategy manager"
+    )
     parser.add_argument(
         "command",
         choices=[
@@ -391,7 +390,7 @@ def main():
     parser.add_argument("--device-groups")
     parser.add_argument("--operation-id")
     add_options(parser)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     transport.configure(args)
     args.url = args.url.rstrip("/")
     operation_id = (
@@ -511,7 +510,3 @@ def main():
         allow_empty=args.allow_empty,
         yes=args.yes,
     )
-
-
-if __name__ == "__main__":
-    entry(main)

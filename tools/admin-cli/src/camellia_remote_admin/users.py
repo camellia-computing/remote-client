@@ -1,17 +1,7 @@
-#!/usr/bin/env python3
-
 import argparse
 
-import cli_transport as transport
-from admin_cli import (
-    Mutation,
-    add_options,
-    control_mutations,
-    entry,
-    read_page,
-    run_mutations,
-)
-from batch_operations import (
+from . import transport
+from .batch_operations import (
     canonical_model_pk,
     canonical_operation_id,
     check_batch_response,
@@ -21,6 +11,13 @@ from batch_operations import (
     operation_headers,
     require_unique,
     required_generation,
+)
+from .outcomes import (
+    Mutation,
+    add_options,
+    control_mutations,
+    read_page,
+    run_mutations,
 )
 
 
@@ -218,8 +215,10 @@ def force_logout(url, token, user_guids, operation_id=None):
     )
 
 
-def main():
-    parser = argparse.ArgumentParser(description="User manager")
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        prog="camellia-remote-admin users", description="User manager"
+    )
     parser.add_argument(
         "command",
         choices=["view", "disable", "enable", "delete", "new", "force-logout"],
@@ -235,7 +234,7 @@ def main():
     parser.add_argument("--operation-id")
     parser.add_argument("--expected-generation", type=int)
     add_options(parser)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     transport.configure(args)
     args.url = args.url.rstrip("/")
     operation_id = (
@@ -317,7 +316,3 @@ def main():
     return run_mutations(
         "users_" + args.command, mutations, allow_empty=args.allow_empty, yes=args.yes
     )
-
-
-if __name__ == "__main__":
-    entry(main)
