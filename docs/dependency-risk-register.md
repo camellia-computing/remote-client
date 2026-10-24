@@ -1,4 +1,4 @@
-# Rust dependency risk register
+# Dependency risk register
 
 Review date: 2026-10-23
 Owner: Remote security maintainers
@@ -18,6 +18,14 @@ The machine-readable exception set is
 `.github/config/cargo-audit-policy.json`. It is a warning budget, not an
 advisory ignore list: `cargo-audit` still reports every item, and any new item
 fails CI. Resolved entries may be removed at any time.
+
+Portable packaging pins its Python dependencies in `libs/portable/requirements.txt`.
+The Python auditor has one version source in `requirements-audit.txt`, runs in an
+isolated disposable environment, and checks both product CI and the scheduled
+security workflow without importing the audited package. Requirement changes
+also enter dependency review and weekly Dependabot updates. The Brotli 1.2.1
+security patch fixes [GHSA-9v8h-qqgm-4m35](https://github.com/advisories/GHSA-9v8h-qqgm-4m35);
+the archive format and Rust decoder remain unchanged.
 
 Workspace-member lock files are forbidden because Cargo ignores them when a
 member is built from the root. The stale `libs/virtual_display/Cargo.lock`

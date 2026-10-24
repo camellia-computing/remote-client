@@ -90,7 +90,7 @@ jobs:
                   ;;
               esac
               case "$path" in
-                Cargo.toml|Cargo.lock|*/Cargo.toml|*/Cargo.lock|flutter/pubspec.yaml|flutter/pubspec.lock|flutter/web/js/package.json|flutter/web/js/package-lock.json|flutter/ios/Podfile|flutter/macos/Podfile|vcpkg.json|vcpkg-configuration.json|res/vcpkg/*|res/vcpkg-triplets/*|.gitmodules|libs/camellia_remote_protocol|.github/dependabot.yml|.github/workflows/*)
+                Cargo.toml|Cargo.lock|*/Cargo.toml|*/Cargo.lock|requirements*.txt|*/requirements*.txt|flutter/pubspec.yaml|flutter/pubspec.lock|flutter/web/js/package.json|flutter/web/js/package-lock.json|flutter/ios/Podfile|flutter/macos/Podfile|vcpkg.json|vcpkg-configuration.json|res/vcpkg/*|res/vcpkg-triplets/*|.gitmodules|libs/camellia_remote_protocol|.github/dependabot.yml|.github/workflows/*)
                   dependencies=true
                   ;;
               esac
@@ -539,6 +539,9 @@ jobs:
 
       - name: Rust format
         run: cargo fmt --all -- --check
+
+      - name: Audit portable Python dependencies
+        run: bash .github/scripts/audit_python_dependencies.sh
 
       - name: Install pinned Rust dependency auditor
         run: cargo install cargo-audit --version 0.22.2 --locked --no-default-features
