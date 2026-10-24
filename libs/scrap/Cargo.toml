@@ -59,6 +59,8 @@ gstreamer-video = { version = "0.16", optional = true }
 
 [dependencies.hwcodec]
 git = "https://github.com/rustdesk-org/hwcodec"
+# The 0.8 FFmpeg VRAM backend needs vendor-parity validation with the reviewed SDK ports.
+rev = "778df1f99597722473b29443bac22ae6c23946fe"
 optional = true
 
 [target.'cfg(any(target_os = "windows", target_os = "linux"))'.dependencies]

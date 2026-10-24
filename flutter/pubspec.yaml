@@ -114,6 +114,7 @@ dev_dependencies:
   build_runner: ^2.15.1
   freezed: ^3.2.3
   flutter_lints: ^6.0.0
+  # Newer ffigen requires meta 1.19 through native_toolchain_c; Flutter pins 1.18.
   ffigen: ^21.0.0
 
 # For information on the generic Dart part of this file, see the
