@@ -8,7 +8,6 @@ use camellia_remote_protocol::{
     futures::FutureExt,
     rand::RngCore,
     rendezvous_proto::HeaderEntry,
-    tls::TlsType,
     tokio::{self, sync::Semaphore},
     tokio_util::sync::CancellationToken,
 };
@@ -406,11 +405,8 @@ fn client_for(conf: &Option<Socks5Server>, origin: &str) -> Result<Client, Failu
     // Drop old policy before constructing the new one. An invalid policy cannot
     // keep serving requests with a cached direct/previous proxy configuration.
     *cached = None;
-    let client = crate::hbbs_http::create_http_client_async_for_configuration(
-        TlsType::Rustls,
-        conf.as_ref(),
-    )
-    .map_err(|_| "client_configuration_invalid")?;
+    let client = crate::hbbs_http::create_http_client_async_for_configuration(conf.as_ref())
+        .map_err(|_| "client_configuration_invalid")?;
     *cached = Some((conf.clone(), origin.to_owned(), client.clone()));
     Ok(client)
 }
@@ -718,9 +714,7 @@ mod tests {
             connection.read(&mut request).await.unwrap();
             connection.write_all(format!("HTTP/1.1 307 Temporary Redirect\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
         });
-        let client =
-            crate::hbbs_http::create_http_client_async_for_configuration(TlsType::Rustls, None)
-                .unwrap();
+        let client = crate::hbbs_http::create_http_client_async_for_configuration(None).unwrap();
         let request = Request::parse(
             url,
             "POST".to_owned(),
@@ -756,9 +750,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
         });
-        let client =
-            crate::hbbs_http::create_http_client_async_for_configuration(TlsType::Rustls, None)
-                .unwrap();
+        let client = crate::hbbs_http::create_http_client_async_for_configuration(None).unwrap();
         let request = Request::parse(url, "GET".to_owned(), None, "{}".to_owned()).unwrap();
         let broker = Arc::new(Broker::new());
         let request_id = id(&broker.start(request_once(request, client, false)));

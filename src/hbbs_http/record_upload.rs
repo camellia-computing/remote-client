@@ -1,8 +1,8 @@
-use crate::hbbs_http::create_http_client;
+use crate::hbbs_http::create_http_client_for_configuration;
 use bytes::Bytes;
 use camellia_remote_protocol::{
     bail,
-    config::{self, keys, Config},
+    config::{self, keys, Config, Socks5Server},
     log, ResultType,
 };
 use reqwest::{
@@ -57,14 +57,9 @@ pub fn run(rx: Receiver<RecordState>, recording_dir: String) {
             log::warn!("recording upload is enabled, but the API server is not configured");
             return;
         }
-        let client = match create_http_client() {
-            Ok(client) => client,
-            Err(_) => {
-                log::error!("recording upload paused: HTTP client configuration unavailable");
-                return;
-            }
-        };
-        let mut uploader = RecordUploader::new(client, api_server);
+        // Lazy construction permits recovery after an invalid proxy is repaired
+        // without abandoning this recording's durable state or receiver.
+        let mut uploader = RecordUploader::new(api_server);
         uploader.recover_pending(&recording_dir);
 
         loop {
@@ -139,7 +134,8 @@ struct RemoteUploadState {
 }
 
 struct RecordUploader {
-    client: Client,
+    client: Option<Client>,
+    client_policy: Option<Socks5Server>,
     api_server: String,
     api_server_fingerprint: String,
     state: Option<PersistedUpload>,
@@ -149,10 +145,26 @@ struct RecordUploader {
 }
 
 impl RecordUploader {
-    fn new(client: Client, api_server: String) -> Self {
+    fn client_for_policy(&mut self, policy: Option<Socks5Server>) -> ResultType<Client> {
+        if self.client_policy == policy {
+            if let Some(client) = &self.client {
+                return Ok(client.clone());
+            }
+        }
+        // Remove the old route BEFORE validating/building a replacement. A
+        // failed policy update must not leave a usable stale direct client.
+        self.client = None;
+        let client = create_http_client_for_configuration(policy.as_ref())?;
+        self.client_policy = policy;
+        self.client = Some(client.clone());
+        Ok(client)
+    }
+
+    fn new(api_server: String) -> Self {
         let api_server_fingerprint = sha256_hex(api_server.as_bytes());
         Self {
-            client,
+            client: None,
+            client_policy: None,
             api_server,
             api_server_fingerprint,
             state: None,
@@ -182,8 +194,8 @@ impl RecordUploader {
             bail!("API account session required for recording upload");
         };
         let operation = crate::common::HttpOperation::from_event_id(operation_event_id)?;
-        let mut request = self
-            .client
+        let client = self.client_for_policy(Config::get_socks())?;
+        let mut request = client
             .post(format!("{}/api/record", self.api_server))
             .bearer_auth(access_token)
             .query(query)
@@ -1004,8 +1016,7 @@ mod tests {
         );
         assert_eq!(retry_delay(StatusCode::BAD_REQUEST, Some("30")), None);
 
-        let mut uploader =
-            RecordUploader::new(Client::new(), "https://management.example.test".to_owned());
+        let mut uploader = RecordUploader::new("https://management.example.test".to_owned());
         uploader.retry_not_before = Some(Instant::now() + Duration::from_secs(30));
         assert_eq!(uploader.handle_frame(false).unwrap(), false);
     }
@@ -1053,7 +1064,7 @@ mod tests {
         let api_server = "https://management.example.test".to_owned();
         let server_fingerprint = sha256_hex(api_server.as_bytes());
         let old_state = test_state(&old_filepath, &server_fingerprint);
-        let mut uploader = RecordUploader::new(Client::new(), api_server);
+        let mut uploader = RecordUploader::new(api_server);
         uploader.state = Some(old_state.clone());
         uploader.state_sequence = 7;
 
@@ -1079,6 +1090,82 @@ mod tests {
         std::fs::remove_file(old_filepath).unwrap();
         std::fs::remove_file(new_filepath).unwrap();
         std::fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn changed_invalid_proxy_never_reuses_a_recording_clients_old_direct_route() {
+        let mut uploader = RecordUploader::new("https://management.example.test".to_owned());
+        assert!(uploader.client_for_policy(None).is_ok());
+        let invalid = Socks5Server {
+            proxy: "ftp://127.0.0.1:1080".to_owned(),
+            username: "test-user".to_owned(),
+            password: "PRIVATE-PROXY-PASSWORD".to_owned(),
+        };
+        assert!(uploader.client_for_policy(Some(invalid)).is_err());
+        assert!(uploader.client.is_none());
+        assert!(uploader.client_for_policy(None).is_ok());
+        assert!(uploader.client.is_some());
+    }
+
+    #[test]
+    fn recording_client_rebuilds_for_new_proxy_without_sending_to_direct_endpoint() {
+        use std::net::TcpListener;
+        let direct = TcpListener::bind("127.0.0.1:0").unwrap();
+        direct.set_nonblocking(true).unwrap();
+        let proxy = TcpListener::bind("127.0.0.1:0").unwrap();
+        proxy.set_nonblocking(true).unwrap();
+        let endpoint = format!("http://{}/api/record", direct.local_addr().unwrap());
+        let policy = Socks5Server {
+            proxy: format!("http://localhost:{}", proxy.local_addr().unwrap().port()),
+            ..Default::default()
+        };
+        let server = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let mut stream = loop {
+                match proxy.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                    Err(error) => panic!("isolated proxy listener failed: {:?}", error.kind()),
+                }
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut request = vec![0; 4096];
+            let count = stream.read(&mut request).unwrap();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK")
+                .unwrap();
+            String::from_utf8(request[..count].to_vec()).unwrap()
+        });
+        let mut uploader = RecordUploader::new(endpoint.clone());
+        assert!(uploader.client_for_policy(None).is_ok());
+        let selected = uploader.client_for_policy(Some(policy.clone())).unwrap();
+        let response = selected
+            .get(&endpoint)
+            .timeout(Duration::from_secs(2))
+            .send()
+            .unwrap();
+        assert_eq!(response.text().unwrap(), "OK");
+        assert!(server.join().unwrap().starts_with("GET http://127.0.0.1:"));
+        assert_eq!(
+            direct.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        assert_eq!(uploader.client_policy, Some(policy));
+        let invalid = Socks5Server {
+            proxy: "ftp://invalid.test".to_owned(),
+            ..Default::default()
+        };
+        assert!(uploader.client_for_policy(Some(invalid)).is_err());
+        assert!(uploader.client.is_none());
+        assert!(uploader.client_for_policy(None).is_ok());
+        assert!(uploader.client_policy.is_none());
     }
 
     #[cfg(unix)]

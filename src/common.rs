@@ -16,7 +16,8 @@ use camellia_remote_protocol::{
     base64::{engine::general_purpose::STANDARD as BASE64, Engine as _},
     bytes::Bytes,
     config::{
-        self, keys, use_ws, Config, LocalConfig, CONNECT_TIMEOUT, READ_TIMEOUT, RENDEZVOUS_PORT,
+        self, keys, use_ws, Config, LocalConfig, Socks5Server, CONNECT_TIMEOUT, READ_TIMEOUT,
+        RENDEZVOUS_PORT,
     },
     crypto::{box_, secretbox, sign},
     futures::future::join_all,
@@ -28,7 +29,6 @@ use camellia_remote_protocol::{
     socket_client,
     tcp::{CipherRole, Encrypt},
     timeout,
-    tls::TlsType,
     tokio::{
         self,
         net::UdpSocket,
@@ -38,7 +38,7 @@ use camellia_remote_protocol::{
 };
 
 use crate::{
-    hbbs_http::{create_http_client_async_with_tls, get_url_for_tls},
+    hbbs_http::create_http_client_async_for_configuration,
     ui_interface::{get_api_server as ui_get_api_server, get_option, set_option},
 };
 
@@ -1058,21 +1058,26 @@ pub fn get_api_auth_header() -> Option<String> {
     get_api_access_token().map(|token| format!("Authorization: Bearer {token}"))
 }
 
-/// Check if we should use raw TCP proxy for API calls.
-/// Returns true if USE_RAW_TCP_FOR_API builtin option is "Y", WebSocket is off,
-/// and the target URL belongs to the configured non-public API host.
-#[inline]
-fn should_use_raw_tcp_for_api(url: &str) -> bool {
-    Config::get_socks().is_none()
-        && get_builtin_option(keys::OPTION_USE_RAW_TCP_FOR_API) == "Y"
-        && !use_ws()
-        && is_tcp_proxy_api_target(url)
+#[derive(Clone, Copy)]
+struct RawTcpPolicy {
+    first: bool,
+    fallback: bool,
 }
 
-/// Check if we can attempt raw TCP proxy fallback for this target URL.
-#[inline]
-fn can_fallback_to_raw_tcp(url: &str) -> bool {
-    Config::get_socks().is_none() && !use_ws() && is_tcp_proxy_api_target(url)
+impl RawTcpPolicy {
+    fn capture(
+        url: &str,
+        api: &str,
+        proxy_configured: bool,
+        websocket: bool,
+        force_raw: bool,
+    ) -> Self {
+        let allowed = !proxy_configured && !websocket && should_use_tcp_proxy_for_api_url(url, api);
+        Self {
+            first: allowed && force_raw,
+            fallback: allowed,
+        }
+    }
 }
 
 #[inline]
@@ -1081,19 +1086,20 @@ fn should_use_tcp_proxy_for_api_url(url: &str, api_url: &str) -> bool {
         return false;
     }
 
-    let target_host = url::Url::parse(url)
-        .ok()
-        .and_then(|parsed| parsed.host_str().map(|host| host.to_ascii_lowercase()));
-    let api_host = url::Url::parse(api_url)
-        .ok()
-        .and_then(|parsed| parsed.host_str().map(|host| host.to_ascii_lowercase()));
-
-    matches!((target_host, api_host), (Some(target), Some(api)) if target == api)
-}
-
-#[inline]
-fn is_tcp_proxy_api_target(url: &str) -> bool {
-    should_use_tcp_proxy_for_api_url(url, &ui_get_api_server())
+    match (url::Url::parse(url), url::Url::parse(api_url)) {
+        (Ok(target), Ok(api)) => {
+            matches!(target.scheme(), "http" | "https")
+                && matches!(api.scheme(), "http" | "https")
+                && target.has_host()
+                && api.has_host()
+                && target.origin() == api.origin()
+                && target.username().is_empty()
+                && target.password().is_none()
+                && api.username().is_empty()
+                && api.password().is_none()
+        }
+        _ => false,
+    }
 }
 
 fn tcp_proxy_log_target(url: &str) -> String {
@@ -1275,15 +1281,14 @@ async fn post_request_http(
     body: &str,
     header: &str,
     operation: &HttpOperation,
+    proxy_conf: &Option<Socks5Server>,
 ) -> ResultType<(u16, String)> {
-    let proxy_conf = Config::get_socks();
-    let tls_url = get_url_for_tls(url, &proxy_conf);
-    let tls_type = TlsType::for_url(tls_url)?;
+    let client = create_http_client_async_for_configuration(proxy_conf.as_ref())?;
     let response = post_request_(
         url,
         body.to_owned(),
         post_header_entries(header, operation),
-        tls_type,
+        client,
     )
     .await?;
     let status = response.status().as_u16();
@@ -1296,6 +1301,7 @@ async fn post_request_http(
 async fn with_tcp_proxy_fallback<HttpFut, TcpFut>(
     url: &str,
     method: &str,
+    policy: RawTcpPolicy,
     http_fn: HttpFut,
     tcp_fn: TcpFut,
 ) -> ResultType<String>
@@ -1303,7 +1309,7 @@ where
     HttpFut: Future<Output = ResultType<(u16, String)>>,
     TcpFut: Future<Output = ResultType<String>>,
 {
-    if should_use_raw_tcp_for_api(url) {
+    if policy.first {
         return tcp_fn.await;
     }
 
@@ -1313,7 +1319,7 @@ where
         Ok((status, _)) => *status >= 500,
     };
 
-    if should_fallback && can_fallback_to_raw_tcp(url) {
+    if should_fallback && policy.fallback {
         log::warn!(
             "HTTP {} to {} failed or 5xx (result: {:?}), trying TCP proxy fallback",
             method,
@@ -1351,10 +1357,21 @@ pub(crate) async fn post_request_with_operation(
     header: &str,
     operation: &HttpOperation,
 ) -> ResultType<String> {
+    // One operation has one captured proxy policy. Changes to live settings
+    // cannot turn a failed explicit proxy into a later direct/raw-TCP attempt.
+    let proxy_conf = Config::get_socks();
+    let policy = RawTcpPolicy::capture(
+        &url,
+        &ui_get_api_server(),
+        proxy_conf.is_some(),
+        use_ws(),
+        get_builtin_option(keys::OPTION_USE_RAW_TCP_FOR_API) == "Y",
+    );
     with_tcp_proxy_fallback(
         &url,
         "POST",
-        post_request_http(&url, &body, header, operation),
+        policy,
+        post_request_http(&url, &body, header, operation, &proxy_conf),
         post_request_via_tcp_proxy(&url, &body, header, operation),
     )
     .await
@@ -1364,9 +1381,9 @@ async fn post_request_(
     url: &str,
     body: String,
     headers: Vec<HeaderEntry>,
-    tls_type: TlsType,
+    client: reqwest::Client,
 ) -> ResultType<reqwest::Response> {
-    let mut req = create_http_client_async_with_tls(tls_type)?.post(url);
+    let mut req = client.post(url);
     for entry in headers {
         req = req.header(entry.name, entry.value);
     }
@@ -2535,7 +2552,7 @@ mod tests {
             "https://admin.example.com/api/login",
             "https://admin.example.com"
         ));
-        assert!(should_use_tcp_proxy_for_api_url(
+        assert!(!should_use_tcp_proxy_for_api_url(
             "https://admin.example.com:21114/api/login",
             "https://admin.example.com"
         ));
@@ -2555,6 +2572,67 @@ mod tests {
             "not a url",
             "https://admin.example.com"
         ));
+    }
+
+    #[tokio::test]
+    async fn explicit_proxy_policy_never_falls_back_after_transport_errors_or_5xx() {
+        let url = "https://management.example.test/api/heartbeat";
+        for force in [false, true] {
+            for status in [None, Some(503)] {
+                let policy = RawTcpPolicy::capture(
+                    url,
+                    "https://management.example.test",
+                    true,
+                    false,
+                    force,
+                );
+                assert!(!policy.first && !policy.fallback);
+                let raw_started = std::sync::atomic::AtomicBool::new(false);
+                let result = with_tcp_proxy_fallback(
+                    url,
+                    "POST",
+                    policy,
+                    async {
+                        match status {
+                            Some(code) => Ok((code, "upstream rejected".to_owned())),
+                            None => Err(anyhow!("http_proxy_configuration_invalid")),
+                        }
+                    },
+                    async {
+                        raw_started.store(true, std::sync::atomic::Ordering::Release);
+                        Ok("must not run".to_owned())
+                    },
+                )
+                .await;
+                assert!(!raw_started.load(std::sync::atomic::Ordering::Acquire));
+                if status.is_none() {
+                    assert!(result.is_err());
+                } else {
+                    assert_eq!(result.unwrap(), "upstream rejected");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn raw_policy_is_a_snapshot_of_explicit_proxy_and_full_api_origin() {
+        let api = "https://management.example.test";
+        let target = format!("{api}/api/login");
+        let original = RawTcpPolicy::capture(&target, api, true, false, true);
+        let updated = RawTcpPolicy::capture(&target, api, false, false, true);
+        assert!(!original.first && !original.fallback);
+        assert!(updated.first && updated.fallback);
+        for target in [
+            "http://management.example.test/api/login",
+            "https://management.example.test:8443/api/login",
+            "https://other.example.test/api/login",
+            "https://user:private@management.example.test/api/login",
+        ] {
+            let policy = RawTcpPolicy::capture(target, api, false, false, true);
+            assert!(!policy.first && !policy.fallback);
+        }
+        let policy = RawTcpPolicy::capture(&target, api, false, true, true);
+        assert!(!policy.first && !policy.fallback);
     }
 
     #[test]

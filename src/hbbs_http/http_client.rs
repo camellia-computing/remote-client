@@ -1,9 +1,4 @@
-use camellia_remote_protocol::{
-    anyhow::anyhow,
-    config::{Config, Socks5Server},
-    tls::TlsType,
-    ResultType,
-};
+use camellia_remote_protocol::{anyhow::anyhow, config::Socks5Server, ResultType};
 use reqwest::{blocking::Client as SyncClient, Client as AsyncClient};
 use std::time::Duration;
 
@@ -55,7 +50,7 @@ fn configured_proxy(conf: &Socks5Server) -> ResultType<reqwest::Proxy> {
 }
 
 macro_rules! configure_http_client {
-    ($builder:expr, $tls_type:expr, $proxy_conf:expr) => {{
+    ($builder:expr, $proxy_conf:expr) => {{
         // Ignore ambient environment proxies: only explicit application policy.
         let mut builder = $builder
             .no_proxy()
@@ -65,62 +60,39 @@ macro_rules! configure_http_client {
             .retry(reqwest::retry::never())
             .dns_resolver(super::dns::shared())
             .pool_max_idle_per_host(2);
-        match $tls_type {
-            TlsType::Plain => {}
-            TlsType::Rustls => {
-                #[cfg(any(target_os = "android", target_os = "ios"))]
-                {
-                    let config = camellia_remote_protocol::verifier::client_config()
-                        .map_err(|_| anyhow!("http_tls_configuration_unavailable"))?;
-                    builder = builder.use_preconfigured_tls(config);
-                }
-                #[cfg(not(any(target_os = "android", target_os = "ios")))]
-                {
-                    builder = builder.use_rustls_tls();
-                }
-            }
+        // The URI determines whether TLS is used. Configure the same verifier
+        // for HTTPS targets and for HTTPS proxies of plaintext HTTP targets.
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        {
+            let config = camellia_remote_protocol::verifier::client_config()
+                .map_err(|_| anyhow!("http_tls_configuration_unavailable"))?;
+            builder = builder.use_preconfigured_tls(config);
+        }
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        {
+            builder = builder.use_rustls_tls();
         }
         if let Some(conf) = $proxy_conf {
             builder = builder.proxy(configured_proxy(conf)?);
         }
-        builder
-            .build()
-            .map_err(|_| anyhow!("http_client_configuration_unavailable"))
+        finish_build(builder.build())
     }};
 }
 
-fn create_http_client_with_tls(tls_type: TlsType) -> ResultType<SyncClient> {
-    let conf = Config::get_socks();
-    configure_http_client!(SyncClient::builder(), tls_type, conf.as_ref())
+fn finish_build<T, E>(result: Result<T, E>) -> ResultType<T> {
+    result.map_err(|_| anyhow!("http_client_configuration_unavailable"))
 }
 
-pub fn create_http_client_async_with_tls(tls_type: TlsType) -> ResultType<AsyncClient> {
-    let conf = Config::get_socks();
-    create_http_client_async_for_configuration(tls_type, conf.as_ref())
+pub(crate) fn create_http_client_for_configuration(
+    conf: Option<&Socks5Server>,
+) -> ResultType<SyncClient> {
+    configure_http_client!(SyncClient::builder(), conf)
 }
 
 pub(crate) fn create_http_client_async_for_configuration(
-    tls_type: TlsType,
     conf: Option<&Socks5Server>,
 ) -> ResultType<AsyncClient> {
-    configure_http_client!(AsyncClient::builder(), tls_type, conf)
-}
-
-pub fn get_url_for_tls<'a>(url: &'a str, proxy_conf: &'a Option<Socks5Server>) -> &'a str {
-    if TlsType::for_url(url).is_ok_and(|mode| mode == TlsType::Plain) {
-        if let Some(conf) = proxy_conf {
-            if conf.proxy.starts_with("https://") {
-                return &conf.proxy;
-            }
-        }
-    }
-    url
-}
-
-pub fn create_http_client() -> ResultType<SyncClient> {
-    // Rustls is the only encrypted backend. A HEAD probe cannot discover a
-    // different supported backend and must not add traffic before a mutation.
-    create_http_client_with_tls(TlsType::Rustls)
+    configure_http_client!(AsyncClient::builder(), conf)
 }
 
 #[cfg(test)]
@@ -130,6 +102,67 @@ mod tests {
         self,
         io::{AsyncReadExt, AsyncWriteExt},
     };
+
+    #[test]
+    fn constructor_failure_has_no_fallback_client_and_no_sensitive_error_text() {
+        let result: Result<SyncClient, &str> = Err("PRIVATE-PROXY-PASSWORD / PRIVATE-TOKEN");
+        assert_eq!(
+            finish_build(result).unwrap_err().to_string(),
+            "http_client_configuration_unavailable"
+        );
+        let result: Result<AsyncClient, &str> = Err("PRIVATE-TLS-CONFIGURATION");
+        assert_eq!(
+            finish_build(result).unwrap_err().to_string(),
+            "http_client_configuration_unavailable"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_https_proxy_never_exposes_request_to_the_direct_endpoint() {
+        let direct = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let conf = Socks5Server {
+            proxy: format!("https://{}", proxy.local_addr().unwrap()),
+            username: "test-proxy-user".to_owned(),
+            password: "PRIVATE-PROXY-PASSWORD".to_owned(),
+        };
+        let server = tokio::spawn(async move {
+            let (mut connection, _) = proxy.accept().await.unwrap();
+            let mut hello = vec![0; 8192];
+            let count = connection.read(&mut hello).await.unwrap();
+            assert!(!hello[..count]
+                .windows(b"PRIVATE-ACCOUNT-TOKEN".len())
+                .any(|part| part == b"PRIVATE-ACCOUNT-TOKEN"));
+            connection
+                .write_all(
+                    b"HTTP/1.1 502 Not TLS\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        });
+        let client = create_http_client_async_for_configuration(Some(&conf)).unwrap();
+        let request = client
+            .post(format!(
+                "http://{}/api/record",
+                direct.local_addr().unwrap()
+            ))
+            .bearer_auth("PRIVATE-ACCOUNT-TOKEN")
+            .body("PRIVATE-RECORDING")
+            .send();
+        assert!(tokio::time::timeout(Duration::from_secs(2), request)
+            .await
+            .unwrap()
+            .is_err());
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), direct.accept())
+                .await
+                .is_err()
+        );
+    }
 
     #[test]
     fn invalid_proxy_policy_returns_static_error_without_a_direct_client() {
@@ -184,8 +217,7 @@ mod tests {
                 .unwrap();
             String::from_utf8(bytes[..count].to_vec()).unwrap()
         });
-        let client =
-            create_http_client_async_for_configuration(TlsType::Rustls, Some(&conf)).unwrap();
+        let client = create_http_client_async_for_configuration(Some(&conf)).unwrap();
         let response = tokio::time::timeout(
             Duration::from_secs(2),
             client

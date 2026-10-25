@@ -30,6 +30,17 @@ bad proxy configuration cannot create a direct client. Redirects and transparent
 reqwest retries are disabled. The bridge never switches transport after an
 uncertain result. Other native telemetry POST callers still have a separate
 historical fallback path; this is not a claim that NET-004's entire scope is done.
+That POST path now captures its explicit proxy and full-origin routing policy
+before awaiting transport. A failed explicit proxy cannot become raw TCP because
+live settings changed later. Its no-proxy fallback behavior is separate from the
+bridge's single-attempt contract.
+
+Recording upload clients are lazy and bound to their last successfully built
+proxy policy. Each request checks the current policy, removes a stale client
+before constructing its replacement, and fails closed on invalid configuration.
+The worker keeps its durable upload state and receiver so repairing configuration
+can resume it without replaying a recording as a new upload. Sync/async factories
+share one Rustls verifier policy; proxy TLS errors never create direct clients.
 
 Web uses `AbortableRequest` with redirects disabled, a bounded response stream,
 deadline and explicit client close. Cancellation does not cancel a parent batch
