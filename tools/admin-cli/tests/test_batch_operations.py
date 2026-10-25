@@ -13,12 +13,21 @@ from camellia_remote_admin.batch_operations import (
     check_batch_response,
     check_control_response,
     document_digest,
+    public_intent_digest,
+    public_intent_document,
     recover_operation,
     replayable_request_document,
 )
 
 PACKAGE_DIR = Path(camellia_remote_admin.__file__).resolve().parent
 OPERATION_ID = "11111111-1111-4111-8111-111111111111"
+
+
+def request_operation_id(headers):
+    wire_key = headers["Idempotency-Key"]
+    if not wire_key.startswith("v2:"):
+        raise AssertionError("Expected receipt-v2 wire key")
+    return wire_key[3:]
 
 
 class FakeResponse:
@@ -34,11 +43,11 @@ class FakeResponse:
 def receipt(operation, request_document, requested, *, operation_id=OPERATION_ID):
     return {
         "result": "OK",
-        "management_operation_receipt_version": 1,
+        "management_operation_receipt_version": 2,
         "operation_id": operation_id,
         "operation": operation,
         "operation_generation": 7,
-        "request_digest": document_digest(request_document),
+        "request_digest": public_intent_digest(request_document),
         "result_digest": "a" * 64,
         "requested": requested,
         "applied": requested,
@@ -131,6 +140,23 @@ class BatchOperationReceiptTests(unittest.TestCase):
         )
         self.assertEqual(captured["headers"], {"Authorization": "Bearer token"})
 
+    def test_retired_operation_recovery_stays_unknown_and_never_reposts(self):
+        with (
+            patch(
+                "camellia_remote_admin.batch_operations.transport.get",
+                return_value=FakeResponse(
+                    {"code": "operation_receipt_retired"}, status_code=410
+                ),
+            ) as read,
+            patch("camellia_remote_admin.batch_operations.transport.post") as write,
+            self.assertRaises(SystemExit) as rejected,
+        ):
+            recover_operation("https://management.example.test", "token", OPERATION_ID)
+        self.assertEqual(rejected.exception.code, 1)
+        self.assertIn("retired", rejected.exception.message)
+        read.assert_called_once()
+        write.assert_not_called()
+
     def test_device_group_update_binds_operation_and_generation(self):
         groups = load_script("device_groups.py", "state040_device_groups_script")
         group_guid = "22222222-2222-4222-8222-222222222222"
@@ -168,7 +194,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
         )
 
         self.assertEqual(result["applied"], {"groups": 1})
-        self.assertEqual(captured["headers"]["Idempotency-Key"], OPERATION_ID)
+        self.assertEqual(captured["headers"]["Idempotency-Key"], f"v2:{OPERATION_ID}")
         self.assertEqual(captured["headers"]["If-Match"], '"4"')
         self.assertEqual(captured["json"], payload)
 
@@ -247,11 +273,11 @@ class BatchOperationReceiptTests(unittest.TestCase):
         )
 
         self.assertEqual(result["applied"], {"mutations": 1})
-        self.assertEqual(captured["headers"]["Idempotency-Key"], OPERATION_ID)
+        self.assertEqual(captured["headers"]["Idempotency-Key"], f"v2:{OPERATION_ID}")
         self.assertEqual(captured["headers"]["If-Match"], '"5"')
         self.assertEqual(captured["json"], payload)
 
-    def test_address_book_profile_create_hashes_password_in_request_document(self):
+    def test_address_book_profile_create_projects_secret_in_public_request_proof(self):
         address_books = load_script(
             "address_books.py", "state040_address_book_profile_script"
         )
@@ -262,7 +288,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
             "note": "note",
             "info": None,
             "has_default_password": True,
-            "default_password_digest": document_digest(password),
+            "default_password": password,
         }
         captured = {}
 
@@ -288,7 +314,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
 
         self.assertEqual(result["applied"], {"profiles": 1})
         self.assertEqual(captured["json"]["default_password"], password)
-        self.assertEqual(captured["headers"]["Idempotency-Key"], OPERATION_ID)
+        self.assertEqual(captured["headers"]["Idempotency-Key"], f"v2:{OPERATION_ID}")
 
     def test_user_create_digest_and_device_assign_generation_match_server_contract(
         self,
@@ -299,7 +325,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
         user_document = {
             "operation": "user_create",
             "username": "new-user",
-            "password_digest": document_digest(password),
+            "password": password,
             "email": "",
             "note": "",
             "group_name": "operators",
@@ -350,7 +376,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
         self.assertEqual(device_result["applied"], {"devices": 1})
         self.assertEqual(captured["headers"]["If-Match"], '"3"')
 
-    def test_device_address_book_assignment_hashes_password_in_receipt(self):
+    def test_device_address_book_assignment_projects_secret_in_public_receipt(self):
         devices = load_script("devices.py", "state040_device_ab_assign_script")
         password = "state040-address-book-password"
         value = {
@@ -367,7 +393,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
         }
         receipt_value.update(
             has_address_book_password=True,
-            address_book_password_digest=document_digest(password),
+            address_book_password=password,
         )
         request_document = {
             "operation": "device_assign",
@@ -440,6 +466,44 @@ class BatchOperationReceiptTests(unittest.TestCase):
 
         self.assertEqual(accepted, body)
 
+    def test_public_request_proof_cannot_distinguish_password_guesses_but_binds_public_targets(
+        self,
+    ):
+        first = {
+            "operation": "user_create",
+            "username": "private-intent",
+            "password": "SYNTHETIC-FIRST",
+        }
+        second = {**first, "password": "SYNTHETIC-DIFFERENT-AND-LONGER"}
+        self.assertEqual(public_intent_digest(first), public_intent_digest(second))
+        self.assertNotIn("SYNTHETIC-FIRST", str(public_intent_document(first)))
+        self.assertNotEqual(
+            public_intent_digest(first),
+            public_intent_digest({**first, "username": "other"}),
+        )
+        self.assertNotEqual(
+            public_intent_digest(first), public_intent_digest({**first, "password": ""})
+        )
+
+    def test_old_receipt_version_is_not_accepted_as_v2_completion(self):
+        document = {"operation": "users_force_logout", "users": ["7"]}
+        body = receipt("users_force_logout", document, {"users": 1})
+        body["management_operation_receipt_version"] = 1
+        with self.assertRaisesRegex(SystemExit, "^1$"):
+            check_batch_response(
+                FakeResponse(body),
+                operation="users_force_logout",
+                operation_id=OPERATION_ID,
+                request_document=document,
+                requested={"users": 1},
+            )
+
+    def test_personal_peer_wire_hash_cannot_be_guessed_from_public_request_proof(self):
+        first = {"body": {"id": "123", "hash": "SYNTHETIC-PERSONAL-HASH-A"}}
+        second = {"body": {"id": "123", "hash": "SYNTHETIC-PERSONAL-HASH-B"}}
+        self.assertEqual(public_intent_digest(first), public_intent_digest(second))
+        self.assertNotIn("SYNTHETIC-PERSONAL-HASH", str(public_intent_document(first)))
+
     def test_partial_or_mismatched_receipt_is_a_nonzero_failure(self):
         request_document = {
             "operation": "strategy_assign",
@@ -496,7 +560,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
         )
 
         self.assertEqual(result["applied"], {"users": 2})
-        self.assertEqual(captured["headers"]["Idempotency-Key"], OPERATION_ID)
+        self.assertEqual(captured["headers"]["Idempotency-Key"], f"v2:{OPERATION_ID}")
         self.assertEqual(captured["json"], {"user_guids": ["7", "9"]})
 
     def test_zero_user_force_logout_exits_nonzero(self):
@@ -564,7 +628,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
         )
 
         self.assertEqual(result["applied"], expected)
-        self.assertEqual(captured["headers"]["Idempotency-Key"], OPERATION_ID)
+        self.assertEqual(captured["headers"]["Idempotency-Key"], f"v2:{OPERATION_ID}")
         self.assertEqual(
             captured["json"],
             {
@@ -647,7 +711,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
                     operation,
                     request_document,
                     {"users": 1},
-                    operation_id=headers["Idempotency-Key"],
+                    operation_id=request_operation_id(headers),
                 )
             )
 
@@ -665,7 +729,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
                     operation,
                     request_document,
                     {"devices": 1},
-                    operation_id=headers["Idempotency-Key"],
+                    operation_id=request_operation_id(headers),
                 )
             )
 
@@ -682,7 +746,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
                     operation,
                     request_document,
                     {"devices": 1},
-                    operation_id=headers["Idempotency-Key"],
+                    operation_id=request_operation_id(headers),
                 )
             )
 
@@ -734,7 +798,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
         for index, (_url, headers, body) in enumerate(calls):
             self.assertEqual(headers["Authorization"], "Bearer token")
             self.assertEqual(headers["Content-Type"], "application/json")
-            self.assertEqual(headers["Idempotency-Key"], operation_ids[index])
+            self.assertEqual(headers["Idempotency-Key"], f"v2:{operation_ids[index]}")
             self.assertEqual(headers["If-Match"], '"0"')
             self.assertEqual(body, {})
 
@@ -774,7 +838,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
         self.assertEqual(first, replayed)
         self.assertEqual(
             [call[1]["Idempotency-Key"] for call in calls],
-            [OPERATION_ID, OPERATION_ID],
+            [f"v2:{OPERATION_ID}", f"v2:{OPERATION_ID}"],
         )
 
     def test_generated_control_id_and_target_are_printed_before_the_request(self):
@@ -782,7 +846,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
         output = io.StringIO()
 
         def post(_url, *, headers, json):
-            operation_id = headers["Idempotency-Key"]
+            operation_id = request_operation_id(headers)
             self.assertEqual(str(uuid.UUID(operation_id)), operation_id)
             self.assertIn("Operation target: user 7", output.getvalue())
             self.assertIn(f"Operation ID: {operation_id}", output.getvalue())
@@ -882,7 +946,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
 
         def post(url, *, headers, json):
             user_guid = url.split("/")[-2]
-            operation_id = headers["Idempotency-Key"]
+            operation_id = request_operation_id(headers)
             calls.append((user_guid, operation_id, json))
             operation = "user_status_disable"
             request_document = {
@@ -955,7 +1019,7 @@ class BatchOperationReceiptTests(unittest.TestCase):
 
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0][0], "https://management.example.test/api/devices/8")
-        self.assertEqual(calls[0][1]["Idempotency-Key"], OPERATION_ID)
+        self.assertEqual(calls[0][1]["Idempotency-Key"], f"v2:{OPERATION_ID}")
         self.assertEqual(calls[0][2], {})
 
 

@@ -219,7 +219,11 @@ class SubprocessOutcomeTests(unittest.TestCase):
                     "user" if resource == "users" else "device": guid,
                     "expected_generation": int(self.headers["If-Match"].strip('"')),
                 }
-                key = self.headers["Idempotency-Key"]
+                wire_key = self.headers["Idempotency-Key"]
+                if not wire_key.startswith("v2:"):
+                    self.respond(400, {"code": "invalid_operation_key"})
+                    return
+                key = wire_key[3:]
                 body = control_receipt(
                     operation, document, {resource: 1}, operation_id=key
                 )

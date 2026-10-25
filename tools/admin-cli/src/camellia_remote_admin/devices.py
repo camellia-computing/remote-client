@@ -6,7 +6,6 @@ from .batch_operations import (
     canonical_model_pk,
     canonical_operation_id,
     check_control_response,
-    document_digest,
     fail,
     operation_headers,
     required_generation,
@@ -210,8 +209,8 @@ def assign(
                     if key != "address_book_password"
                 },
                 "has_address_book_password": "address_book_password" in value,
-                "address_book_password_digest": (
-                    document_digest(value["address_book_password"])
+                "address_book_password": (
+                    value["address_book_password"]
                     if "address_book_password" in value
                     else None
                 ),

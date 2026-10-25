@@ -154,7 +154,7 @@ class AddressBookMutationCommand {
   Map<String, String> headers(String token) => {
     'Authorization': 'Bearer $token',
     'Content-Type': 'application/json',
-    'Idempotency-Key': operationId,
+    'Idempotency-Key': 'v2:$operationId',
     'If-Match': '"$expectedGeneration"',
   };
 }
@@ -203,8 +203,64 @@ class AddressBookMutationBatch {
   }
 }
 
-/// Fixed-key order is Python canonical_document(sort_keys=True), not the body
-/// serializer's ordering. The body digest binds the exact frozen UTF-8 wire bytes.
+/// Receipt v2 exposes only a canonical public projection. The provider privately
+/// binds the full intent using an encrypted per-operation key; no password hash
+/// or binding key belongs in this public proof.
+const _secretIntentFields = {
+  'password',
+  'default_password',
+  'address_book_password',
+  'hash',
+  'rhash',
+  'token',
+};
+
+int _compareIntentKeys(String first, String second) {
+  final a = first.runes.iterator;
+  final b = second.runes.iterator;
+  while (true) {
+    final hasA = a.moveNext();
+    final hasB = b.moveNext();
+    if (!hasA || !hasB) {
+      return hasA
+          ? 1
+          : hasB
+          ? -1
+          : 0;
+    }
+    final comparison = a.current.compareTo(b.current);
+    if (comparison != 0) return comparison;
+  }
+}
+
+Object? _publicMutationIntent(Object? value, [int depth = 0]) {
+  if (depth > 256) {
+    throw const AddressBookMutationException('invalid_payload');
+  }
+  if (value is Map) {
+    if (value.keys.any((key) => key is! String)) {
+      throw const AddressBookMutationException('invalid_payload');
+    }
+    final keys = value.keys.cast<String>().toList()..sort(_compareIntentKeys);
+    return {
+      for (final key in keys)
+        key: _secretIntentFields.contains(key)
+            ? {
+                '\$secret_intent': value[key] == null
+                    ? 'keep'
+                    : value[key] == ''
+                    ? 'clear'
+                    : 'set',
+              }
+            : _publicMutationIntent(value[key], depth + 1),
+    };
+  }
+  if (value is List) {
+    return [for (final child in value) _publicMutationIntent(child, depth + 1)];
+  }
+  return value;
+}
+
 String addressBookRequestDigest({
   required String operation,
   required String method,
@@ -214,13 +270,16 @@ String addressBookRequestDigest({
 }) {
   final document = {
     'args': <String, Object>{},
-    'body_sha256': sha256.convert(utf8.encode(body)).toString(),
+    'body': body.isEmpty ? null : jsonDecode(body),
     'expected_generation': expectedGeneration,
+    'has_body': body.isNotEmpty,
     'method': method,
     'operation': operation,
     'path': path,
   };
-  return sha256.convert(utf8.encode(jsonEncode(document))).toString();
+  return sha256
+      .convert(utf8.encode(jsonEncode(_publicMutationIntent(document))))
+      .toString();
 }
 
 class AddressBookMutationResponse {
@@ -302,6 +361,8 @@ class AddressBookMutationReceipt {
       throw AddressBookMutationException(
         response.status == 404
             ? 'operation_not_found'
+            : response.status == 410
+            ? 'operation_retired'
             : const [401, 403].contains(response.status)
             ? 'recovery_denied'
             : 'recovery_unavailable',
@@ -332,7 +393,8 @@ class AddressBookMutationReceipt {
     final operation = body['operation'];
     final requestDigest = body['request_digest'];
     if (!_versionOne(body['response_schema_version']) ||
-        !_versionOne(body['management_operation_receipt_version']) ||
+        !(body['management_operation_receipt_version'] is int &&
+            body['management_operation_receipt_version'] == 2) ||
         body['operation_id'] != operationId ||
         operation is! String ||
         !AddressBookMutationKind.values.any(
@@ -591,6 +653,7 @@ class AddressBookMutationService {
               const {
                 'invalid_receipt',
                 'operation_not_found',
+                'operation_retired',
                 'recovery_denied',
                 'recovery_unavailable',
                 'deadline',

@@ -6,7 +6,6 @@ from .batch_operations import (
     canonical_operation_id,
     check_batch_response,
     check_control_response,
-    document_digest,
     fail,
     operation_headers,
     require_unique,
@@ -177,7 +176,7 @@ def new_user(
         request_document={
             "operation": "user_create",
             "username": name,
-            "password_digest": document_digest(password),
+            "password": password,
             "email": email or "",
             "note": note or "",
             "group_name": group_name or "",

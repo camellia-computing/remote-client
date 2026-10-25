@@ -84,6 +84,12 @@ mutation. Retention expiry or a missing receipt is not proof that no mutation
 occurred. `not_attempted` entries are the only requests the CLI knows it did not
 send. Mutation retries require the complete original request/generation snapshot.
 
+Receipt v2 sends `Idempotency-Key: v2:<uuid>`; the printed ID and receipt GET use
+the bare UUID. Its public proof excludes secret values and password hashes;
+Management privately authenticates complete intent inside an encrypted receipt.
+An old receipt retired during the privacy upgrade returns 410. Reconcile its
+effects before any new operation; a new ID is not an automatic retry strategy.
+
 ## HTTP budget and cancellation
 
 All admin HTTP calls use the package's `transport` module. The command's monotonic budget
