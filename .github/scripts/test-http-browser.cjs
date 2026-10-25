@@ -1,12 +1,11 @@
 'use strict';
 const assert = require('node:assert/strict');
-const path = require('node:path');
-if (process.argv.length !== 3) throw new Error('Usage: node test-http-browser.cjs COMPILED_DART_JS');
-globalThis.window = globalThis;
-globalThis.self = globalThis;
-globalThis.CAMELLIA_HTTP_STREAM_READY = false;
+const { createScope, runProbe } = require('./dart-contract-probe.cjs');
+if (process.argv.length !== 2) throw new Error('Usage: node test-http-browser.cjs');
+const scope = createScope();
+scope.CAMELLIA_HTTP_STREAM_READY = false;
 const observed = new Map();
-globalThis.fetch = async (url, init) => {
+scope.fetch = async (url, init) => {
   const scenario = new URL(url).pathname;
   assert.equal(init.redirect, 'error');
   assert.equal(init.method, 'POST');
@@ -32,7 +31,7 @@ globalThis.fetch = async (url, init) => {
         if (!done) { done = true; controller.error(new DOMException('Aborted', 'AbortError')); }
       });
       if (scenario === '/oversize') controller.enqueue(new Uint8Array(1024 * 1024 + 1));
-      else globalThis.CAMELLIA_HTTP_STREAM_READY = true;
+      else scope.CAMELLIA_HTTP_STREAM_READY = true;
     },
     cancel() { done = true; state.readerCancelled = true; },
   });
@@ -40,8 +39,8 @@ globalThis.fetch = async (url, init) => {
 };
 const watchdog = setTimeout(() => { console.error('Browser HTTP probe deadline'); process.exit(1); }, 10000);
 (async () => {
-  require(path.resolve(process.argv[2]));
-  await globalThis.CAMELLIA_HTTP_PROBE;
+  runProbe('http', scope);
+  await scope.CAMELLIA_HTTP_PROBE;
   assert.equal(observed.size, 4);
   assert.equal(observed.get('/stalled-headers').aborted, true);
   assert.equal(observed.get('/stalled-body').aborted, true);

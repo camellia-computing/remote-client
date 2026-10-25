@@ -732,8 +732,17 @@ mod tests {
         let location = format!("http://{}/must-not-send", target.local_addr().unwrap());
         let server = tokio::spawn(async move {
             let (mut connection, _) = origin.accept().await.unwrap();
-            let mut request = [0; 4096];
-            connection.read(&mut request).await.unwrap();
+            let mut header = Vec::new();
+            while !header.ends_with(b"\r\n\r\n") {
+                let mut byte = [0; 1];
+                connection.read_exact(&mut byte).await.unwrap();
+                header.push(byte[0]);
+                assert!(header.len() <= MAX_HEADERS);
+            }
+            assert!(header.starts_with(b"POST /original HTTP/1.1\r\n"));
+            let mut body = [0; b"one-intent".len()];
+            connection.read_exact(&mut body).await.unwrap();
+            assert_eq!(&body, b"one-intent");
             connection.write_all(format!("HTTP/1.1 307 Temporary Redirect\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
         });
         let client = crate::hbbs_http::create_http_client_async_for_configuration(None).unwrap();

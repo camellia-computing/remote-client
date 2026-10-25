@@ -81,3 +81,8 @@ The compiled `http_browser_probe.dart` exercises the actual package:http
 BrowserClient with Node fetch/AbortController/ReadableStream substitutes, including
 header/body abort and oversized-reader cancellation. It runs in the existing
 contract script; it is not a real browser, network, CORS or TLS acceptance test.
+The shared harness compiles fixed repository entrypoints into its own private
+temporary directory and runs each in an isolated VM browser scope. It does not
+load a caller-selected script or mutate the Node process's global browser mocks.
+This is test isolation, not a sandbox for untrusted code or a fix for the Web
+OIDC credential-persistence issues tracked separately.
