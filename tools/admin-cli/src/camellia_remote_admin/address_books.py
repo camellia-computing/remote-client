@@ -5,7 +5,6 @@ from . import transport
 from .batch_operations import (
     canonical_operation_id,
     check_control_response,
-    document_digest,
     fail,
     operation_headers,
     replayable_request_document,
@@ -464,9 +463,7 @@ def add_shared_ab(url, token, name, note=None, password=None, operation_id=None)
             "note": note or "",
             "info": None,
             "has_default_password": password is not None,
-            "default_password_digest": (
-                document_digest(password) if password is not None else None
-            ),
+            "default_password": password,
         },
         requested={"profiles": 1},
     )
@@ -523,9 +520,7 @@ def update_shared_ab(
                 if key != "default_password"
             },
             "has_default_password": password is not None,
-            "default_password_digest": (
-                document_digest(password) if password is not None else None
-            ),
+            "default_password": password,
             "owner": owner,
             "expected_generation": expected_generation,
         },

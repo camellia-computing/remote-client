@@ -138,7 +138,8 @@ class ManagementCliContractTests(TestCase):
             )
             if operation["state"] == "applied":
                 self.assertEqual(
-                    receipt.response["result_digest"], operation["result_digest"]
+                    json.loads(receipt.secret_response)["body"]["result_digest"],
+                    operation["result_digest"],
                 )
         return result
 

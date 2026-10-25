@@ -6,7 +6,10 @@ import uuid
 from . import transport
 from .outcomes import CliError, ExitCode
 
-MANAGEMENT_OPERATION_RECEIPT_VERSION = 1
+MANAGEMENT_OPERATION_RECEIPT_VERSION = 2
+SENSITIVE_INTENT_FIELDS = frozenset(
+    {"password", "default_password", "address_book_password", "hash", "rhash", "token"}
+)
 MAX_MANAGEMENT_MODEL_PK = (1 << 63) - 1
 _DIGEST_RE = re.compile(r"[0-9a-f]{64}")
 _MACHINE_CODE_RE = re.compile(r"[a-z][a-z0-9_]{0,63}")
@@ -31,6 +34,29 @@ def canonical_document(value):
 
 def document_digest(value):
     return hashlib.sha256(canonical_document(value)).hexdigest()
+
+
+def public_intent_document(value, *, _depth=0):
+    if _depth > 256:
+        raise ValueError("Management operation intent is too deeply nested")
+    if isinstance(value, dict):
+        result = {}
+        for key, child in value.items():
+            if not isinstance(key, str):
+                raise ValueError("Management operation intent keys must be strings")
+            if key in SENSITIVE_INTENT_FIELDS:
+                action = "keep" if child is None else "clear" if child == "" else "set"
+                result[key] = {"$secret_intent": action}
+            else:
+                result[key] = public_intent_document(child, _depth=_depth + 1)
+        return result
+    if isinstance(value, (list, tuple)):
+        return [public_intent_document(child, _depth=_depth + 1) for child in value]
+    return value
+
+
+def public_intent_digest(value):
+    return document_digest(public_intent_document(value))
 
 
 def canonical_operation_id(value=None):
@@ -88,7 +114,7 @@ def operation_headers(token, operation_id, expected_generation=None):
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
-        "Idempotency-Key": operation_id,
+        "Idempotency-Key": f"v2:{canonical_operation_id(operation_id)}",
     }
     if expected_generation is not None:
         if type(expected_generation) is not int or expected_generation < 0:
@@ -111,6 +137,8 @@ def recover_operation(url, token, operation_id):
         f"{url.rstrip('/')}/api/management-operations/{operation_id}",
         headers={"Authorization": f"Bearer {token}"},
     )
+    if response.status_code == 410:
+        fail("operation receipt retired; inspect the resource before any new operation")
     if response.status_code != 200:
         fail(f"HTTP {response.status_code}")
     try:
@@ -126,6 +154,7 @@ def recover_operation(url, token, operation_id):
         or not 200 <= original_status < 500
         or not isinstance(receipt, dict)
         or receipt.get("operation_id") != operation_id
+        or type(receipt.get("management_operation_receipt_version")) is not int
         or receipt.get("management_operation_receipt_version")
         != MANAGEMENT_OPERATION_RECEIPT_VERSION
         or not isinstance(receipt.get("operation"), str)
@@ -148,10 +177,7 @@ def replayable_request_document(
 ):
     """Build the digest input used by replayable Address Book endpoints."""
 
-    try:
-        body = json.dumps(payload, allow_nan=False).encode("utf-8")
-    except (TypeError, ValueError) as exc:
-        raise ValueError("Mutation payload is not JSON serializable") from exc
+    canonical_document(payload)  # Reject non-JSON/non-finite values before I/O.
     args = {}
     for key, values in (query or {}).items():
         values = values if isinstance(values, list) else [values]
@@ -161,7 +187,8 @@ def replayable_request_document(
         "method": method.upper(),
         "path": path,
         "args": {key: args[key] for key in sorted(args)},
-        "body_sha256": hashlib.sha256(body).hexdigest(),
+        "body": payload,
+        "has_body": True,
         "expected_generation": expected_generation,
     }
 
@@ -185,7 +212,7 @@ def _receipt_envelope_matches(
 
     if not isinstance(body, dict):
         return False
-    expected_digest = document_digest(request_document)
+    expected_digest = public_intent_digest(request_document)
     return not (
         type(body.get("management_operation_receipt_version")) is not int
         or body["management_operation_receipt_version"]

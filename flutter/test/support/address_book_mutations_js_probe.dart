@@ -18,7 +18,10 @@ void check(bool value, String code) {
 
 void main() {
   final corpus = jsonDecode(_vectors.toDart);
-  check(corpus['version'] == 1, 'fixture_version');
+  check(
+    corpus['version'] == 2 && corpus['vectors'].length == 10,
+    'fixture_version',
+  );
   for (final vector in corpus['vectors']) {
     check(
       addressBookRequestDigest(
@@ -43,6 +46,11 @@ void main() {
     request.headers('test-token')['If-Match'] == '"9007199254740990"',
     'if_match_precision',
   );
+  check(
+    request.headers('test-token')['Idempotency-Key'] ==
+        'v2:${request.operationId}',
+    'wire_version',
+  );
   final receipt = AddressBookMutationReceipt.verify(
     request,
     AddressBookMutationResponse(
@@ -51,7 +59,7 @@ void main() {
       utf8.encode(
         jsonEncode({
           'response_schema_version': 1,
-          'management_operation_receipt_version': 1,
+          'management_operation_receipt_version': 2,
           'operation': request.kind.operation,
           'operation_id': request.operationId,
           'request_digest': request.requestDigest,

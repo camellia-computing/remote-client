@@ -27,7 +27,7 @@ Map<String, dynamic> receiptBody(
   int status = 200,
 }) => {
   'response_schema_version': 1,
-  'management_operation_receipt_version': 1,
+  'management_operation_receipt_version': 2,
   'operation_id': command.operationId,
   'operation': command.kind.operation,
   'request_digest': command.requestDigest,
@@ -226,9 +226,10 @@ void main() {
   );
   test('Dart request digest matches the Python canonical-document corpus', () {
     final corpus = jsonDecode(
-      File('test/fixtures/address_book_mutations_v1.json').readAsStringSync(),
+      File('test/fixtures/address_book_mutations_v2.json').readAsStringSync(),
     );
-    expect(corpus['version'], 1);
+    expect(corpus['version'], 2);
+    expect(corpus['vectors'], hasLength(10));
     for (final vector in corpus['vectors']) {
       expect(
         addressBookRequestDigest(
@@ -258,7 +259,7 @@ void main() {
       expect(request.headers('test-token'), {
         'Authorization': 'Bearer test-token',
         'Content-Type': 'application/json',
-        'Idempotency-Key': id,
+        'Idempotency-Key': 'v2:$id',
         'If-Match': '"2"',
       });
       expect(request.kind.method, 'POST');
@@ -407,7 +408,7 @@ void main() {
       final request = command();
       for (final changes in [
         {'response_schema_version': null},
-        {'management_operation_receipt_version': 2},
+        {'management_operation_receipt_version': 3},
         {'operation_id': newAddressBookOperationId()},
         {'operation': 'address_book_tag_add'},
         {'request_digest': List.filled(64, '0').join()},
@@ -1023,7 +1024,7 @@ void main() {
         currentScope: () => scope,
         send: (_) async => throw StateError('must_not_send'),
       );
-      for (final status in [401, 403, 404, 500]) {
+      for (final status in [401, 403, 404, 410, 500]) {
         final result = await service.recover(
           metadata,
           apiBase: Uri.parse('https://management.invalid'),
@@ -1034,6 +1035,8 @@ void main() {
           result.code,
           status == 404
               ? 'operation_not_found'
+              : status == 410
+              ? 'operation_retired'
               : status == 500
               ? 'recovery_unavailable'
               : 'recovery_denied',
@@ -1059,7 +1062,7 @@ void main() {
         {'operation_id': newAddressBookOperationId()},
         {'operation': 'address_book_profile_create'},
         {'request_digest': 'invalid'},
-        {'management_operation_receipt_version': 2},
+        {'management_operation_receipt_version': 3},
         {'mutation_generation': 0},
         {
           'mutation_generations': {'personal-7': 3, 'other': 3},

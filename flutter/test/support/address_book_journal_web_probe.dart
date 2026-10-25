@@ -127,7 +127,7 @@ Future<void> run() async {
             'original_status_code': 200,
             'receipt': {
               'response_schema_version': 1,
-              'management_operation_receipt_version': 1,
+              'management_operation_receipt_version': 2,
               'operation_id': original.operationId,
               'operation': original.kind.operation,
               'request_digest': original.requestDigest,
