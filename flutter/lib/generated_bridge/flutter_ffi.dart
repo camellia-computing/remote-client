@@ -822,8 +822,13 @@ Future<void> mainChangeId({required String newId}) =>
 Future<String> mainGetAsyncStatus() =>
     RustLib.instance.api.crateFlutterFfiMainGetAsyncStatus();
 
-Future<String?> mainGetHttpStatus({required String url}) =>
-    RustLib.instance.api.crateFlutterFfiMainGetHttpStatus(url: url);
+Future<String> mainGetHttpStatus({required String requestId}) =>
+    RustLib.instance.api.crateFlutterFfiMainGetHttpStatus(requestId: requestId);
+
+Future<void> mainCancelHttpRequest({required String requestId}) => RustLib
+    .instance
+    .api
+    .crateFlutterFfiMainCancelHttpRequest(requestId: requestId);
 
 Future<String> mainGetOption({required String key}) =>
     RustLib.instance.api.crateFlutterFfiMainGetOption(key: key);
@@ -938,7 +943,7 @@ Future<String> mainDeployDevice({required String token, required String id}) =>
 String mainResolveAvatarUrl({required String avatar}) =>
     RustLib.instance.api.crateFlutterFfiMainResolveAvatarUrl(avatar: avatar);
 
-Future<void> mainHttpRequest({
+Future<String> mainHttpRequest({
   required String url,
   required String method,
   String? body,

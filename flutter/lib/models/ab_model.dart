@@ -89,6 +89,7 @@ class AbModel {
   int _mutationViewEpoch = 0;
   int _journalReadEpoch = 0;
   AddressBookMutationJournal? _mutationJournal;
+  http.HttpCancellation? _mutationCancellation;
   AddressBookMutationJournal get _journal =>
       _mutationJournal ??= createAddressBookMutationJournal();
   final mutationBusy = false.obs;
@@ -158,6 +159,8 @@ class AbModel {
         book._snapshotEpoch == snapshotEpoch &&
         addressbooks.values.any((value) => identical(value, book));
     var ownsResult = false;
+    final cancellation = http.HttpCancellation();
+    _mutationCancellation = cancellation;
     AddressBookMutationBatchOutcome? outcome;
     try {
       // Freeze payloads synchronously, before endpoint lookup or persistence.
@@ -179,6 +182,7 @@ class AbModel {
       }
       final service = AddressBookMutationService(
         journal: _journal,
+        cancelTransport: cancellation.cancel,
         currentScope: () => ownsContext() ? scope : '',
         beforeSend: () async {
           final currentApi = await _currentMutationApi();
@@ -195,6 +199,7 @@ class AbModel {
             },
             headers: command.headers(token),
             body: command.body,
+            cancellation: cancellation,
           );
           return AddressBookMutationResponse(
             response.statusCode,
@@ -223,6 +228,10 @@ class AbModel {
             '${error is AddressBookMutationException ? error.code : 'operation_unavailable'}';
       }
     } finally {
+      cancellation.cancel();
+      if (identical(_mutationCancellation, cancellation)) {
+        _mutationCancellation = null;
+      }
       await refreshMutationJournal();
       mutationBusy.value = false;
     }
@@ -261,6 +270,8 @@ class AbModel {
     final token = bind.mainGetLocalOption(key: 'access_token');
     final personalGuid = _personalAbGuid;
     final epoch = _listEpoch;
+    final cancellation = http.HttpCancellation();
+    _mutationCancellation = cancellation;
     mutationBusy.value = true;
     try {
       final api = await _currentMutationApi();
@@ -282,6 +293,7 @@ class AbModel {
       final scope = addressBookMutationScope(base, personalGuid);
       final service = AddressBookMutationService(
         journal: _journal,
+        cancelTransport: cancellation.cancel,
         currentScope: () =>
             epoch == _listEpoch &&
                 token == bind.mainGetLocalOption(key: 'access_token') &&
@@ -302,6 +314,7 @@ class AbModel {
           final response = await http.get(
             uri,
             headers: {'Authorization': 'Bearer $token'},
+            cancellation: cancellation,
           );
           return AddressBookMutationResponse(
             response.statusCode,
@@ -325,6 +338,10 @@ class AbModel {
             'Operation recovery is unavailable. The original operation is retained.';
       }
     } finally {
+      cancellation.cancel();
+      if (identical(_mutationCancellation, cancellation)) {
+        _mutationCancellation = null;
+      }
       await refreshMutationJournal();
       mutationBusy.value = false;
     }
@@ -400,6 +417,7 @@ class AbModel {
     print("reset ab model");
     _listEpoch++;
     _mutationViewEpoch++;
+    _mutationCancellation?.cancel();
     _personalAbGuid = null;
     _personalAbGeneration = null;
     _personalAbApi = null;
@@ -1070,7 +1088,14 @@ class AbModel {
         _currentName.value = '';
       }
     }
-    if (oldName != _currentName.value) _mutationViewEpoch++;
+    if (oldName != _currentName.value) {
+      _mutationViewEpoch++;
+      _mutationCancellation?.cancel();
+      final previous = addressbooks[oldName];
+      if (previous is Ab && previous._readCancellation != null) {
+        previous.invalidateSnapshot();
+      }
+    }
     if (!current.initialized) {
       await current.pullAb(quiet: false);
     }
@@ -1275,9 +1300,13 @@ class Ab extends BaseAb {
   int _highestSnapshotGeneration = 0;
   String? _snapshotToken;
   String? _snapshotApi;
+  http.HttpCancellation? _readCancellation;
   int _snapshotEpoch = 0;
 
   void invalidateSnapshot() {
+    _readCancellation?.cancel();
+    _readCancellation = null;
+    initialized = false;
     _snapshotEpoch++;
     _snapshotGeneration = null;
     _snapshotToken = null;
@@ -1351,8 +1380,10 @@ class Ab extends BaseAb {
   @override
   Future<bool> pullAbImpl({quiet = false}) async {
     if (gFFI.abModel.mutationBusy.value) return false;
+    final cancellation = http.HttpCancellation();
     int? statusCode;
     invalidateSnapshot();
+    _readCancellation = cancellation;
     final epoch = _snapshotEpoch;
     final guid = profile.guid;
     final token = bind.mainGetLocalOption(key: 'access_token');
@@ -1370,7 +1401,11 @@ class Ab extends BaseAb {
         apiBase: Uri.parse(api),
         guid: guid,
         request: (uri) async {
-          final resp = await http.post(uri, headers: headers);
+          final resp = await http.post(
+            uri,
+            headers: headers,
+            cancellation: cancellation,
+          );
           statusCode = resp.statusCode;
           return decodeAddressBookSnapshotResponse(
             resp.statusCode,
@@ -1413,6 +1448,8 @@ class Ab extends BaseAb {
             '${translate('pull_ab_failed_tip')}: ${err is AddressBookSnapshotException ? err : 'invalid_snapshot'}';
       }
     } finally {
+      cancellation.cancel();
+      if (identical(_readCancellation, cancellation)) _readCancellation = null;
       if (statusCode == 401 &&
           epoch == _snapshotEpoch &&
           token == bind.mainGetLocalOption(key: 'access_token')) {

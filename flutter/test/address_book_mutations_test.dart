@@ -628,9 +628,13 @@ void main() {
       final journal = MemoryJournal();
       final pending = Completer<AddressBookMutationResponse>();
       var sends = 0;
+      var cancelled = 0;
       final service = AddressBookMutationService(
         journal: journal,
         currentScope: () => scope,
+        cancelTransport: () {
+          cancelled++;
+        },
         send: (_) {
           sends++;
           return pending.future;
@@ -643,6 +647,7 @@ void main() {
       );
       expect(result.state, AddressBookMutationState.unknown);
       expect(result.code, 'deadline');
+      expect(cancelled, 1);
       pending.complete(response(command()));
       await Future<void>.delayed(Duration.zero);
       expect(journal.acknowledgements, 0);

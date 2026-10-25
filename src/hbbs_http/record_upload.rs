@@ -1,4 +1,4 @@
-use crate::hbbs_http::create_http_client_with_url;
+use crate::hbbs_http::create_http_client;
 use bytes::Bytes;
 use camellia_remote_protocol::{
     bail,
@@ -57,8 +57,13 @@ pub fn run(rx: Receiver<RecordState>, recording_dir: String) {
             log::warn!("recording upload is enabled, but the API server is not configured");
             return;
         }
-        let login_option_url = format!("{}/api/login-options", api_server);
-        let client = create_http_client_with_url(&login_option_url);
+        let client = match create_http_client() {
+            Ok(client) => client,
+            Err(_) => {
+                log::error!("recording upload paused: HTTP client configuration unavailable");
+                return;
+            }
+        };
         let mut uploader = RecordUploader::new(client, api_server);
         uploader.recover_pending(&recording_dir);
 

@@ -522,12 +522,14 @@ class AddressBookMutationService {
   /// Revalidate async account/endpoint/frame state AFTER durable reservation,
   /// before crossing the transport uncertainty boundary. Must not send traffic.
   final Future<bool> Function()? beforeSend;
+  final void Function()? cancelTransport;
   bool _busy = false;
   AddressBookMutationService({
     required this.journal,
     required this.send,
     required this.currentScope,
     this.beforeSend,
+    this.cancelTransport,
   });
 
   bool _sameScope(String scope) {
@@ -604,6 +606,7 @@ class AddressBookMutationService {
       // ORIGINAL mutation was not sent. Keep it unknown and keep the record.
       return AddressBookRecoveryOutcome(pending, code);
     } finally {
+      cancelTransport?.call();
       _busy = false;
     }
   }
@@ -625,6 +628,7 @@ class AddressBookMutationService {
     try {
       return await _execute(command, scope: scope, budget: budget);
     } finally {
+      cancelTransport?.call();
       _busy = false;
     }
   }
@@ -660,6 +664,7 @@ class AddressBookMutationService {
       }
       return AddressBookMutationBatchOutcome(batch.commands.length, outcomes);
     } finally {
+      cancelTransport?.call();
       _busy = false;
     }
   }

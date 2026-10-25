@@ -579,8 +579,10 @@ class RustdeskImpl {
   Future<void> mainChangeId({required String newId}) =>
       ffi.mainChangeId(newId: newId);
   Future<String> mainGetAsyncStatus() => ffi.mainGetAsyncStatus();
-  Future<String?> mainGetHttpStatus({required String url}) =>
-      ffi.mainGetHttpStatus(url: url);
+  Future<String> mainGetHttpStatus({required String requestId}) =>
+      ffi.mainGetHttpStatus(requestId: requestId);
+  Future<void> mainCancelHttpRequest({required String requestId}) =>
+      ffi.mainCancelHttpRequest(requestId: requestId);
   Future<String> mainGetOption({required String key}) =>
       ffi.mainGetOption(key: key);
   String mainGetOptionSync({required String key}) =>
@@ -636,7 +638,7 @@ class RustdeskImpl {
   }) => ffi.mainDeployDevice(token: token, id: id);
   String mainResolveAvatarUrl({required String avatar}) =>
       ffi.mainResolveAvatarUrl(avatar: avatar);
-  Future<void> mainHttpRequest({
+  Future<String> mainHttpRequest({
     required String url,
     required String method,
     String? body,

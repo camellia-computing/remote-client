@@ -28,7 +28,7 @@ use camellia_remote_protocol::{
     socket_client,
     tcp::{CipherRole, Encrypt},
     timeout,
-    tls::{get_cached_tls_type, upsert_tls_cache, TlsType},
+    tls::TlsType,
     tokio::{
         self,
         net::UdpSocket,
@@ -1063,7 +1063,8 @@ pub fn get_api_auth_header() -> Option<String> {
 /// and the target URL belongs to the configured non-public API host.
 #[inline]
 fn should_use_raw_tcp_for_api(url: &str) -> bool {
-    get_builtin_option(keys::OPTION_USE_RAW_TCP_FOR_API) == "Y"
+    Config::get_socks().is_none()
+        && get_builtin_option(keys::OPTION_USE_RAW_TCP_FOR_API) == "Y"
         && !use_ws()
         && is_tcp_proxy_api_target(url)
 }
@@ -1071,7 +1072,7 @@ fn should_use_raw_tcp_for_api(url: &str) -> bool {
 /// Check if we can attempt raw TCP proxy fallback for this target URL.
 #[inline]
 fn can_fallback_to_raw_tcp(url: &str) -> bool {
-    !use_ws() && is_tcp_proxy_api_target(url)
+    Config::get_socks().is_none() && !use_ws() && is_tcp_proxy_api_target(url)
 }
 
 #[inline]
@@ -1183,6 +1184,27 @@ async fn tcp_proxy_request(
     .await?
 }
 
+/// The UI bridge chooses one route before sending, never HTTP then TCP replay.
+/// Unlike the historical fallback helper, this requires the full API origin.
+pub(crate) fn bridge_raw_tcp_target(url: &str) -> bool {
+    if get_builtin_option(keys::OPTION_USE_RAW_TCP_FOR_API) != "Y" || use_ws() {
+        return false;
+    }
+    match (url::Url::parse(url), url::Url::parse(&ui_get_api_server())) {
+        (Ok(target), Ok(api)) => target.origin() == api.origin(),
+        _ => false,
+    }
+}
+
+pub(crate) async fn bridge_raw_tcp_request(
+    url: &str,
+    method: &str,
+    body: &[u8],
+    headers: Vec<HeaderEntry>,
+) -> ResultType<HttpProxyResponse> {
+    tcp_proxy_request(method, url, body, headers).await
+}
+
 /// Build HeaderEntry list from "Key: Value" style header string (used by post_request).
 /// If the caller supplies a Content-Type header it overrides the default `application/json`.
 fn parse_simple_header(header: &str) -> Vec<HeaderEntry> {
@@ -1248,44 +1270,6 @@ async fn post_request_via_tcp_proxy(
     Ok(String::from_utf8_lossy(&resp.body).to_string())
 }
 
-fn http_proxy_response_to_json(resp: HttpProxyResponse) -> ResultType<String> {
-    if !resp.error.is_empty() {
-        bail!("TCP proxy error: {}", resp.error);
-    }
-
-    let mut response_headers = Map::new();
-    for entry in resp.headers.iter() {
-        response_headers.insert(entry.name.to_lowercase(), json!(entry.value));
-    }
-
-    let mut result = Map::new();
-    result.insert("status_code".to_string(), json!(resp.status));
-    result.insert("headers".to_string(), Value::Object(response_headers));
-    result.insert(
-        "body".to_string(),
-        json!(String::from_utf8_lossy(&resp.body)),
-    );
-
-    serde_json::to_string(&result).map_err(|e| anyhow!("Failed to serialize response: {}", e))
-}
-
-fn parse_json_header_entries(header: &str) -> ResultType<Vec<HeaderEntry>> {
-    let v: Value = serde_json::from_str(header)?;
-    if let Value::Object(obj) = v {
-        Ok(obj
-            .iter()
-            .map(|(key, value)| HeaderEntry {
-                name: key.clone(),
-                value: value.as_str().unwrap_or_default().into(),
-                ..Default::default()
-            })
-            .collect())
-    } else {
-        Err(anyhow!("HTTP header information parsing failed!"))
-    }
-}
-
-/// Returns (status_code, body_text). Separating status so the wrapper can decide on fallback.
 async fn post_request_http(
     url: &str,
     body: &str,
@@ -1294,10 +1278,9 @@ async fn post_request_http(
 ) -> ResultType<(u16, String)> {
     let proxy_conf = Config::get_socks();
     let tls_url = get_url_for_tls(url, &proxy_conf);
-    let tls_type = get_cached_tls_type(tls_url);
+    let tls_type = TlsType::for_url(tls_url)?;
     let response = post_request_(
         url,
-        tls_url,
         body.to_owned(),
         post_header_entries(header, operation),
         tls_type,
@@ -1379,22 +1362,17 @@ pub(crate) async fn post_request_with_operation(
 
 async fn post_request_(
     url: &str,
-    tls_url: &str,
     body: String,
     headers: Vec<HeaderEntry>,
-    tls_type: Option<TlsType>,
+    tls_type: TlsType,
 ) -> ResultType<reqwest::Response> {
-    let tls_type = tls_type.unwrap_or(TlsType::Rustls);
-    let mut req = create_http_client_async_with_tls(tls_type).post(url);
+    let mut req = create_http_client_async_with_tls(tls_type)?.post(url);
     for entry in headers {
         req = req.header(entry.name, entry.value);
     }
     let to = std::time::Duration::from_secs(12);
     match req.body(body).timeout(to).send().await {
-        Ok(resp) => {
-            upsert_tls_cache(tls_url, tls_type);
-            Ok(resp)
-        }
+        Ok(resp) => Ok(resp),
         Err(e) => Err(anyhow!("{:?}", e)),
     }
 }
@@ -1402,109 +1380,6 @@ async fn post_request_(
 #[tokio::main(flavor = "current_thread")]
 pub async fn post_request_sync(url: String, body: String, header: &str) -> ResultType<String> {
     post_request(url, body, header).await
-}
-
-async fn get_http_response_async(
-    url: &str,
-    tls_url: &str,
-    method: &str,
-    body: Option<String>,
-    header: &str,
-    tls_type: Option<TlsType>,
-) -> ResultType<reqwest::Response> {
-    let tls_type = tls_type.unwrap_or(TlsType::Rustls);
-    let http_client = create_http_client_async_with_tls(tls_type);
-    let normalized_method = method.to_ascii_lowercase();
-    let mut http_client = match normalized_method.as_str() {
-        "get" => http_client.get(url),
-        "post" => http_client.post(url),
-        "put" => http_client.put(url),
-        "delete" => http_client.delete(url),
-        _ => return Err(anyhow!("The HTTP request method is not supported!")),
-    };
-    for entry in parse_json_header_entries(header)? {
-        http_client = http_client.header(entry.name, entry.value);
-    }
-
-    if let Some(b) = body {
-        http_client = http_client.body(b);
-    }
-    match http_client
-        .timeout(std::time::Duration::from_secs(12))
-        .send()
-        .await
-    {
-        Ok(resp) => {
-            upsert_tls_cache(tls_url, tls_type);
-            Ok(resp)
-        }
-        Err(e) => Err(anyhow!("{:?}", e)),
-    }
-}
-
-/// Returns (status_code, json_string) so the caller can inspect the status
-/// without re-parsing the serialized JSON.
-async fn http_request_http(
-    url: &str,
-    method: &str,
-    body: Option<String>,
-    header: &str,
-) -> ResultType<(u16, String)> {
-    let proxy_conf = Config::get_socks();
-    let tls_url = get_url_for_tls(url, &proxy_conf);
-    let tls_type = get_cached_tls_type(tls_url);
-    let response = get_http_response_async(url, tls_url, method, body, header, tls_type).await?;
-    // Serialize response headers
-    let mut response_headers = Map::new();
-    for (key, value) in response.headers() {
-        response_headers.insert(key.to_string(), json!(value.to_str().unwrap_or("")));
-    }
-
-    let status_code = response.status().as_u16();
-    let response_body = response.text().await?;
-
-    // Construct the JSON object
-    let mut result = Map::new();
-    result.insert("status_code".to_string(), json!(status_code));
-    result.insert("headers".to_string(), Value::Object(response_headers));
-    result.insert("body".to_string(), json!(response_body));
-
-    // Convert map to JSON string
-    let json_str = serde_json::to_string(&result)
-        .map_err(|e| anyhow!("Failed to serialize response: {}", e))?;
-    Ok((status_code, json_str))
-}
-
-/// HTTP request with raw TCP proxy support.
-#[tokio::main(flavor = "current_thread")]
-pub async fn http_request_sync(
-    url: String,
-    method: String,
-    body: Option<String>,
-    header: String,
-) -> ResultType<String> {
-    with_tcp_proxy_fallback(
-        &url,
-        &method,
-        http_request_http(&url, &method, body.clone(), &header),
-        http_request_via_tcp_proxy(&url, &method, body.as_deref(), &header),
-    )
-    .await
-}
-
-/// General HTTP request via TCP proxy. Header is a JSON string (used by http_request_sync).
-/// Returns a JSON string with status_code, headers, body (same format as http_request_sync).
-async fn http_request_via_tcp_proxy(
-    url: &str,
-    method: &str,
-    body: Option<&str>,
-    header: &str,
-) -> ResultType<String> {
-    let headers = parse_json_header_entries(header)?;
-    let body_bytes = body.unwrap_or("").as_bytes();
-
-    let resp = tcp_proxy_request(method, url, body_bytes, headers).await?;
-    http_proxy_response_to_json(resp)
 }
 
 #[inline]
@@ -2706,53 +2581,6 @@ mod tests {
         assert_eq!(get_tcp_proxy_addr(), format!("[1:2]:{RENDEZVOUS_PORT}"));
     }
 
-    #[tokio::test]
-    async fn test_http_request_via_tcp_proxy_rejects_invalid_header_json() {
-        let result = http_request_via_tcp_proxy("not a url", "get", None, "{").await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_http_request_via_tcp_proxy_rejects_non_object_header_json() {
-        let err = http_request_via_tcp_proxy("not a url", "get", None, "[]")
-            .await
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("HTTP header information parsing failed!"));
-    }
-
-    #[test]
-    fn test_parse_json_header_entries_preserves_single_content_type() {
-        let headers = parse_json_header_entries(
-            r#"{"Content-Type":"text/plain","Authorization":"Bearer token"}"#,
-        )
-        .unwrap();
-
-        assert_eq!(
-            headers
-                .iter()
-                .filter(|entry| entry.name.eq_ignore_ascii_case("Content-Type"))
-                .count(),
-            1
-        );
-        assert_eq!(
-            headers
-                .iter()
-                .find(|entry| entry.name.eq_ignore_ascii_case("Content-Type"))
-                .map(|entry| entry.value.as_str()),
-            Some("text/plain")
-        );
-    }
-
-    #[test]
-    fn test_parse_json_header_entries_does_not_add_default_content_type() {
-        let headers = parse_json_header_entries(r#"{"Authorization":"Bearer token"}"#).unwrap();
-
-        assert!(!headers
-            .iter()
-            .any(|entry| entry.name.eq_ignore_ascii_case("Content-Type")));
-    }
-
     #[test]
     fn test_parse_simple_header_respects_custom_content_type() {
         let headers = parse_simple_header("Content-Type: text/plain");
@@ -2918,34 +2746,6 @@ mod tests {
             tcp_proxy_log_target("https://[2001:db8::1]:21114/api/heartbeat?token=secret"),
             "https://[2001:db8::1]:21114/api/heartbeat"
         );
-    }
-
-    #[test]
-    fn test_http_proxy_response_to_json() {
-        let mut resp = HttpProxyResponse {
-            status: 200,
-            body: br#"{"ok":true}"#.to_vec().into(),
-            ..Default::default()
-        };
-        resp.headers.push(HeaderEntry {
-            name: "Content-Type".into(),
-            value: "application/json".into(),
-            ..Default::default()
-        });
-
-        let json = http_proxy_response_to_json(resp).unwrap();
-        let value: Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["status_code"], 200);
-        assert_eq!(value["headers"]["content-type"], "application/json");
-        assert_eq!(value["body"], r#"{"ok":true}"#);
-
-        let err = http_proxy_response_to_json(HttpProxyResponse {
-            error: "dial failed".into(),
-            ..Default::default()
-        })
-        .unwrap_err()
-        .to_string();
-        assert!(err.contains("TCP proxy error: dial failed"));
     }
 
     #[test]

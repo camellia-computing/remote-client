@@ -1188,7 +1188,7 @@ class RustdeskImpl {
     return Future(() => false);
   }
 
-  Future<void> mainHttpRequest({
+  Future<String> mainHttpRequest({
     required String url,
     required String method,
     String? body,
@@ -1198,8 +1198,12 @@ class RustdeskImpl {
     throw UnimplementedError("mainHttpRequest");
   }
 
-  Future<String?> mainGetHttpStatus({required String url, dynamic hint}) {
+  Future<String> mainGetHttpStatus({required String requestId, dynamic hint}) {
     throw UnimplementedError("mainGetHttpStatus");
+  }
+
+  Future<void> mainCancelHttpRequest({required String requestId, dynamic hint}) {
+    throw UnimplementedError("mainCancelHttpRequest");
   }
 
   String mainGetLocalOption({required String key, dynamic hint}) {

@@ -99,8 +99,9 @@ That Node probe is not a real-browser/Web Locks, network, platform or GUI test.
 The analogous `address_book_journal_web_probe.dart` and
 `test-address-book-journal-web.cjs` run the compiled browser adapter against
 DOM/storage/lock substitutes for deterministic competition and fault injection.
-The production transport still requires the RES-001 cancellation/request-identity
-boundary; timing out a Future alone does not reclaim its underlying worker.
+The native request-ID/cancellation and abortable Web transports are implemented;
+see [HTTP bridge ownership](http-bridge.md) for limits and remaining DNS/platform
+gates. Timing out a Future alone does not reclaim a blocking DNS worker.
 Both compiled probes also run via `bash .github/scripts/check-address-book-contract.sh`
 in the existing CI quality job. Generated probe output is temporary and removed
 after the run; no extra source checkout is created.

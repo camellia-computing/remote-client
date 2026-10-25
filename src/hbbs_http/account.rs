@@ -1,5 +1,4 @@
 use super::HbbHttpResponse;
-use crate::hbbs_http::create_http_client_with_url;
 use camellia_remote_protocol::{config::LocalConfig, log, ResultType};
 use serde_derive::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
@@ -117,7 +116,6 @@ pub struct AuthBody {
 }
 
 pub struct OidcSession {
-    warmed_api_server: Option<String>,
     state_msg: &'static str,
     failed_msg: String,
     code_url: Option<OidcAuthUrl>,
@@ -144,7 +142,6 @@ impl Default for UserStatus {
 impl OidcSession {
     fn new() -> Self {
         Self {
-            warmed_api_server: None,
             state_msg: REQUESTING_ACCOUNT_AUTH,
             failed_msg: "".to_owned(),
             code_url: None,
@@ -155,25 +152,12 @@ impl OidcSession {
         }
     }
 
-    fn ensure_client(api_server: &str) {
-        // The probe below is a blocking network round-trip, so it must not run
-        // while the session lock is held; warming twice is harmless.
-        if OIDC_SESSION.read().unwrap().warmed_api_server.as_deref() == Some(api_server) {
-            return;
-        }
-        // This URL is used to detect the appropriate TLS implementation for the server.
-        let login_option_url = format!("{}/api/login-options", api_server);
-        let _ = create_http_client_with_url(&login_option_url);
-        OIDC_SESSION.write().unwrap().warmed_api_server = Some(api_server.to_owned());
-    }
-
     fn auth(
         api_server: &str,
         op: &str,
         id: &str,
         uuid: &str,
     ) -> ResultType<HbbHttpResponse<OidcAuthUrl>> {
-        Self::ensure_client(api_server);
         let device_proof =
             crate::device_identity::request_device_proof(api_server, "oidc", id, uuid, "")?;
         let body = serde_json::json!({
@@ -194,7 +178,6 @@ impl OidcSession {
         id: &str,
         uuid: &str,
     ) -> ResultType<HbbHttpResponse<AuthBody>> {
-        Self::ensure_client(api_server);
         let resp = crate::post_request_sync(
             format!("{}/api/oidc/auth-query", api_server),
             oidc_query_body(code, id, uuid),

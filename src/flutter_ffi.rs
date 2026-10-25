@@ -959,8 +959,12 @@ pub fn main_get_async_status() -> String {
     get_async_job_status()
 }
 
-pub fn main_get_http_status(url: String) -> Option<String> {
-    get_async_http_status(url)
+pub fn main_get_http_status(request_id: String) -> String {
+    crate::http_bridge::poll(request_id)
+}
+
+pub fn main_cancel_http_request(request_id: String) {
+    crate::http_bridge::cancel(request_id)
 }
 
 pub fn main_get_option(key: String) -> String {
@@ -1196,8 +1200,13 @@ pub fn main_resolve_avatar_url(avatar: String) -> String {
     resolve_avatar_url(avatar)
 }
 
-pub fn main_http_request(url: String, method: String, body: Option<String>, header: String) {
-    http_request(url, method, body, header)
+pub async fn main_http_request(
+    url: String,
+    method: String,
+    body: Option<String>,
+    header: String,
+) -> String {
+    crate::http_bridge::start(url, method, body, header).await
 }
 
 /// Native-only durable reservation backend. Error envelopes contain stable
