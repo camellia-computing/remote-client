@@ -137,6 +137,7 @@ static BOOL wf_cliprdr_bounded_strlen(const char *value, size_t max_len, size_t 
 /* File Contents Request Flags */
 #define FILECONTENTS_SIZE 0x00000001
 #define FILECONTENTS_RANGE 0x00000002
+#define FILECONTENTS_MAX_REQUEST_BYTES (4U * 1024U * 1024U)
 
 /* Special Clipboard Response Formats */
 
@@ -232,7 +233,6 @@ struct _CliprdrStream
 	FILEDESCRIPTORW m_Dsc;
 	void *m_pData;
 	UINT32 m_connID;
-	UINT32 m_streamId;   // unique CLIPRDR streamId; avoids leaking a heap pointer
 };
 typedef struct _CliprdrStream CliprdrStream;
 
@@ -285,9 +285,14 @@ struct wf_clipboard
 	ULONG req_fsize;
 	char *req_fdata;
 	HANDLE req_fevent;
+	HANDLE req_f_mutex;                // serializes the shared request event and response buffer
+	HANDLE req_f_state_mutex;          // protects outstanding request metadata and response publication
 	BOOL req_f_received;
+	BOOL req_f_outstanding;
 	UINT32 req_f_conn_id_expected;     // connID of the outstanding request
 	UINT32 req_f_stream_id_expected;   // streamId of the outstanding request; responses for another are dropped
+	UINT32 req_f_flags_expected;       // response kind of the outstanding request
+	UINT32 req_f_size_expected;        // maximum response bytes for the outstanding request
 	LONG req_f_stream_id_seq;          // source of unique per-stream ids
 
 	size_t nFiles;
@@ -400,8 +405,10 @@ static ULONG STDMETHODCALLTYPE CliprdrStream_Release(IStream *This)
 }
 
 static HRESULT STDMETHODCALLTYPE CliprdrStream_Read(IStream *This, void *pv, ULONG cb,
-													ULONG *pcbRead)
+											ULONG *pcbRead)
 {
+	HRESULT result = E_FAIL;
+	ULONG request_size;
 	UINT ret;
 	CliprdrStream *instance = (CliprdrStream *)This;
 	wfClipboard *clipboard;
@@ -412,48 +419,57 @@ static HRESULT STDMETHODCALLTYPE CliprdrStream_Read(IStream *This, void *pv, ULO
 	clipboard = (wfClipboard *)instance->m_pData;
 	*pcbRead = 0;
 
+	if (cb == 0)
+		return S_OK;
 	if (instance->m_lOffset.QuadPart >= instance->m_lSize.QuadPart)
 		return S_FALSE;
-
-	ret = cliprdr_send_request_filecontents(clipboard, instance->m_connID, instance->m_streamId, instance->m_lIndex,
-											FILECONTENTS_RANGE, instance->m_lOffset.HighPart,
-											instance->m_lOffset.LowPart, cb);
-
-	if (ret != CHANNEL_RC_OK)
-	{
-		free(clipboard->req_fdata);
-		clipboard->req_fdata = NULL;
+	if (WaitForSingleObject(clipboard->req_f_mutex, INFINITE) != WAIT_OBJECT_0)
 		return E_FAIL;
-	}
 
-	if (clipboard->req_fsize > cb)
+	while (*pcbRead < cb && instance->m_lOffset.QuadPart < instance->m_lSize.QuadPart)
 	{
+		request_size = cb - *pcbRead;
+		if (request_size > FILECONTENTS_MAX_REQUEST_BYTES)
+			request_size = FILECONTENTS_MAX_REQUEST_BYTES;
+
+		ret = cliprdr_send_request_filecontents(clipboard, instance->m_connID,
+											(UINT32)InterlockedIncrement(&clipboard->req_f_stream_id_seq),
+											instance->m_lIndex,
+											FILECONTENTS_RANGE, instance->m_lOffset.HighPart,
+											instance->m_lOffset.LowPart, request_size);
+		if (ret != CHANNEL_RC_OK)
+			goto exit;
+
+		if (clipboard->req_fsize > request_size ||
+			instance->m_lOffset.QuadPart > (~(UINT64)0) - clipboard->req_fsize)
+		{
+			result = STG_E_READFAULT;
+			goto exit;
+		}
+
+		if (clipboard->req_fdata)
+			CopyMemory((BYTE *)pv + *pcbRead, clipboard->req_fdata, clipboard->req_fsize);
+
+		instance->m_lOffset.QuadPart += clipboard->req_fsize;
+		*pcbRead += clipboard->req_fsize;
 		free(clipboard->req_fdata);
 		clipboard->req_fdata = NULL;
-		return STG_E_READFAULT;
+
+		if (clipboard->req_fsize < request_size)
+		{
+			result = S_FALSE;
+			goto exit;
+		}
 	}
 
-	if (clipboard->req_fdata)
-	{
-		CopyMemory(pv, clipboard->req_fdata, clipboard->req_fsize);
-		free(clipboard->req_fdata);
-		clipboard->req_fdata = NULL;
-	}
+	result = *pcbRead == cb ? S_OK : S_FALSE;
 
-	*pcbRead = clipboard->req_fsize;
-	// Check overflow, can not be a real case
-	if ((instance->m_lOffset.QuadPart + clipboard->req_fsize) < instance->m_lOffset.QuadPart) {
-		// It's better to crash to release the explorer.exe
-		// This is a critical error, because the explorer is waiting for the data
-		// and the m_lOffset is wrong(overflowed)
-		return S_FALSE;
-	}
-	instance->m_lOffset.QuadPart += clipboard->req_fsize;
-
-	if (clipboard->req_fsize < cb)
-		return S_FALSE;
-
-	return S_OK;
+exit:
+	free(clipboard->req_fdata);
+	clipboard->req_fdata = NULL;
+	if (!ReleaseMutex(clipboard->req_f_mutex))
+		return E_FAIL;
+	return result;
 }
 
 static HRESULT STDMETHODCALLTYPE CliprdrStream_Write(IStream *This, const void *pv, ULONG cb,
@@ -643,7 +659,6 @@ static CliprdrStream *CliprdrStream_New(UINT32 connID, ULONG index, void *pData,
 			instance->m_pData = pData;
 			instance->m_lOffset.QuadPart = 0;
 			instance->m_connID = connID;
-			instance->m_streamId = (UINT32)InterlockedIncrement(&clipboard->req_f_stream_id_seq);
 
 			if (instance->m_Dsc.dwFlags & FD_ATTRIBUTES)
 			{
@@ -654,30 +669,33 @@ static CliprdrStream *CliprdrStream_New(UINT32 connID, ULONG index, void *pData,
 			if (((instance->m_Dsc.dwFlags & FD_FILESIZE) == 0) && !isDir)
 			{
 				/* get content size of this stream */
-				if (cliprdr_send_request_filecontents(clipboard, instance->m_connID, instance->m_streamId,
+				if (WaitForSingleObject(clipboard->req_f_mutex, INFINITE) == WAIT_OBJECT_0)
+				{
+					if (cliprdr_send_request_filecontents(clipboard, instance->m_connID,
+													  (UINT32)InterlockedIncrement(&clipboard->req_f_stream_id_seq),
 													  instance->m_lIndex, FILECONTENTS_SIZE, 0, 0,
 													  8) == CHANNEL_RC_OK)
-				{
-					success = TRUE;
-				}
+					{
+						success = TRUE;
+					}
 
-				if (clipboard->req_fdata != NULL && clipboard->req_fsize >= sizeof(LONGLONG))
-				{
-					LONGLONG sz = 0;
-					CopyMemory(&sz, clipboard->req_fdata, sizeof(sz));
-					if (sz < 0)
-						success = FALSE;
+					if (clipboard->req_fdata != NULL && clipboard->req_fsize == sizeof(LONGLONG))
+					{
+						LONGLONG sz = 0;
+						CopyMemory(&sz, clipboard->req_fdata, sizeof(sz));
+						if (sz < 0)
+							success = FALSE;
+						else
+							instance->m_lSize.QuadPart = sz;
+					}
 					else
-						instance->m_lSize.QuadPart = sz;
-				}
-				else
-				{
-					success = FALSE;
-				}
-				if (clipboard->req_fdata)
-				{
+					{
+						success = FALSE;
+					}
 					free(clipboard->req_fdata);
 					clipboard->req_fdata = NULL;
+					if (!ReleaseMutex(clipboard->req_f_mutex))
+						success = FALSE;
 				}
 			}
 			else {
@@ -1806,19 +1824,47 @@ static UINT cliprdr_send_request_filecontents(wfClipboard *clipboard, UINT32 con
 									   ULONG nreq)
 {
 	UINT rc;
+	UINT wait_rc;
 	CLIPRDR_FILE_CONTENTS_REQUEST fileContentsRequest = { 0 };
 
 	if (!clipboard || !clipboard->context || !clipboard->context->ClientFileContentsRequest)
 		return ERROR_INTERNAL_ERROR;
+	if (flag == FILECONTENTS_SIZE)
+	{
+		if (positionhigh != 0 || positionlow != 0 || nreq != sizeof(UINT64))
+			return ERROR_INVALID_PARAMETER;
+	}
+	else if (flag == FILECONTENTS_RANGE)
+	{
+		UINT64 offset = ((UINT64)positionhigh << 32) | positionlow;
+		if (nreq == 0 || nreq > FILECONTENTS_MAX_REQUEST_BYTES ||
+			offset > (~(UINT64)0) - nreq)
+			return ERROR_INVALID_PARAMETER;
+	}
+	else
+	{
+		return ERROR_INVALID_PARAMETER;
+	}
 
+	if (WaitForSingleObject(clipboard->req_f_state_mutex, INFINITE) != WAIT_OBJECT_0)
+		return ERROR_INTERNAL_ERROR;
 	rc = try_reset_event(clipboard->req_fevent);
 	if (rc != ERROR_SUCCESS)
 	{
+		ReleaseMutex(clipboard->req_f_state_mutex);
 		return rc;
 	}
 	clipboard->req_f_received = FALSE;
+	clipboard->req_fsize = 0;
+	free(clipboard->req_fdata);
+	clipboard->req_fdata = NULL;
 	clipboard->req_f_conn_id_expected = connID;
 	clipboard->req_f_stream_id_expected = streamId;
+	clipboard->req_f_flags_expected = flag;
+	clipboard->req_f_size_expected = nreq;
+	clipboard->req_f_outstanding = TRUE;
+	if (!ReleaseMutex(clipboard->req_f_state_mutex))
+		return ERROR_INTERNAL_ERROR;
 
 	fileContentsRequest.connID = connID;
 	fileContentsRequest.streamId = streamId;
@@ -1832,10 +1878,26 @@ static UINT cliprdr_send_request_filecontents(wfClipboard *clipboard, UINT32 con
 	rc = clipboard->context->ClientFileContentsRequest(clipboard->context, &fileContentsRequest);
 	if (rc != ERROR_SUCCESS)
 	{
+		if (WaitForSingleObject(clipboard->req_f_state_mutex, INFINITE) == WAIT_OBJECT_0)
+		{
+			if (clipboard->req_f_conn_id_expected == connID &&
+				clipboard->req_f_stream_id_expected == streamId)
+				clipboard->req_f_outstanding = FALSE;
+			ReleaseMutex(clipboard->req_f_state_mutex);
+		}
 		return rc;
 	}
 
-	return wait_response_event(connID, clipboard, clipboard->req_fevent, &clipboard->req_f_received, (void **)&clipboard->req_fdata);
+	wait_rc = wait_response_event(connID, clipboard, clipboard->req_fevent,
+								  &clipboard->req_f_received, (void **)&clipboard->req_fdata);
+	if (WaitForSingleObject(clipboard->req_f_state_mutex, INFINITE) != WAIT_OBJECT_0)
+		return ERROR_INTERNAL_ERROR;
+	if (clipboard->req_f_conn_id_expected == connID &&
+		clipboard->req_f_stream_id_expected == streamId)
+		clipboard->req_f_outstanding = FALSE;
+	if (!ReleaseMutex(clipboard->req_f_state_mutex))
+		return ERROR_INTERNAL_ERROR;
+	return wait_rc;
 }
 
 static UINT cliprdr_send_response_filecontents(
@@ -3087,9 +3149,33 @@ wf_cliprdr_server_file_contents_request(CliprdrClientContext *context,
 		goto exit;
 	}
 
-	cbRequested = fileContentsRequest->cbRequested;
 	if (fileContentsRequest->dwFlags == FILECONTENTS_SIZE)
+	{
+		if (fileContentsRequest->nPositionLow != 0 || fileContentsRequest->nPositionHigh != 0 ||
+			fileContentsRequest->cbRequested != sizeof(UINT64))
+		{
+			rc = ERROR_INVALID_PARAMETER;
+			goto exit;
+		}
 		cbRequested = sizeof(UINT64);
+	}
+	else if (fileContentsRequest->dwFlags == FILECONTENTS_RANGE)
+	{
+		UINT64 offset = ((UINT64)fileContentsRequest->nPositionHigh << 32) |
+						fileContentsRequest->nPositionLow;
+		cbRequested = fileContentsRequest->cbRequested;
+		if (cbRequested == 0 || cbRequested > FILECONTENTS_MAX_REQUEST_BYTES ||
+			offset > (~(UINT64)0) - cbRequested)
+		{
+			rc = ERROR_INVALID_PARAMETER;
+			goto exit;
+		}
+	}
+	else
+	{
+		rc = ERROR_INVALID_PARAMETER;
+		goto exit;
+	}
 
 	pData = (BYTE *)calloc(1, cbRequested);
 
@@ -3239,6 +3325,11 @@ wf_cliprdr_server_file_contents_request(CliprdrClientContext *context,
 		}
 	}
 
+	if (uSize > cbRequested)
+	{
+		rc = ERROR_INVALID_PARAMETER;
+		goto exit;
+	}
 	rc = CHANNEL_RC_OK;
 exit:
 
@@ -3295,7 +3386,7 @@ static UINT
 wf_cliprdr_server_file_contents_response(CliprdrClientContext *context,
 										 const CLIPRDR_FILE_CONTENTS_RESPONSE *fileContentsResponse)
 {
-	wfClipboard *clipboard;
+	wfClipboard *clipboard = NULL;
 	UINT rc = ERROR_INTERNAL_ERROR;
 
 	do
@@ -3312,13 +3403,30 @@ wf_cliprdr_server_file_contents_response(CliprdrClientContext *context,
 			rc = ERROR_INTERNAL_ERROR;
 			break;
 		}
-		if (fileContentsResponse->connID != clipboard->req_f_conn_id_expected ||
+		if (WaitForSingleObject(clipboard->req_f_state_mutex, INFINITE) != WAIT_OBJECT_0)
+			return ERROR_INTERNAL_ERROR;
+		if (!clipboard->req_f_outstanding ||
+			fileContentsResponse->connID != clipboard->req_f_conn_id_expected ||
 			fileContentsResponse->streamId != clipboard->req_f_stream_id_expected)
+		{
+			ReleaseMutex(clipboard->req_f_state_mutex);
 			return CHANNEL_RC_OK;
+		}
+		clipboard->req_f_outstanding = FALSE;
 		clipboard->req_fsize = 0;
 		clipboard->req_fdata = NULL;
 
 		if (fileContentsResponse->msgFlags != CB_RESPONSE_OK)
+		{
+			rc = E_FAIL;
+			break;
+		}
+		if ((clipboard->req_f_flags_expected == FILECONTENTS_SIZE &&
+			 fileContentsResponse->cbRequested != sizeof(UINT64)) ||
+			(clipboard->req_f_flags_expected == FILECONTENTS_RANGE &&
+			 fileContentsResponse->cbRequested > clipboard->req_f_size_expected) ||
+			fileContentsResponse->cbRequested > FILECONTENTS_MAX_REQUEST_BYTES ||
+			(fileContentsResponse->cbRequested != 0 && fileContentsResponse->requestedData == NULL))
 		{
 			rc = E_FAIL;
 			break;
@@ -3339,18 +3447,23 @@ wf_cliprdr_server_file_contents_response(CliprdrClientContext *context,
 			break;
 		}
 
-		CopyMemory(clipboard->req_fdata, fileContentsResponse->requestedData,
-				   fileContentsResponse->cbRequested);
+		if (fileContentsResponse->cbRequested > 0)
+			CopyMemory(clipboard->req_fdata, fileContentsResponse->requestedData,
+					   fileContentsResponse->cbRequested);
 
 		rc = CHANNEL_RC_OK;
 	} while (0);
 
+	if (!clipboard)
+		return rc;
 	if (!SetEvent(clipboard->req_fevent))
 	{
 		// If failed to set event, set flag to indicate the event is received.
 		DEBUG_CLIPRDR("wf_cliprdr_server_file_contents_response(), SetEvent failed with 0x%x", GetLastError());
 		clipboard->req_f_received = TRUE;
 	}
+	if (!ReleaseMutex(clipboard->req_f_state_mutex))
+		return ERROR_INTERNAL_ERROR;
 	return rc;
 }
 
@@ -3416,6 +3529,10 @@ BOOL wf_cliprdr_init(wfClipboard *clipboard, CliprdrClientContext *cliprdr)
 	if (!(clipboard->req_fevent = CreateEvent(NULL, TRUE, FALSE, NULL)))
 		goto error;
 	clipboard->req_f_received = FALSE;
+	if (!(clipboard->req_f_mutex = CreateMutex(NULL, FALSE, NULL)))
+		goto error;
+	if (!(clipboard->req_f_state_mutex = CreateMutex(NULL, FALSE, NULL)))
+		goto error;
 
 	if (!(clipboard->thread = CreateThread(NULL, 0, cliprdr_thread_func, clipboard, 0, NULL)))
 		goto error;
@@ -3488,6 +3605,12 @@ BOOL wf_cliprdr_uninit(wfClipboard *clipboard, CliprdrClientContext *cliprdr)
 
 	if (clipboard->req_fevent)
 		CloseHandle(clipboard->req_fevent);
+
+	if (clipboard->req_f_mutex)
+		CloseHandle(clipboard->req_f_mutex);
+
+	if (clipboard->req_f_state_mutex)
+		CloseHandle(clipboard->req_f_state_mutex);
 
 	clear_file_array(clipboard);
 	clear_format_map(clipboard);

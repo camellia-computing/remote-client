@@ -959,8 +959,12 @@ pub fn main_get_async_status() -> String {
     get_async_job_status()
 }
 
-pub fn main_get_http_status(url: String) -> Option<String> {
-    get_async_http_status(url)
+pub fn main_get_http_status(request_id: String) -> String {
+    crate::http_bridge::poll(request_id)
+}
+
+pub fn main_cancel_http_request(request_id: String) {
+    crate::http_bridge::cancel(request_id)
 }
 
 pub fn main_get_option(key: String) -> String {
@@ -1165,6 +1169,20 @@ pub fn main_get_api_server() -> String {
     get_api_server()
 }
 
+/// Obtain and sign a one-use Management device proof challenge.
+pub fn main_get_device_proof(purpose: String, id: String, uuid: String, token: String) -> String {
+    match crate::device_identity::request_device_proof(
+        &get_api_server(),
+        purpose.trim(),
+        id.trim(),
+        uuid.trim(),
+        token.trim(),
+    ) {
+        Ok(proof) => proof.to_string(),
+        Err(err) => serde_json::json!({"error": err.to_string()}).to_string(),
+    }
+}
+
 /// Registers this device against the configured API server.
 ///
 /// `deploy_device` already handles every platform - desktop reads and rewrites
@@ -1182,8 +1200,74 @@ pub fn main_resolve_avatar_url(avatar: String) -> String {
     resolve_avatar_url(avatar)
 }
 
-pub fn main_http_request(url: String, method: String, body: Option<String>, header: String) {
-    http_request(url, method, body, header)
+pub async fn main_http_request(
+    url: String,
+    method: String,
+    body: Option<String>,
+    header: String,
+) -> String {
+    crate::http_bridge::start(url, method, body, header).await
+}
+
+/// Native-only durable reservation backend. Error envelopes contain stable
+/// codes, never filesystem paths, raw I/O errors, request bodies or credentials.
+pub fn main_management_operation_journal(
+    action: String,
+    operation_id: String,
+    scope: String,
+    created_at_ms: String,
+) -> String {
+    use crate::management_operation_journal::{self as journal, JournalError, PendingOperation};
+    let result = (|| {
+        let directory = config::Config::path("management-operation-journal-v1");
+        if action == "pending" {
+            if !operation_id.is_empty() || !scope.is_empty() || !created_at_ms.is_empty() {
+                return Err(JournalError::InvalidRecord);
+            }
+            return journal::pending(&directory);
+        }
+        if !matches!(action.as_str(), "reserve" | "acknowledge")
+            || operation_id.len() != 36
+            || scope.len() != 64
+            || created_at_ms.len() > 16
+        {
+            return Err(JournalError::InvalidRecord);
+        }
+        let timestamp: u64 = created_at_ms
+            .parse()
+            .map_err(|_| JournalError::InvalidRecord)?;
+        if timestamp.to_string() != created_at_ms {
+            return Err(JournalError::InvalidRecord);
+        }
+        let record = PendingOperation {
+            operation_id,
+            scope,
+            created_at_ms: timestamp,
+        };
+        if action == "reserve" {
+            journal::reserve(&directory, &record)?;
+            Ok(Some(record))
+        } else {
+            journal::acknowledge(&directory, &record)?;
+            Ok(None)
+        }
+    })();
+    match result {
+        Ok(pending) => {
+            let pending: Vec<_> = pending
+                .into_iter()
+                .map(|record| {
+                    serde_json::json!({
+                        "operation_id": record.operation_id,
+                        "scope": record.scope,
+                        "created_at": record.created_at_ms,
+                    })
+                })
+                .collect();
+            serde_json::json!({"journal_version": 1, "code": "ok", "pending": pending}).to_string()
+        }
+        Err(error) => serde_json::json!({"journal_version": 1, "code": error.code()}).to_string(),
+    }
 }
 
 #[frb(sync)]

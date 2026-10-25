@@ -1,5 +1,4 @@
 use super::HbbHttpResponse;
-use crate::hbbs_http::create_http_client_with_url;
 use camellia_remote_protocol::{config::LocalConfig, log, ResultType};
 use serde_derive::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
@@ -20,6 +19,15 @@ const QUERY_TIMEOUT_SECS: u64 = 60 * 3;
 const REQUESTING_ACCOUNT_AUTH: &str = "Requesting account auth";
 const WAITING_ACCOUNT_AUTH: &str = "Waiting account auth";
 const LOGIN_ACCOUNT_AUTH: &str = "Login account auth";
+
+fn oidc_query_body(code: &str, id: &str, uuid: &str) -> String {
+    serde_json::json!({
+        "code": code,
+        "id": id,
+        "uuid": uuid,
+    })
+    .to_string()
+}
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct OidcAuthUrl {
@@ -108,7 +116,6 @@ pub struct AuthBody {
 }
 
 pub struct OidcSession {
-    warmed_api_server: Option<String>,
     state_msg: &'static str,
     failed_msg: String,
     code_url: Option<OidcAuthUrl>,
@@ -135,7 +142,6 @@ impl Default for UserStatus {
 impl OidcSession {
     fn new() -> Self {
         Self {
-            warmed_api_server: None,
             state_msg: REQUESTING_ACCOUNT_AUTH,
             failed_msg: "".to_owned(),
             code_url: None,
@@ -146,30 +152,20 @@ impl OidcSession {
         }
     }
 
-    fn ensure_client(api_server: &str) {
-        // The probe below is a blocking network round-trip, so it must not run
-        // while the session lock is held; warming twice is harmless.
-        if OIDC_SESSION.read().unwrap().warmed_api_server.as_deref() == Some(api_server) {
-            return;
-        }
-        // This URL is used to detect the appropriate TLS implementation for the server.
-        let login_option_url = format!("{}/api/login-options", api_server);
-        let _ = create_http_client_with_url(&login_option_url);
-        OIDC_SESSION.write().unwrap().warmed_api_server = Some(api_server.to_owned());
-    }
-
     fn auth(
         api_server: &str,
         op: &str,
         id: &str,
         uuid: &str,
     ) -> ResultType<HbbHttpResponse<OidcAuthUrl>> {
-        Self::ensure_client(api_server);
+        let device_proof =
+            crate::device_identity::request_device_proof(api_server, "oidc", id, uuid, "")?;
         let body = serde_json::json!({
             "op": op,
             "id": id,
             "uuid": uuid,
             "deviceInfo": crate::ui_interface::get_login_device_info(),
+            "device_proof": device_proof,
         })
         .to_string();
         let resp = crate::post_request_sync(format!("{}/api/oidc/auth", api_server), body, "")?;
@@ -182,20 +178,12 @@ impl OidcSession {
         id: &str,
         uuid: &str,
     ) -> ResultType<HbbHttpResponse<AuthBody>> {
-        let url = Url::parse_with_params(
-            &format!("{}/api/oidc/auth-query", api_server),
-            &[("code", code), ("id", id), ("uuid", uuid)],
+        let resp = crate::post_request_sync(
+            format!("{}/api/oidc/auth-query", api_server),
+            oidc_query_body(code, id, uuid),
+            "",
         )?;
-        Self::ensure_client(api_server);
-        #[derive(Deserialize)]
-        struct HttpResponseBody {
-            body: String,
-        }
-
-        let resp =
-            crate::http_request_sync(url.to_string(), "GET".to_owned(), None, "{}".to_owned())?;
-        let resp = serde_json::from_str::<HttpResponseBody>(&resp)?;
-        HbbHttpResponse::parse(&resp.body)
+        HbbHttpResponse::parse(&resp)
     }
 
     fn reset(&mut self) {
@@ -359,5 +347,21 @@ impl OidcSession {
 
     pub fn get_result() -> AuthResult {
         OIDC_SESSION.read().unwrap().get_result_()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::oidc_query_body;
+
+    #[test]
+    fn oidc_poll_credentials_are_serialized_in_the_post_body() {
+        let body = oidc_query_body("poll-code-canary", "123456789", "device-uuid-canary");
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+        assert_eq!(parsed["code"], "poll-code-canary");
+        assert_eq!(parsed["id"], "123456789");
+        assert_eq!(parsed["uuid"], "device-uuid-canary");
+        assert_eq!(parsed.as_object().unwrap().len(), 3);
     }
 }

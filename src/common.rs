@@ -16,7 +16,8 @@ use camellia_remote_protocol::{
     base64::{engine::general_purpose::STANDARD as BASE64, Engine as _},
     bytes::Bytes,
     config::{
-        self, keys, use_ws, Config, LocalConfig, CONNECT_TIMEOUT, READ_TIMEOUT, RENDEZVOUS_PORT,
+        self, keys, use_ws, Config, LocalConfig, Socks5Server, CONNECT_TIMEOUT, READ_TIMEOUT,
+        RENDEZVOUS_PORT,
     },
     crypto::{box_, secretbox, sign},
     futures::future::join_all,
@@ -25,8 +26,9 @@ use camellia_remote_protocol::{
     message_proto::*,
     protobuf::{Enum, Message as _},
     rendezvous_proto::*,
-    socket_client, timeout,
-    tls::{get_cached_tls_type, upsert_tls_cache, TlsType},
+    socket_client,
+    tcp::{CipherRole, Encrypt},
+    timeout,
     tokio::{
         self,
         net::UdpSocket,
@@ -36,7 +38,7 @@ use camellia_remote_protocol::{
 };
 
 use crate::{
-    hbbs_http::{create_http_client_async_with_tls, get_url_for_tls},
+    hbbs_http::create_http_client_async_for_configuration,
     ui_interface::{get_api_server as ui_get_api_server, get_option, set_option},
 };
 
@@ -62,6 +64,49 @@ pub const TIMER_OUT: Duration = Duration::from_secs(1);
 pub const DEFAULT_KEEP_ALIVE: i32 = 60_000;
 
 const MIN_VER_MULTI_UI_SESSION: &str = "1.2.4";
+const TRACEPARENT_HEADER: &str = "traceparent";
+const CAMELLIA_EVENT_ID_HEADER: &str = "X-Camellia-Event-ID";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct HttpOperation {
+    trace_id: String,
+    event_id: String,
+}
+
+impl HttpOperation {
+    pub(crate) fn new() -> Self {
+        let event_id = uuid::Uuid::new_v4();
+        Self {
+            trace_id: event_id.simple().to_string(),
+            event_id: event_id.to_string(),
+        }
+    }
+
+    pub(crate) fn from_event_id(event_id: &str) -> ResultType<Self> {
+        let parsed = uuid::Uuid::parse_str(event_id)?;
+        if parsed.get_version_num() != 4
+            || parsed.get_variant() != uuid::Variant::RFC4122
+            || parsed.to_string() != event_id
+        {
+            bail!("HTTP operation event ID must be a canonical UUIDv4");
+        }
+        Ok(Self {
+            trace_id: parsed.simple().to_string(),
+            event_id: event_id.to_owned(),
+        })
+    }
+
+    pub(crate) fn correlation_headers(&self) -> [(String, String); 2] {
+        let span_id = format!("{:016x}", uuid::Uuid::new_v4().as_u128() as u64);
+        [
+            (
+                TRACEPARENT_HEADER.to_owned(),
+                format!("00-{}-{span_id}-01", self.trace_id),
+            ),
+            (CAMELLIA_EVENT_ID_HEADER.to_owned(), self.event_id.clone()),
+        ]
+    }
+}
 
 pub mod input {
     pub const MOUSE_TYPE_MOVE: i32 = 0;
@@ -749,7 +794,7 @@ pub fn run_me<T: AsRef<std::ffi::OsStr>>(args: Vec<T>) -> std::io::Result<std::p
 pub fn username() -> String {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     return whoami::username()
-        .unwrap_or_else(|_| "unknown".to_owned())
+        .unwrap_or_default()
         .trim_end_matches('\0')
         .to_owned();
     #[cfg(any(target_os = "android", target_os = "ios"))]
@@ -1010,20 +1055,26 @@ pub fn get_api_auth_header() -> Option<String> {
     get_api_access_token().map(|token| format!("Authorization: Bearer {token}"))
 }
 
-/// Check if we should use raw TCP proxy for API calls.
-/// Returns true if USE_RAW_TCP_FOR_API builtin option is "Y", WebSocket is off,
-/// and the target URL belongs to the configured non-public API host.
-#[inline]
-fn should_use_raw_tcp_for_api(url: &str) -> bool {
-    get_builtin_option(keys::OPTION_USE_RAW_TCP_FOR_API) == "Y"
-        && !use_ws()
-        && is_tcp_proxy_api_target(url)
+#[derive(Clone, Copy)]
+struct RawTcpPolicy {
+    first: bool,
+    fallback: bool,
 }
 
-/// Check if we can attempt raw TCP proxy fallback for this target URL.
-#[inline]
-fn can_fallback_to_raw_tcp(url: &str) -> bool {
-    !use_ws() && is_tcp_proxy_api_target(url)
+impl RawTcpPolicy {
+    fn capture(
+        url: &str,
+        api: &str,
+        proxy_configured: bool,
+        websocket: bool,
+        force_raw: bool,
+    ) -> Self {
+        let allowed = !proxy_configured && !websocket && should_use_tcp_proxy_for_api_url(url, api);
+        Self {
+            first: allowed && force_raw,
+            fallback: allowed,
+        }
+    }
 }
 
 #[inline]
@@ -1032,19 +1083,20 @@ fn should_use_tcp_proxy_for_api_url(url: &str, api_url: &str) -> bool {
         return false;
     }
 
-    let target_host = url::Url::parse(url)
-        .ok()
-        .and_then(|parsed| parsed.host_str().map(|host| host.to_ascii_lowercase()));
-    let api_host = url::Url::parse(api_url)
-        .ok()
-        .and_then(|parsed| parsed.host_str().map(|host| host.to_ascii_lowercase()));
-
-    matches!((target_host, api_host), (Some(target), Some(api)) if target == api)
-}
-
-#[inline]
-fn is_tcp_proxy_api_target(url: &str) -> bool {
-    should_use_tcp_proxy_for_api_url(url, &ui_get_api_server())
+    match (url::Url::parse(url), url::Url::parse(api_url)) {
+        (Ok(target), Ok(api)) => {
+            matches!(target.scheme(), "http" | "https")
+                && matches!(api.scheme(), "http" | "https")
+                && target.has_host()
+                && api.has_host()
+                && target.origin() == api.origin()
+                && target.username().is_empty()
+                && target.password().is_none()
+                && api.username().is_empty()
+                && api.password().is_none()
+        }
+        _ => false,
+    }
 }
 
 fn tcp_proxy_log_target(url: &str) -> String {
@@ -1071,22 +1123,41 @@ fn get_tcp_proxy_addr() -> String {
     check_port(Config::get_rendezvous_server(), RENDEZVOUS_PORT)
 }
 
+/// Owned routing inputs; never re-read configuration after request admission.
+pub(crate) struct RawTcpContext {
+    endpoint: String,
+    key: String,
+}
+
+pub(crate) async fn capture_raw_tcp_context() -> RawTcpContext {
+    RawTcpContext {
+        endpoint: get_tcp_proxy_addr(),
+        key: crate::get_key(true).await,
+    }
+}
+
 /// Send an HTTP request via the rendezvous server's TCP proxy using protobuf.
-/// Connects with `connect_tcp` + `secure_tcp`, sends `HttpProxyRequest`,
+/// Resolves through the shared bounded DNS pool, connects to numeric addresses
+/// with the captured no-proxy policy, authenticates, sends `HttpProxyRequest`,
 /// receives `HttpProxyResponse`.
 ///
-/// The entire operation (connect + handshake + send + receive) is wrapped in
+/// The entire operation (DNS + connect + handshake + send + receive) is wrapped in
 /// an overall timeout of `CONNECT_TIMEOUT + READ_TIMEOUT` so that a stall at
 /// any stage cannot block the caller indefinitely.
 async fn tcp_proxy_request(
+    context: RawTcpContext,
     method: &str,
     url: &str,
     body: &[u8],
     headers: Vec<HeaderEntry>,
 ) -> ResultType<HttpProxyResponse> {
-    let tcp_addr = get_tcp_proxy_addr();
-    if tcp_addr.is_empty() {
-        bail!("No rendezvous server configured for TCP proxy");
+    let RawTcpContext {
+        endpoint: tcp_addr,
+        key,
+    } = context;
+    // Validate before DNS/connect, not merely before sending the HTTP body.
+    if get_rs_pk(&key).is_none() {
+        bail!("raw_tcp_invalid_key");
     }
 
     let parsed = url::Url::parse(url)?;
@@ -1105,8 +1176,23 @@ async fn tcp_proxy_request(
 
     let overall_timeout = CONNECT_TIMEOUT + READ_TIMEOUT;
     timeout(overall_timeout, async {
-        let mut conn = socket_client::connect_tcp(&*tcp_addr, CONNECT_TIMEOUT).await?;
-        let key = crate::get_key(true).await;
+        // One DNS+connect budget, not one timeout per returned address. A
+        // cancelled OS lookup retains its shared permit until getaddrinfo ends.
+        let mut conn = timeout(CONNECT_TIMEOUT, async {
+            let addresses = crate::hbbs_http::resolve_endpoint(&tcp_addr)
+                .await.map_err(|_| anyhow!("raw_tcp_dns_failed"))?;
+            for address in addresses {
+                if let Ok(mut connection) = camellia_remote_protocol::tcp::FramedStream::new(
+                    address, None, CONNECT_TIMEOUT,
+                ).await {
+                    *connection.0.codec_mut() = camellia_remote_protocol::bytes_codec::BytesCodec::with_max_packet_length(
+                        camellia_remote_protocol::bytes_codec::RENDEZVOUS_CONTROL_MAX_PACKET_LENGTH,
+                    );
+                    return Ok(Stream::Tcp(connection));
+                }
+            }
+            Err(anyhow!("raw_tcp_connect_failed"))
+        }).await??;
         secure_tcp_silent(&mut conn, &key).await?;
 
         let mut req = HttpProxyRequest::new();
@@ -1133,6 +1219,28 @@ async fn tcp_proxy_request(
         }
     })
     .await?
+}
+
+/// The UI bridge chooses one route before sending, never HTTP then TCP replay.
+/// Unlike the historical fallback helper, this requires the full API origin.
+pub(crate) fn bridge_raw_tcp_target(url: &str) -> bool {
+    if get_builtin_option(keys::OPTION_USE_RAW_TCP_FOR_API) != "Y" || use_ws() {
+        return false;
+    }
+    match (url::Url::parse(url), url::Url::parse(&ui_get_api_server())) {
+        (Ok(target), Ok(api)) => target.origin() == api.origin(),
+        _ => false,
+    }
+}
+
+pub(crate) async fn bridge_raw_tcp_request(
+    context: RawTcpContext,
+    url: &str,
+    method: &str,
+    body: &[u8],
+    headers: Vec<HeaderEntry>,
+) -> ResultType<HttpProxyResponse> {
+    tcp_proxy_request(context, method, url, body, headers).await
 }
 
 /// Build HeaderEntry list from "Key: Value" style header string (used by post_request).
@@ -1166,59 +1274,56 @@ fn parse_simple_header(header: &str) -> Vec<HeaderEntry> {
     entries
 }
 
+fn post_header_entries(header: &str, operation: &HttpOperation) -> Vec<HeaderEntry> {
+    let mut entries = parse_simple_header(header);
+    entries.retain(|entry| {
+        !entry.name.eq_ignore_ascii_case(TRACEPARENT_HEADER)
+            && !entry.name.eq_ignore_ascii_case(CAMELLIA_EVENT_ID_HEADER)
+    });
+    entries.extend(
+        operation
+            .correlation_headers()
+            .into_iter()
+            .map(|(name, value)| HeaderEntry {
+                name,
+                value,
+                ..Default::default()
+            }),
+    );
+    entries
+}
+
 /// POST request via TCP proxy.
-async fn post_request_via_tcp_proxy(url: &str, body: &str, header: &str) -> ResultType<String> {
-    let headers = parse_simple_header(header);
-    let resp = tcp_proxy_request("POST", url, body.as_bytes(), headers).await?;
+async fn post_request_via_tcp_proxy(
+    context: RawTcpContext,
+    url: &str,
+    body: &str,
+    header: &str,
+    operation: &HttpOperation,
+) -> ResultType<String> {
+    let headers = post_header_entries(header, operation);
+    let resp = tcp_proxy_request(context, "POST", url, body.as_bytes(), headers).await?;
     if !resp.error.is_empty() {
         bail!("TCP proxy error: {}", resp.error);
     }
     Ok(String::from_utf8_lossy(&resp.body).to_string())
 }
 
-fn http_proxy_response_to_json(resp: HttpProxyResponse) -> ResultType<String> {
-    if !resp.error.is_empty() {
-        bail!("TCP proxy error: {}", resp.error);
-    }
-
-    let mut response_headers = Map::new();
-    for entry in resp.headers.iter() {
-        response_headers.insert(entry.name.to_lowercase(), json!(entry.value));
-    }
-
-    let mut result = Map::new();
-    result.insert("status_code".to_string(), json!(resp.status));
-    result.insert("headers".to_string(), Value::Object(response_headers));
-    result.insert(
-        "body".to_string(),
-        json!(String::from_utf8_lossy(&resp.body)),
-    );
-
-    serde_json::to_string(&result).map_err(|e| anyhow!("Failed to serialize response: {}", e))
-}
-
-fn parse_json_header_entries(header: &str) -> ResultType<Vec<HeaderEntry>> {
-    let v: Value = serde_json::from_str(header)?;
-    if let Value::Object(obj) = v {
-        Ok(obj
-            .iter()
-            .map(|(key, value)| HeaderEntry {
-                name: key.clone(),
-                value: value.as_str().unwrap_or_default().into(),
-                ..Default::default()
-            })
-            .collect())
-    } else {
-        Err(anyhow!("HTTP header information parsing failed!"))
-    }
-}
-
-/// Returns (status_code, body_text). Separating status so the wrapper can decide on fallback.
-async fn post_request_http(url: &str, body: &str, header: &str) -> ResultType<(u16, String)> {
-    let proxy_conf = Config::get_socks();
-    let tls_url = get_url_for_tls(url, &proxy_conf);
-    let tls_type = get_cached_tls_type(tls_url);
-    let response = post_request_(url, tls_url, body.to_owned(), header, tls_type).await?;
+async fn post_request_http(
+    url: &str,
+    body: &str,
+    header: &str,
+    operation: &HttpOperation,
+    proxy_conf: &Option<Socks5Server>,
+) -> ResultType<(u16, String)> {
+    let client = create_http_client_async_for_configuration(proxy_conf.as_ref())?;
+    let response = post_request_(
+        url,
+        body.to_owned(),
+        post_header_entries(header, operation),
+        client,
+    )
+    .await?;
     let status = response.status().as_u16();
     let text = response.text().await?;
     Ok((status, text))
@@ -1229,6 +1334,7 @@ async fn post_request_http(url: &str, body: &str, header: &str) -> ResultType<(u
 async fn with_tcp_proxy_fallback<HttpFut, TcpFut>(
     url: &str,
     method: &str,
+    policy: RawTcpPolicy,
     http_fn: HttpFut,
     tcp_fn: TcpFut,
 ) -> ResultType<String>
@@ -1236,7 +1342,7 @@ where
     HttpFut: Future<Output = ResultType<(u16, String)>>,
     TcpFut: Future<Output = ResultType<String>>,
 {
-    if should_use_raw_tcp_for_api(url) {
+    if policy.first {
         return tcp_fn.await;
     }
 
@@ -1246,7 +1352,7 @@ where
         Ok((status, _)) => *status >= 500,
     };
 
-    if should_fallback && can_fallback_to_raw_tcp(url) {
+    if should_fallback && policy.fallback {
         log::warn!(
             "HTTP {} to {} failed or 5xx (result: {:?}), trying TCP proxy fallback",
             method,
@@ -1274,37 +1380,50 @@ where
 /// - 4xx responses are returned as-is (server is reachable, business logic error).
 /// - If fallback also fails, returns the original HTTP result (text or error).
 pub async fn post_request(url: String, body: String, header: &str) -> ResultType<String> {
+    let operation = HttpOperation::new();
+    post_request_with_operation(url, body, header, &operation).await
+}
+
+pub(crate) async fn post_request_with_operation(
+    url: String,
+    body: String,
+    header: &str,
+    operation: &HttpOperation,
+) -> ResultType<String> {
+    // One operation has one captured proxy policy. Changes to live settings
+    // cannot turn a failed explicit proxy into a later direct/raw-TCP attempt.
+    let proxy_conf = Config::get_socks();
+    let policy = RawTcpPolicy::capture(
+        &url,
+        &ui_get_api_server(),
+        proxy_conf.is_some(),
+        use_ws(),
+        get_builtin_option(keys::OPTION_USE_RAW_TCP_FOR_API) == "Y",
+    );
+    let raw_context = capture_raw_tcp_context().await;
     with_tcp_proxy_fallback(
         &url,
         "POST",
-        post_request_http(&url, &body, header),
-        post_request_via_tcp_proxy(&url, &body, header),
+        policy,
+        post_request_http(&url, &body, header, operation, &proxy_conf),
+        post_request_via_tcp_proxy(raw_context, &url, &body, header, operation),
     )
     .await
 }
 
 async fn post_request_(
     url: &str,
-    tls_url: &str,
     body: String,
-    header: &str,
-    tls_type: Option<TlsType>,
+    headers: Vec<HeaderEntry>,
+    client: reqwest::Client,
 ) -> ResultType<reqwest::Response> {
-    let tls_type = tls_type.unwrap_or(TlsType::Rustls);
-    let mut req = create_http_client_async_with_tls(tls_type).post(url);
-    if !header.is_empty() {
-        let tmp: Vec<&str> = header.split(": ").collect();
-        if tmp.len() == 2 {
-            req = req.header(tmp[0], tmp[1]);
-        }
+    let mut req = client.post(url);
+    for entry in headers {
+        req = req.header(entry.name, entry.value);
     }
-    req = req.header("Content-Type", "application/json");
     let to = std::time::Duration::from_secs(12);
     match req.body(body).timeout(to).send().await {
-        Ok(resp) => {
-            upsert_tls_cache(tls_url, tls_type);
-            Ok(resp)
-        }
+        Ok(resp) => Ok(resp),
         Err(e) => Err(anyhow!("{:?}", e)),
     }
 }
@@ -1312,109 +1431,6 @@ async fn post_request_(
 #[tokio::main(flavor = "current_thread")]
 pub async fn post_request_sync(url: String, body: String, header: &str) -> ResultType<String> {
     post_request(url, body, header).await
-}
-
-async fn get_http_response_async(
-    url: &str,
-    tls_url: &str,
-    method: &str,
-    body: Option<String>,
-    header: &str,
-    tls_type: Option<TlsType>,
-) -> ResultType<reqwest::Response> {
-    let tls_type = tls_type.unwrap_or(TlsType::Rustls);
-    let http_client = create_http_client_async_with_tls(tls_type);
-    let normalized_method = method.to_ascii_lowercase();
-    let mut http_client = match normalized_method.as_str() {
-        "get" => http_client.get(url),
-        "post" => http_client.post(url),
-        "put" => http_client.put(url),
-        "delete" => http_client.delete(url),
-        _ => return Err(anyhow!("The HTTP request method is not supported!")),
-    };
-    for entry in parse_json_header_entries(header)? {
-        http_client = http_client.header(entry.name, entry.value);
-    }
-
-    if let Some(b) = body {
-        http_client = http_client.body(b);
-    }
-    match http_client
-        .timeout(std::time::Duration::from_secs(12))
-        .send()
-        .await
-    {
-        Ok(resp) => {
-            upsert_tls_cache(tls_url, tls_type);
-            Ok(resp)
-        }
-        Err(e) => Err(anyhow!("{:?}", e)),
-    }
-}
-
-/// Returns (status_code, json_string) so the caller can inspect the status
-/// without re-parsing the serialized JSON.
-async fn http_request_http(
-    url: &str,
-    method: &str,
-    body: Option<String>,
-    header: &str,
-) -> ResultType<(u16, String)> {
-    let proxy_conf = Config::get_socks();
-    let tls_url = get_url_for_tls(url, &proxy_conf);
-    let tls_type = get_cached_tls_type(tls_url);
-    let response = get_http_response_async(url, tls_url, method, body, header, tls_type).await?;
-    // Serialize response headers
-    let mut response_headers = Map::new();
-    for (key, value) in response.headers() {
-        response_headers.insert(key.to_string(), json!(value.to_str().unwrap_or("")));
-    }
-
-    let status_code = response.status().as_u16();
-    let response_body = response.text().await?;
-
-    // Construct the JSON object
-    let mut result = Map::new();
-    result.insert("status_code".to_string(), json!(status_code));
-    result.insert("headers".to_string(), Value::Object(response_headers));
-    result.insert("body".to_string(), json!(response_body));
-
-    // Convert map to JSON string
-    let json_str = serde_json::to_string(&result)
-        .map_err(|e| anyhow!("Failed to serialize response: {}", e))?;
-    Ok((status_code, json_str))
-}
-
-/// HTTP request with raw TCP proxy support.
-#[tokio::main(flavor = "current_thread")]
-pub async fn http_request_sync(
-    url: String,
-    method: String,
-    body: Option<String>,
-    header: String,
-) -> ResultType<String> {
-    with_tcp_proxy_fallback(
-        &url,
-        &method,
-        http_request_http(&url, &method, body.clone(), &header),
-        http_request_via_tcp_proxy(&url, &method, body.as_deref(), &header),
-    )
-    .await
-}
-
-/// General HTTP request via TCP proxy. Header is a JSON string (used by http_request_sync).
-/// Returns a JSON string with status_code, headers, body (same format as http_request_sync).
-async fn http_request_via_tcp_proxy(
-    url: &str,
-    method: &str,
-    body: Option<&str>,
-    header: &str,
-) -> ResultType<String> {
-    let headers = parse_json_header_entries(header)?;
-    let body_bytes = body.unwrap_or("").as_bytes();
-
-    let resp = tcp_proxy_request(method, url, body_bytes, headers).await?;
-    http_proxy_response_to_json(resp)
 }
 
 #[inline]
@@ -1708,7 +1724,7 @@ async fn secure_tcp_impl(conn: &mut Stream, key: &str, log_on_success: bool) -> 
         ..Default::default()
     });
     timeout(CONNECT_TIMEOUT, conn.send(&msg_out)).await??;
-    conn.set_key(key);
+    conn.set_key(key, CipherRole::Initiator);
     if !conn.is_secured() {
         bail!("Handshake failed: secure channel was not activated");
     }
@@ -1764,7 +1780,8 @@ pub fn create_symmetric_key_msg(
     let (our_pk_b, out_sk_b) = box_::gen_keypair();
     let key = secretbox::gen_key();
     let nonce = box_::Nonce([0u8; box_::NONCEBYTES]);
-    let sealed_key = box_::seal(&key.0, &nonce, &their_pk_b, &out_sk_b)
+    let key_envelope = Encrypt::encode_session_key(&key);
+    let sealed_key = box_::seal(&key_envelope, &nonce, &their_pk_b, &out_sk_b)
         .map_err(|_| anyhow!("Handshake failed: session key encryption failed"))?;
     Ok((Vec::from(our_pk_b.0).into(), sealed_key.into(), key))
 }
@@ -2569,7 +2586,7 @@ mod tests {
             "https://admin.example.com/api/login",
             "https://admin.example.com"
         ));
-        assert!(should_use_tcp_proxy_for_api_url(
+        assert!(!should_use_tcp_proxy_for_api_url(
             "https://admin.example.com:21114/api/login",
             "https://admin.example.com"
         ));
@@ -2589,6 +2606,67 @@ mod tests {
             "not a url",
             "https://admin.example.com"
         ));
+    }
+
+    #[tokio::test]
+    async fn explicit_proxy_policy_never_falls_back_after_transport_errors_or_5xx() {
+        let url = "https://management.example.test/api/heartbeat";
+        for force in [false, true] {
+            for status in [None, Some(503)] {
+                let policy = RawTcpPolicy::capture(
+                    url,
+                    "https://management.example.test",
+                    true,
+                    false,
+                    force,
+                );
+                assert!(!policy.first && !policy.fallback);
+                let raw_started = std::sync::atomic::AtomicBool::new(false);
+                let result = with_tcp_proxy_fallback(
+                    url,
+                    "POST",
+                    policy,
+                    async {
+                        match status {
+                            Some(code) => Ok((code, "upstream rejected".to_owned())),
+                            None => Err(anyhow!("http_proxy_configuration_invalid")),
+                        }
+                    },
+                    async {
+                        raw_started.store(true, std::sync::atomic::Ordering::Release);
+                        Ok("must not run".to_owned())
+                    },
+                )
+                .await;
+                assert!(!raw_started.load(std::sync::atomic::Ordering::Acquire));
+                if status.is_none() {
+                    assert!(result.is_err());
+                } else {
+                    assert_eq!(result.unwrap(), "upstream rejected");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn raw_policy_is_a_snapshot_of_explicit_proxy_and_full_api_origin() {
+        let api = "https://management.example.test";
+        let target = format!("{api}/api/login");
+        let original = RawTcpPolicy::capture(&target, api, true, false, true);
+        let updated = RawTcpPolicy::capture(&target, api, false, false, true);
+        assert!(!original.first && !original.fallback);
+        assert!(updated.first && updated.fallback);
+        for target in [
+            "http://management.example.test/api/login",
+            "https://management.example.test:8443/api/login",
+            "https://other.example.test/api/login",
+            "https://user:private@management.example.test/api/login",
+        ] {
+            let policy = RawTcpPolicy::capture(target, api, false, false, true);
+            assert!(!policy.first && !policy.fallback);
+        }
+        let policy = RawTcpPolicy::capture(&target, api, false, true, true);
+        assert!(!policy.first && !policy.fallback);
     }
 
     #[test]
@@ -2616,50 +2694,193 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_http_request_via_tcp_proxy_rejects_invalid_header_json() {
-        let result = http_request_via_tcp_proxy("not a url", "get", None, "{").await;
-        assert!(result.is_err());
+    async fn raw_tcp_invalid_key_is_rejected_before_connecting() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let request = tcp_proxy_request(
+            RawTcpContext {
+                endpoint: listener.local_addr().unwrap().to_string(),
+                key: "PRIVATE-INVALID-KEY".to_owned(),
+            },
+            "POST",
+            "https://management.example.test/api/ab/peer/add",
+            b"PRIVATE-BODY",
+            vec![],
+        );
+        let result = tokio::time::timeout(Duration::from_secs(2), request)
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(result.to_string(), "raw_tcp_invalid_key");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), listener.accept())
+                .await
+                .is_err(),
+            "invalid credentials must not open a socket"
+        );
     }
 
     #[tokio::test]
-    async fn test_http_request_via_tcp_proxy_rejects_non_object_header_json() {
-        let err = http_request_via_tcp_proxy("not a url", "get", None, "[]")
+    async fn raw_tcp_captured_context_carries_mandatory_headers_on_an_authenticated_channel() {
+        use camellia_remote_protocol::tcp::FramedStream;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = listener.local_addr().unwrap().to_string();
+        let (public, secret) = sign::gen_keypair();
+        let key = BASE64.encode(public.0);
+        let expected_key = key.clone();
+        let server = tokio::spawn(async move {
+            let (socket, address) = listener.accept().await.unwrap();
+            let mut connection = FramedStream::from(socket, address);
+            let (box_public, box_secret) = box_::gen_keypair();
+            let mut challenge = RendezvousMessage::new();
+            challenge.set_key_exchange(KeyExchange {
+                keys: vec![sign::sign(&box_public.0, &secret).into()],
+                ..Default::default()
+            });
+            connection.send(&challenge).await.unwrap();
+            let message =
+                RendezvousMessage::parse_from_bytes(&connection.next().await.unwrap().unwrap())
+                    .unwrap();
+            let Some(rendezvous_message::Union::KeyExchange(exchange)) = message.union else {
+                panic!("expected secure handshake, never a plaintext HTTP request");
+            };
+            assert_eq!(exchange.keys.len(), 2);
+            let key = Encrypt::decode(&exchange.keys[1], &exchange.keys[0], &box_secret).unwrap();
+            connection.set_key(key, CipherRole::Responder);
+            let message =
+                RendezvousMessage::parse_from_bytes(&connection.next().await.unwrap().unwrap())
+                    .unwrap();
+            let Some(rendezvous_message::Union::HttpProxyRequest(request)) = message.union else {
+                panic!("expected encrypted HTTP request");
+            };
+            assert_eq!(request.method, "POST");
+            assert_eq!(request.path, "/api/ab/peer/add?guid=book");
+            assert_eq!(request.body.as_ref(), b"{\"peers\":[]}");
+            assert_eq!(request.licence_key, expected_key);
+            for (name, value) in [
+                ("Authorization", "Bearer test-secret"),
+                ("Idempotency-Key", "03440000-0000-4000-8000-000000000001"),
+                ("If-Match", "\"7\""),
+            ] {
+                assert_eq!(
+                    request
+                        .headers
+                        .iter()
+                        .find(|h| h.name == name)
+                        .unwrap()
+                        .value,
+                    value
+                );
+            }
+            let mut response = RendezvousMessage::new();
+            response.set_http_proxy_response(HttpProxyResponse {
+                status: 200,
+                body: Bytes::from_static(b"receipt"),
+                ..Default::default()
+            });
+            connection.send(&response).await.unwrap();
+        });
+        let request = tcp_proxy_request(
+            RawTcpContext { endpoint, key },
+            "POST",
+            "https://management.example.test/api/ab/peer/add?guid=book",
+            b"{\"peers\":[]}",
+            [
+                ("Authorization", "Bearer test-secret"),
+                ("Idempotency-Key", "03440000-0000-4000-8000-000000000001"),
+                ("If-Match", "\"7\""),
+            ]
+            .into_iter()
+            .map(|(name, value)| HeaderEntry {
+                name: name.to_owned(),
+                value: value.to_owned(),
+                ..Default::default()
+            })
+            .collect(),
+        );
+        let response = tokio::time::timeout(Duration::from_secs(2), request)
             .await
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("HTTP header information parsing failed!"));
+            .unwrap()
+            .unwrap();
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body.as_ref(), b"receipt");
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap();
     }
 
-    #[test]
-    fn test_parse_json_header_entries_preserves_single_content_type() {
-        let headers = parse_json_header_entries(
-            r#"{"Content-Type":"text/plain","Authorization":"Bearer token"}"#,
-        )
-        .unwrap();
-
+    #[tokio::test]
+    async fn raw_tcp_cancellation_during_handshake_closes_socket_without_http_payload() {
+        use tokio::io::AsyncReadExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let context = RawTcpContext {
+            endpoint: listener.local_addr().unwrap().to_string(),
+            key: BASE64.encode(sign::gen_keypair().0 .0),
+        };
+        let request = tokio::spawn(async move {
+            tcp_proxy_request(
+                context,
+                "POST",
+                "https://management.example.test/api/login",
+                b"PRIVATE-MUTATION",
+                vec![],
+            )
+            .await
+        });
+        let (mut socket, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        request.abort();
+        assert!(request.await.unwrap_err().is_cancelled());
+        let mut buffer = [0; 64];
         assert_eq!(
-            headers
-                .iter()
-                .filter(|entry| entry.name.eq_ignore_ascii_case("Content-Type"))
-                .count(),
-            1
-        );
-        assert_eq!(
-            headers
-                .iter()
-                .find(|entry| entry.name.eq_ignore_ascii_case("Content-Type"))
-                .map(|entry| entry.value.as_str()),
-            Some("text/plain")
+            tokio::time::timeout(Duration::from_secs(2), socket.read(&mut buffer))
+                .await
+                .unwrap()
+                .unwrap(),
+            0
         );
     }
 
-    #[test]
-    fn test_parse_json_header_entries_does_not_add_default_content_type() {
-        let headers = parse_json_header_entries(r#"{"Authorization":"Bearer token"}"#).unwrap();
-
-        assert!(!headers
-            .iter()
-            .any(|entry| entry.name.eq_ignore_ascii_case("Content-Type")));
+    #[tokio::test]
+    async fn raw_tcp_rejects_session_sized_control_frame_before_receiving_payload() {
+        use camellia_remote_protocol::bytes_codec::RENDEZVOUS_CONTROL_MAX_PACKET_LENGTH;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let context = RawTcpContext {
+            endpoint: listener.local_addr().unwrap().to_string(),
+            key: BASE64.encode(sign::gen_keypair().0 .0),
+        };
+        let request = tokio::spawn(async move {
+            tcp_proxy_request(
+                context,
+                "POST",
+                "https://management.example.test/api/login",
+                b"PRIVATE-MUTATION",
+                vec![],
+            )
+            .await
+        });
+        let (mut socket, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        let header = (((RENDEZVOUS_CONTROL_MAX_PACKET_LENGTH + 1) as u32) << 2) | 3;
+        socket.write_all(&header.to_le_bytes()).await.unwrap();
+        assert!(tokio::time::timeout(Duration::from_secs(2), request)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_err());
+        let mut buffer = [0; 64];
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), socket.read(&mut buffer))
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
     }
 
     #[test]
@@ -2707,6 +2928,113 @@ mod tests {
     }
 
     #[test]
+    fn http_operation_headers_keep_logical_identity_and_rotate_attempt_span() {
+        let event_id = "11111111-1111-4111-8111-111111111111";
+        let operation = HttpOperation::from_event_id(event_id).unwrap();
+        let first = operation.correlation_headers();
+        let second = operation.correlation_headers();
+
+        assert_eq!(
+            first[1],
+            (CAMELLIA_EVENT_ID_HEADER.to_owned(), event_id.to_owned())
+        );
+        assert_eq!(second[1], first[1]);
+        let first_parts = first[0].1.split('-').collect::<Vec<_>>();
+        let second_parts = second[0].1.split('-').collect::<Vec<_>>();
+        assert_eq!(first[0].0, TRACEPARENT_HEADER);
+        assert_eq!(first_parts.len(), 4);
+        assert_eq!(first_parts[0], "00");
+        assert_eq!(first_parts[1], "11111111111141118111111111111111");
+        assert_eq!(first_parts[1], second_parts[1]);
+        assert_eq!(first_parts[3], "01");
+        assert_eq!(first_parts[2].len(), 16);
+        assert!(first_parts[2].bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_ne!(first_parts[2], second_parts[2]);
+    }
+
+    #[test]
+    fn direct_and_tcp_post_headers_share_contract_and_override_caller_correlation() {
+        let operation =
+            HttpOperation::from_event_id("22222222-2222-4222-8222-222222222222").unwrap();
+        let direct = post_header_entries("Authorization: Bearer token", &operation);
+        let tcp = post_header_entries("Authorization: Bearer token", &operation);
+
+        for headers in [&direct, &tcp] {
+            assert_eq!(
+                headers
+                    .iter()
+                    .filter(|entry| entry.name.eq_ignore_ascii_case(TRACEPARENT_HEADER))
+                    .count(),
+                1
+            );
+            assert_eq!(
+                headers
+                    .iter()
+                    .filter(|entry| entry.name.eq_ignore_ascii_case(CAMELLIA_EVENT_ID_HEADER))
+                    .count(),
+                1
+            );
+            assert!(headers.iter().any(|entry| {
+                entry.name.eq_ignore_ascii_case("Authorization")
+                    && entry.value.as_str() == "Bearer token"
+            }));
+            assert!(headers.iter().any(|entry| {
+                entry.name.eq_ignore_ascii_case(CAMELLIA_EVENT_ID_HEADER)
+                    && entry.value.as_str() == "22222222-2222-4222-8222-222222222222"
+            }));
+        }
+        let direct_trace = direct
+            .iter()
+            .find(|entry| entry.name.eq_ignore_ascii_case(TRACEPARENT_HEADER))
+            .unwrap()
+            .value
+            .as_str();
+        let tcp_trace = tcp
+            .iter()
+            .find(|entry| entry.name.eq_ignore_ascii_case(TRACEPARENT_HEADER))
+            .unwrap()
+            .value
+            .as_str();
+        assert_eq!(&direct_trace[3..35], &tcp_trace[3..35]);
+        assert_ne!(&direct_trace[36..52], &tcp_trace[36..52]);
+
+        let overridden = post_header_entries(
+            "traceparent: 00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-00",
+            &operation,
+        );
+        assert_eq!(
+            overridden
+                .iter()
+                .filter(|entry| entry.name.eq_ignore_ascii_case(TRACEPARENT_HEADER))
+                .count(),
+            1
+        );
+        assert!(overridden
+            .iter()
+            .find(|entry| entry.name.eq_ignore_ascii_case(TRACEPARENT_HEADER))
+            .unwrap()
+            .value
+            .starts_with("00-22222222222242228222222222222222-"));
+    }
+
+    #[test]
+    fn http_operation_rejects_noncanonical_event_ids() {
+        for event_id in [
+            "not-a-uuid",
+            "00000000-0000-0000-0000-000000000000",
+            "11111111-1111-4111-1111-111111111111",
+            "11111111-1111-4111-8111-111111111111\r\nInjected: yes",
+            "11111111-1111-4111-8111-111111111111,duplicate",
+            "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA",
+        ] {
+            assert!(
+                HttpOperation::from_event_id(event_id).is_err(),
+                "{event_id}"
+            );
+        }
+    }
+
+    #[test]
     fn test_tcp_proxy_log_target_redacts_query_only() {
         assert_eq!(
             tcp_proxy_log_target("https://example.com/api/heartbeat?token=secret"),
@@ -2720,34 +3048,6 @@ mod tests {
             tcp_proxy_log_target("https://[2001:db8::1]:21114/api/heartbeat?token=secret"),
             "https://[2001:db8::1]:21114/api/heartbeat"
         );
-    }
-
-    #[test]
-    fn test_http_proxy_response_to_json() {
-        let mut resp = HttpProxyResponse {
-            status: 200,
-            body: br#"{"ok":true}"#.to_vec().into(),
-            ..Default::default()
-        };
-        resp.headers.push(HeaderEntry {
-            name: "Content-Type".into(),
-            value: "application/json".into(),
-            ..Default::default()
-        });
-
-        let json = http_proxy_response_to_json(resp).unwrap();
-        let value: Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["status_code"], 200);
-        assert_eq!(value["headers"]["content-type"], "application/json");
-        assert_eq!(value["body"], r#"{"ok":true}"#);
-
-        let err = http_proxy_response_to_json(HttpProxyResponse {
-            error: "dial failed".into(),
-            ..Default::default()
-        })
-        .unwrap_err()
-        .to_string();
-        assert!(err.contains("TCP proxy error: dial failed"));
     }
 
     #[test]

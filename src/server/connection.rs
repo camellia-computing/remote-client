@@ -1,3 +1,4 @@
+use super::audit_outbox::{self, EvidenceKind, PendingEvidence};
 #[cfg(target_os = "windows")]
 use super::login_failure_check::try_acquire_os_credential_login_gate;
 use super::login_failure_check::{
@@ -52,18 +53,23 @@ use cidr_utils::cidr::IpCidr;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 use scrap::android::{call_main_service_key_event, call_main_service_pointer_input};
 use scrap::camera;
-use serde_derive::Serialize;
+use serde_derive::{Deserialize, Serialize};
 use serde_json::{json, value::Value};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use std::sync::atomic::Ordering;
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     net::Ipv6Addr,
     num::NonZeroI64,
     path::PathBuf,
     str::FromStr,
-    sync::{atomic::AtomicI64, mpsc as std_mpsc},
+    sync::{
+        atomic::{AtomicBool, AtomicI64},
+        mpsc as std_mpsc,
+    },
+    time::{SystemTime, UNIX_EPOCH},
 };
+use uuid::Uuid;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[cfg(target_os = "windows")]
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
@@ -71,6 +77,111 @@ use windows::Win32::Foundation::{CloseHandle, HANDLE};
 #[cfg(windows)]
 use crate::virtual_display_manager;
 pub type Sender = mpsc::UnboundedSender<(Instant, Arc<Message>)>;
+
+const AUDIT_PROTOCOL_VERSION: u8 = 3;
+const FILE_AUDIT_PROTOCOL_VERSION: u8 = 4;
+const AUDIT_EVIDENCE_RECEIPT_VERSION: u8 = 1;
+const AUDIT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
+const AUDIT_POST_TIMEOUT: Duration = Duration::from_secs(5);
+const AUDIT_LIFECYCLE_RETRY_WINDOW: Duration = Duration::from_secs(90);
+const AUDIT_EVIDENCE_INLINE_RETRY_WINDOW: Duration = Duration::from_secs(10);
+const AUDIT_EVIDENCE_DURABLE_RETRY_WINDOW: Duration = Duration::from_secs(90);
+const AUDIT_EVIDENCE_MAX_FUTURE_SKEW: Duration = Duration::from_secs(5);
+const AUDIT_QUEUE_CAPACITY: usize = 64;
+const AUDIT_RESERVED_SLOTS: usize = 2;
+const FILE_AUDIT_TRACKER_CAPACITY: usize = 256;
+const FILE_AUDIT_PROGRESS_INTERVAL: Duration = Duration::from_secs(2);
+const FILE_AUDIT_PROGRESS_BYTES: u64 = 1024 * 1024;
+const FILE_AUDIT_MAX_BYTES: u64 = i64::MAX as u64;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AuditPostKind {
+    Open,
+    Lifecycle,
+    Heartbeat,
+    Close,
+    Evidence,
+    FileEvidence,
+}
+
+#[derive(Debug)]
+struct AuditPost {
+    url: String,
+    body: Value,
+    kind: AuditPostKind,
+    created_at: Instant,
+}
+
+#[derive(Deserialize)]
+struct AuditPostResponse {
+    version: u8,
+    audit_session_id: String,
+    acknowledged_event_id: String,
+    event_revision: u64,
+    state: String,
+    state_revision: u64,
+    heartbeat_revision: u64,
+    lease_remaining_seconds: u64,
+    #[serde(default)]
+    receipt_version: Option<u8>,
+    #[serde(default)]
+    reporter_sequence: Option<u64>,
+    #[serde(default)]
+    payload_digest: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct FileAuditPostResponse {
+    version: u8,
+    audit_session_id: String,
+    acknowledged_event_id: String,
+    transfer_id: String,
+    transfer_revision: u64,
+    transfer_state: String,
+    transferred_bytes: u64,
+    receipt_version: u8,
+    reporter_sequence: u64,
+    payload_digest: String,
+}
+
+static AUDIT_OUTBOX_REPLAY_RUNNING: AtomicBool = AtomicBool::new(false);
+
+#[derive(Clone, Debug)]
+struct FileAuditTerminal {
+    state: &'static str,
+    transferred_bytes: u64,
+    reason: &'static str,
+}
+
+#[derive(Debug)]
+struct FileAuditTracker {
+    transfer_id: String,
+    base_body: Value,
+    revision: u64,
+    planned_bytes: u64,
+    last_reported_bytes: u64,
+    last_reported_at: Instant,
+    pending_terminal: Option<FileAuditTerminal>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct FileAuditManifest {
+    planned_file_count: u64,
+    planned_bytes: u64,
+    is_file: bool,
+    sample_files: Vec<Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TransferJobAuditLog {
+    id: i32,
+    total_size: u64,
+    transferred: u64,
+    done: bool,
+    cancel: bool,
+    error: String,
+}
 
 lazy_static::lazy_static! {
     static ref LOGIN_FAILURES: [Arc::<Mutex<HashMap<String, (i32, i32, i32)>>>; 2] = Default::default();
@@ -340,11 +451,15 @@ pub struct Connection {
     multi_ui_session: bool,
     tx_from_authed: mpsc::UnboundedSender<ipc::Data>,
     printer_data: Vec<(Instant, String, Vec<u8>)>,
-    // For post requests that need to be sent sequentially.
-    // eg. post_conn_audit
-    tx_post_seq: mpsc::UnboundedSender<(String, Value)>,
+    // All audit telemetry stays ordered in one bounded queue. Heartbeat and
+    // evidence producers preserve reserved capacity for the terminal close.
+    tx_audit: mpsc::Sender<AuditPost>,
     conn_audit_primary_auth: ConnAuditPrimaryAuth,
     conn_audit_two_factor: ConnAuditTwoFactor,
+    audit_opened: bool,
+    audit_heartbeat_revision: u64,
+    last_audit_heartbeat: Instant,
+    file_audits: HashMap<i32, FileAuditTracker>,
     // Tracks read job IDs delegated to CM process.
     // When a read job is delegated to CM (via FS::ReadFile), the job id is added here.
     // Used to filter stale responses (FileBlockFromCM, FileReadDone, etc.) for
@@ -445,9 +560,9 @@ impl Connection {
         let linux_headless_handle =
             LinuxHeadlessHandle::new(_rx_cm_stream_ready, _tx_desktop_ready);
 
-        let (tx_post_seq, rx_post_seq) = mpsc::unbounded_channel();
+        let (tx_audit, rx_audit) = mpsc::channel(AUDIT_QUEUE_CAPACITY);
         tokio::spawn(async move {
-            Self::post_seq_loop(rx_post_seq).await;
+            Self::post_seq_loop(rx_audit).await;
         });
 
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -539,7 +654,7 @@ impl Connection {
             retina: Retina::default(),
             tx_from_authed,
             printer_data: Vec::new(),
-            tx_post_seq,
+            tx_audit,
             cm_read_job_ids: HashSet::new(),
             terminal_service_id: "".to_owned(),
             terminal_persistent: false,
@@ -549,6 +664,10 @@ impl Connection {
             terminal_generic_service: None,
             conn_audit_primary_auth: ConnAuditPrimaryAuth::None,
             conn_audit_two_factor: ConnAuditTwoFactor::None,
+            audit_opened: false,
+            audit_heartbeat_revision: 0,
+            last_audit_heartbeat: Instant::now(),
+            file_audits: HashMap::new(),
         };
         let addr = camellia_remote_protocol::try_into_v4(addr);
         if !conn.on_open(addr).await {
@@ -787,14 +906,13 @@ impl Connection {
                             }
                             match clip {
                                 clipboard::ClipboardFile::Files { files } => {
-                                    let files = files.into_iter().map(|(f, s)| {
-                                        (f, s as i64)
-                                    }).collect::<Vec<_>>();
-                                    conn.post_file_audit(
+                                    let files = files.into_iter().map(|(f, s)| (f, s)).collect();
+                                    conn.start_file_audit(
+                                        None,
                                         FileAuditType::RemoteSend,
                                         "",
                                         files,
-                                        json!({}),
+                                        "clipboard",
                                     );
                                 }
                                 _ => {
@@ -855,9 +973,49 @@ impl Connection {
                                 conn.handle_read_job_init_result(id, file_num, include_hidden, result).await;
                             }
                         }
-                        ipc::Data::FileBlockFromCM { id, file_num, data, compressed, conn_id } => {
+                        ipc::Data::FileBlockFromCM { id, file_num, blk_id, data, compressed, conn_id } => {
                             if conn_id == conn.inner.id() {
-                                conn.handle_file_block_from_cm(id, file_num, data, compressed).await;
+                                conn.handle_file_block_from_cm(id, file_num, blk_id, data, compressed).await;
+                            }
+                        }
+                        ipc::Data::FileTransferAudit {
+                            id,
+                            total_size,
+                            transferred,
+                            state,
+                            reason,
+                            conn_id,
+                        } => {
+                            if conn_id != conn.inner.id() {
+                                continue;
+                            }
+                            match state.as_str() {
+                                "progress" => conn.report_file_audit_progress(id, total_size, transferred),
+                                "completed" => conn.finish_file_audit(
+                                    id,
+                                    total_size,
+                                    transferred,
+                                    "completed",
+                                    "",
+                                ),
+                                "failed" => {
+                                    log::debug!("CM file transfer failed: {reason}");
+                                    conn.finish_file_audit(
+                                        id,
+                                        total_size,
+                                        transferred,
+                                        "failed",
+                                        "local_io_error",
+                                    );
+                                }
+                                "cancelled" => conn.finish_file_audit(
+                                    id,
+                                    total_size,
+                                    transferred,
+                                    "cancelled",
+                                    "cancelled_by_peer",
+                                ),
+                                _ => log::warn!("Ignoring unknown CM file audit state: {state}"),
                             }
                         }
                         ipc::Data::FileReadDone { id, file_num, conn_id } => {
@@ -918,7 +1076,16 @@ impl Connection {
                         match fs::handle_read_jobs(&mut conn.read_jobs, &mut conn.stream).await {
                             Ok(log) => {
                                 if !log.is_empty() {
+                                    conn.update_file_audit_from_job_log(&log);
                                     conn.send_to_cm(ipc::Data::FileTransferLog(("transfer".to_string(), log)));
+                                }
+                                let progress = conn
+                                    .read_jobs
+                                    .iter()
+                                    .map(|job| (job.id(), job.total_size(), job.transferred()))
+                                    .collect::<Vec<_>>();
+                                for (id, total_size, transferred) in progress {
+                                    conn.report_file_audit_progress(id, total_size, transferred);
                                 }
                             }
                             Err(err) =>  {
@@ -932,8 +1099,8 @@ impl Connection {
                 }
                 Ok(conns) = hbbs_rx.recv() => {
                     if conns.contains(&id) {
-                        conn.send_close_reason_no_retry("Closed manually by web console").await;
-                        conn.on_close("web console", true).await;
+                        conn.send_close_reason_no_retry("Closed by management policy").await;
+                        conn.on_close("management policy", true).await;
                         break;
                     }
                 }
@@ -1025,6 +1192,8 @@ impl Connection {
                 _ = second_timer.tick() => {
                     #[cfg(windows)]
                     conn.portable_check();
+                    conn.maybe_post_conn_audit_heartbeat();
+                    conn.flush_pending_file_audit_terminals();
                     raii::AuthedConnID::check_wake_lock_on_setting_changed();
                     if let Some((instant, minute)) = conn.auto_disconnect_timer.as_ref() {
                         if instant.elapsed().as_secs() > minute * 60 {
@@ -1093,9 +1262,7 @@ impl Connection {
             raii::AuthedConnID::check_remove_session(conn.inner.id(), conn.session_key());
         }
 
-        conn.post_conn_audit(json!({
-            "action": "close",
-        }));
+        conn.post_conn_close_audit().await;
         if let Some(s) = conn.server.upgrade() {
             let mut s = s.write().unwrap();
             s.remove_connection(&conn.inner);
@@ -1185,11 +1352,614 @@ impl Connection {
         log::debug!("Input thread exited");
     }
 
-    async fn post_seq_loop(mut rx: mpsc::UnboundedReceiver<(String, Value)>) {
-        while let Some((url, v)) = rx.recv().await {
-            allow_err!(Self::post_audit_async(url, v).await);
+    fn parse_audit_post_response(body: &str) -> ResultType<AuditPostResponse> {
+        let response: AuditPostResponse = match serde_json::from_str(body) {
+            Ok(response) => response,
+            Err(_) => bail!("Management returned an invalid audit response"),
+        };
+        if response.version != AUDIT_PROTOCOL_VERSION
+            || response.event_revision == 0
+            || response.state_revision == 0
+        {
+            bail!("Management returned an incompatible audit response");
+        }
+        for (value, label) in [
+            (&response.audit_session_id, "audit session capability"),
+            (
+                &response.acknowledged_event_id,
+                "audit event acknowledgement",
+            ),
+        ] {
+            let parsed = match Uuid::parse_str(value) {
+                Ok(parsed) => parsed,
+                Err(_) => bail!("Management returned an invalid {label}"),
+            };
+            if parsed.get_version_num() != 4 || parsed.to_string() != *value {
+                bail!("Management returned an invalid {label}");
+            }
+        }
+        Ok(response)
+    }
+
+    fn parse_file_audit_post_response(body: &str) -> ResultType<FileAuditPostResponse> {
+        let response: FileAuditPostResponse = match serde_json::from_str(body) {
+            Ok(response) => response,
+            Err(_) => bail!("Management returned an invalid file audit response"),
+        };
+        if response.version != FILE_AUDIT_PROTOCOL_VERSION
+            || response.receipt_version != AUDIT_EVIDENCE_RECEIPT_VERSION
+            || response.reporter_sequence == 0
+            || response.transfer_revision == 0
+            || !Self::is_lower_sha256(&response.payload_digest)
+        {
+            bail!("Management returned an incompatible file audit response");
+        }
+        for (value, label) in [
+            (&response.audit_session_id, "audit session capability"),
+            (
+                &response.acknowledged_event_id,
+                "audit event acknowledgement",
+            ),
+            (&response.transfer_id, "file transfer identity"),
+        ] {
+            let parsed = match Uuid::parse_str(value) {
+                Ok(parsed) => parsed,
+                Err(_) => bail!("Management returned an invalid {label}"),
+            };
+            if parsed.get_version_num() != 4 || parsed.to_string() != *value {
+                bail!("Management returned an invalid {label}");
+            }
+        }
+        Ok(response)
+    }
+
+    fn validate_file_audit_progress(
+        response: &FileAuditPostResponse,
+        request: &AuditPost,
+        audit_session_id: Option<&str>,
+    ) -> ResultType<()> {
+        if audit_session_id != Some(response.audit_session_id.as_str()) {
+            bail!("Management returned a mismatched audit session capability");
+        }
+        for (field, actual) in [
+            ("event_id", response.acknowledged_event_id.as_str()),
+            ("transfer_id", response.transfer_id.as_str()),
+            ("state", response.transfer_state.as_str()),
+        ] {
+            if request.body.get(field).and_then(Value::as_str) != Some(actual) {
+                bail!("Management acknowledged a different file audit {field}");
+            }
+        }
+        if request
+            .body
+            .get("transfer_revision")
+            .and_then(Value::as_u64)
+            != Some(response.transfer_revision)
+            || request
+                .body
+                .get("transferred_bytes")
+                .and_then(Value::as_u64)
+                != Some(response.transferred_bytes)
+        {
+            bail!("Management acknowledged different file audit progress");
+        }
+        if request
+            .body
+            .get("reporter_sequence")
+            .and_then(Value::as_u64)
+            != Some(response.reporter_sequence)
+            || request.body.get("receipt_version").and_then(Value::as_u64)
+                != Some(u64::from(response.receipt_version))
+        {
+            bail!("Management acknowledged a different file audit receipt sequence");
+        }
+        Ok(())
+    }
+
+    fn validate_audit_progress(
+        response: &AuditPostResponse,
+        request: &AuditPost,
+        audit_session_id: Option<&str>,
+        event_revision: u64,
+        state_revision: u64,
+        heartbeat_revision: u64,
+    ) -> ResultType<()> {
+        if request.body.get("event_id").and_then(Value::as_str)
+            != Some(response.acknowledged_event_id.as_str())
+        {
+            bail!("Management acknowledged a different audit event");
+        }
+        match request.kind {
+            AuditPostKind::Open => {
+                if let Some(existing) = audit_session_id {
+                    if existing != response.audit_session_id.as_str() {
+                        bail!("Management replaced the audit session capability");
+                    }
+                }
+            }
+            _ => {
+                if audit_session_id != Some(response.audit_session_id.as_str()) {
+                    bail!("Management returned a mismatched audit session capability");
+                }
+            }
+        }
+        if response.event_revision < event_revision
+            || response.state_revision < state_revision
+            || response.heartbeat_revision < heartbeat_revision
+        {
+            bail!("Management returned regressing audit progress");
+        }
+        match request.kind {
+            AuditPostKind::Open | AuditPostKind::Lifecycle | AuditPostKind::Heartbeat => {
+                if !matches!(response.state.as_str(), "starting" | "active")
+                    || response.lease_remaining_seconds == 0
+                {
+                    bail!("Management returned a terminal or expired audit lease");
+                }
+            }
+            AuditPostKind::Close => {
+                if !matches!(response.state.as_str(), "closed" | "aborted")
+                    || response.lease_remaining_seconds != 0
+                {
+                    bail!("Management did not acknowledge the audit terminal state");
+                }
+            }
+            AuditPostKind::Evidence => {
+                if response.state != "active"
+                    || response.lease_remaining_seconds == 0
+                    || response.receipt_version != Some(AUDIT_EVIDENCE_RECEIPT_VERSION)
+                    || response.reporter_sequence
+                        != request
+                            .body
+                            .get("reporter_sequence")
+                            .and_then(Value::as_u64)
+                    || !response
+                        .payload_digest
+                        .as_deref()
+                        .is_some_and(Self::is_lower_sha256)
+                {
+                    bail!("Management accepted evidence outside an active audit lease");
+                }
+            }
+            AuditPostKind::FileEvidence => {
+                bail!("File evidence requires a v4 response");
+            }
+        }
+        if request.kind == AuditPostKind::Heartbeat {
+            let Some(requested_revision) = request
+                .body
+                .get("heartbeat_revision")
+                .and_then(Value::as_u64)
+            else {
+                bail!("Audit heartbeat is missing its revision");
+            };
+            if response.heartbeat_revision != requested_revision {
+                bail!("Management acknowledged a different audit heartbeat revision");
+            }
+        }
+        Ok(())
+    }
+
+    fn is_lower_sha256(value: &str) -> bool {
+        value.len() == 64
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    }
+
+    fn audit_response_is_permanent_error(body: &str) -> bool {
+        let Ok(error) = serde_json::from_str::<Value>(body) else {
+            return false;
+        };
+        error.get("required_version").is_some()
+            || error.get("required_receipt_version").is_some()
+            || matches!(
+                error.get("state").and_then(Value::as_str),
+                Some("closed" | "aborted" | "expired")
+            )
+            || matches!(
+                error.get("error").and_then(Value::as_str),
+                Some(
+                    "Audit event identity conflict"
+                        | "Audit reporter sequence is already bound"
+                        | "Connection not found"
+                        | "Connection authority changed"
+                        | "Controller is not bound"
+                        | "Device is not active"
+                )
+            )
+    }
+
+    fn audit_retry_window(kind: AuditPostKind) -> Option<Duration> {
+        match kind {
+            AuditPostKind::Open | AuditPostKind::Lifecycle | AuditPostKind::Close => {
+                Some(AUDIT_LIFECYCLE_RETRY_WINDOW)
+            }
+            AuditPostKind::Evidence | AuditPostKind::FileEvidence => {
+                Some(AUDIT_EVIDENCE_INLINE_RETRY_WINDOW)
+            }
+            AuditPostKind::Heartbeat => None,
+        }
+    }
+
+    fn durable_evidence_kind(kind: AuditPostKind) -> Option<EvidenceKind> {
+        match kind {
+            AuditPostKind::Evidence => Some(EvidenceKind::Alarm),
+            AuditPostKind::FileEvidence => Some(EvidenceKind::File),
+            _ => None,
+        }
+    }
+
+    fn acknowledge_durable_evidence(event_id: &str) {
+        if let Err(error) = audit_outbox::acknowledge(event_id) {
+            log::error!("Failed to remove acknowledged durable audit evidence: {error}");
+        }
+    }
+
+    async fn process_audit_post(
+        mut request: AuditPost,
+        audit_session_id: &mut Option<String>,
+        event_revision: &mut u64,
+        state_revision: &mut u64,
+        heartbeat_revision: &mut u64,
+        reporter_sequence: &mut u64,
+    ) -> bool {
+        request.body["version"] = json!(if request.kind == AuditPostKind::FileEvidence {
+            FILE_AUDIT_PROTOCOL_VERSION
+        } else {
+            AUDIT_PROTOCOL_VERSION
+        });
+        if request.kind != AuditPostKind::Open {
+            let Some(capability) = audit_session_id.as_ref() else {
+                log::warn!("Dropping audit request because Management did not establish a session capability");
+                return false;
+            };
+            request.body["audit_session_id"] = json!(capability);
+        }
+        let durable_kind = Self::durable_evidence_kind(request.kind);
+        if durable_kind.is_some() {
+            let Some(next_sequence) = reporter_sequence.checked_add(1) else {
+                log::error!("Audit reporter sequence exhausted");
+                return false;
+            };
+            *reporter_sequence = next_sequence;
+            request.body["receipt_version"] = json!(AUDIT_EVIDENCE_RECEIPT_VERSION);
+            request.body["reporter_sequence"] = json!(next_sequence);
+        }
+        let Some(event_id) = request.body.get("event_id").and_then(Value::as_str) else {
+            log::warn!("Dropping audit request without an operation event ID");
+            return false;
+        };
+        let operation = match crate::common::HttpOperation::from_event_id(event_id) {
+            Ok(operation) => operation,
+            Err(error) => {
+                log::warn!("Dropping audit request with an invalid operation event ID: {error}");
+                return false;
+            }
+        };
+        let persisted = if let Some(kind) = durable_kind {
+            match audit_outbox::persist(
+                event_id.to_owned(),
+                request.url.clone(),
+                request.body.clone(),
+                kind,
+            ) {
+                Ok(persisted) => Some(persisted),
+                Err(error) => {
+                    log::error!(
+                        "Refusing to send audit evidence that could not be persisted: {error}"
+                    );
+                    return false;
+                }
+            }
+        } else {
+            None
+        };
+        loop {
+            let response_body = match time::timeout(
+                AUDIT_POST_TIMEOUT,
+                Self::post_audit_async(request.url.clone(), request.body.clone(), &operation),
+            )
+            .await
+            {
+                Ok(Ok(body)) => body,
+                Ok(Err(error)) => {
+                    log::warn!("Failed to post connection audit request: {error}");
+                    if !Self::audit_retry_window(request.kind)
+                        .is_some_and(|window| request.created_at.elapsed() < window)
+                    {
+                        if persisted.is_some() {
+                            Self::spawn_pending_audit_replay();
+                        }
+                        return false;
+                    }
+                    time::sleep(Duration::from_secs(2)).await;
+                    continue;
+                }
+                Err(_) => {
+                    log::warn!("Connection audit request timed out");
+                    if !Self::audit_retry_window(request.kind)
+                        .is_some_and(|window| request.created_at.elapsed() < window)
+                    {
+                        if persisted.is_some() {
+                            Self::spawn_pending_audit_replay();
+                        }
+                        return false;
+                    }
+                    time::sleep(Duration::from_secs(2)).await;
+                    continue;
+                }
+            };
+            if request.kind == AuditPostKind::FileEvidence {
+                let response = match Self::parse_file_audit_post_response(&response_body) {
+                    Ok(response) => response,
+                    Err(error) => {
+                        log::warn!("Rejected Management file audit response: {error}");
+                        if Self::audit_response_is_permanent_error(&response_body) {
+                            Self::acknowledge_durable_evidence(event_id);
+                            return false;
+                        }
+                        if request.created_at.elapsed() < AUDIT_EVIDENCE_INLINE_RETRY_WINDOW {
+                            time::sleep(Duration::from_secs(2)).await;
+                            continue;
+                        }
+                        Self::spawn_pending_audit_replay();
+                        return false;
+                    }
+                };
+                if let Err(error) = Self::validate_file_audit_progress(
+                    &response,
+                    &request,
+                    audit_session_id.as_deref(),
+                ) {
+                    log::warn!("Rejected Management file audit progress: {error}");
+                    Self::spawn_pending_audit_replay();
+                    return false;
+                }
+                Self::acknowledge_durable_evidence(event_id);
+                return true;
+            }
+            let response = match Self::parse_audit_post_response(&response_body) {
+                Ok(response) => response,
+                Err(error) => {
+                    log::warn!("Rejected Management audit response: {error}");
+                    if Self::audit_response_is_permanent_error(&response_body)
+                        || !Self::audit_retry_window(request.kind)
+                            .is_some_and(|window| request.created_at.elapsed() < window)
+                    {
+                        if persisted.is_some() {
+                            if Self::audit_response_is_permanent_error(&response_body) {
+                                Self::acknowledge_durable_evidence(event_id);
+                            } else {
+                                Self::spawn_pending_audit_replay();
+                            }
+                        }
+                        return false;
+                    }
+                    time::sleep(Duration::from_secs(2)).await;
+                    continue;
+                }
+            };
+            if let Err(error) = Self::validate_audit_progress(
+                &response,
+                &request,
+                audit_session_id.as_deref(),
+                *event_revision,
+                *state_revision,
+                *heartbeat_revision,
+            ) {
+                log::warn!("Rejected Management audit progress: {error}");
+                if persisted.is_some() {
+                    Self::spawn_pending_audit_replay();
+                }
+                return false;
+            }
+            if request.kind == AuditPostKind::Open && audit_session_id.is_none() {
+                *audit_session_id = Some(response.audit_session_id.clone());
+            }
+            *event_revision = response.event_revision;
+            *state_revision = response.state_revision;
+            *heartbeat_revision = response.heartbeat_revision;
+            if persisted.is_some() {
+                Self::acknowledge_durable_evidence(event_id);
+            }
+            return true;
+        }
+    }
+
+    async fn post_seq_loop(mut rx: mpsc::Receiver<AuditPost>) {
+        let mut audit_session_id: Option<String> = None;
+        let mut event_revision = 0;
+        let mut state_revision = 0;
+        let mut heartbeat_revision = 0;
+        let mut reporter_sequence = 0;
+        Self::spawn_pending_audit_replay();
+        while let Some(request) = rx.recv().await {
+            Self::process_audit_post(
+                request,
+                &mut audit_session_id,
+                &mut event_revision,
+                &mut state_revision,
+                &mut heartbeat_revision,
+                &mut reporter_sequence,
+            )
+            .await;
         }
         log::debug!("post_seq_loop exited");
+    }
+
+    fn persisted_evidence_ack_is_valid(record: &PendingEvidence, body: &str) -> bool {
+        let Ok(response) = serde_json::from_str::<Value>(body) else {
+            return false;
+        };
+        if response.get("receipt_version").and_then(Value::as_u64)
+            != Some(u64::from(AUDIT_EVIDENCE_RECEIPT_VERSION))
+            || response
+                .get("acknowledged_event_id")
+                .and_then(Value::as_str)
+                != Some(record.event_id.as_str())
+            || response.get("audit_session_id").and_then(Value::as_str)
+                != record.body.get("audit_session_id").and_then(Value::as_str)
+            || response.get("reporter_sequence").and_then(Value::as_u64)
+                != record.body.get("reporter_sequence").and_then(Value::as_u64)
+            || !response
+                .get("payload_digest")
+                .and_then(Value::as_str)
+                .is_some_and(Self::is_lower_sha256)
+        {
+            return false;
+        }
+        match record.kind {
+            EvidenceKind::Alarm => {
+                response.get("version").and_then(Value::as_u64)
+                    == Some(u64::from(AUDIT_PROTOCOL_VERSION))
+                    && response
+                        .get("event_revision")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|revision| revision > 0)
+                    && response.get("state").and_then(Value::as_str) == Some("active")
+                    && response
+                        .get("lease_remaining_seconds")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|remaining| remaining > 0)
+            }
+            EvidenceKind::File => {
+                response.get("version").and_then(Value::as_u64)
+                    == Some(u64::from(FILE_AUDIT_PROTOCOL_VERSION))
+                    && response.get("transfer_id").and_then(Value::as_str)
+                        == record.body.get("transfer_id").and_then(Value::as_str)
+                    && response.get("transfer_revision").and_then(Value::as_u64)
+                        == record.body.get("transfer_revision").and_then(Value::as_u64)
+                    && response.get("transfer_state").and_then(Value::as_str)
+                        == record.body.get("state").and_then(Value::as_str)
+                    && response.get("transferred_bytes").and_then(Value::as_u64)
+                        == record.body.get("transferred_bytes").and_then(Value::as_u64)
+            }
+        }
+    }
+
+    fn durable_evidence_timestamp_is_valid(created_at_unix_ms: u64, now_ms: u64) -> bool {
+        let future_limit = now_ms.saturating_add(AUDIT_EVIDENCE_MAX_FUTURE_SKEW.as_millis() as u64);
+        let retry_window = AUDIT_EVIDENCE_DURABLE_RETRY_WINDOW.as_millis() as u64;
+        created_at_unix_ms <= future_limit
+            && now_ms.saturating_sub(created_at_unix_ms) < retry_window
+    }
+
+    fn durable_evidence_url_matches_configured_authority(
+        record: &PendingEvidence,
+        alarm_url: &str,
+        file_url: &str,
+    ) -> bool {
+        let expected = match record.kind {
+            EvidenceKind::Alarm => alarm_url,
+            EvidenceKind::File => file_url,
+        };
+        !expected.is_empty() && record.url == expected
+    }
+
+    async fn replay_pending_audit_evidence() {
+        loop {
+            let records = match audit_outbox::pending() {
+                Ok(records) => records,
+                Err(error) => {
+                    log::error!("Failed to inspect the durable audit outbox: {error}");
+                    return;
+                }
+            };
+            if records.is_empty() {
+                return;
+            }
+            let now_ms: u64 = match SystemTime::now().duration_since(UNIX_EPOCH) {
+                Ok(duration) => match duration.as_millis().try_into() {
+                    Ok(value) => value,
+                    Err(_) => {
+                        log::error!("System time is outside the durable audit range");
+                        return;
+                    }
+                },
+                Err(_) => {
+                    log::error!("System clock is before the Unix epoch");
+                    return;
+                }
+            };
+            let api_server = Config::get_option("api-server");
+            let custom_server = Config::get_option("custom-rendezvous-server");
+            let alarm_url = crate::get_audit_server(
+                api_server.clone(),
+                custom_server.clone(),
+                "alarm".to_owned(),
+            );
+            let file_url = crate::get_audit_server(api_server, custom_server, "file".to_owned());
+            for record in records.into_iter().take(16) {
+                if !Self::durable_evidence_timestamp_is_valid(record.created_at_unix_ms, now_ms) {
+                    log::warn!("Discarding expired or clock-invalid durable audit evidence");
+                    Self::acknowledge_durable_evidence(&record.event_id);
+                    continue;
+                }
+                if !Self::durable_evidence_url_matches_configured_authority(
+                    &record, &alarm_url, &file_url,
+                ) {
+                    log::warn!(
+                        "Refusing to send durable audit evidence to a non-current Management authority"
+                    );
+                    continue;
+                }
+                let operation = match crate::common::HttpOperation::from_event_id(&record.event_id)
+                {
+                    Ok(operation) => operation,
+                    Err(error) => {
+                        log::error!(
+                            "Discarding durable audit evidence with an invalid event ID: {error}"
+                        );
+                        Self::acknowledge_durable_evidence(&record.event_id);
+                        continue;
+                    }
+                };
+                match time::timeout(
+                    AUDIT_POST_TIMEOUT,
+                    Self::post_audit_async(record.url.clone(), record.body.clone(), &operation),
+                )
+                .await
+                {
+                    Ok(Ok(body)) if Self::persisted_evidence_ack_is_valid(&record, &body) => {
+                        Self::acknowledge_durable_evidence(&record.event_id);
+                    }
+                    Ok(Ok(body)) if Self::audit_response_is_permanent_error(&body) => {
+                        log::warn!("Management permanently rejected durable audit evidence");
+                        Self::acknowledge_durable_evidence(&record.event_id);
+                    }
+                    Ok(Ok(_)) => {
+                        log::warn!("Management returned an invalid durable audit acknowledgement")
+                    }
+                    Ok(Err(error)) => {
+                        log::warn!("Durable audit evidence retry failed: {error}")
+                    }
+                    Err(_) => log::warn!("Durable audit evidence retry timed out"),
+                }
+            }
+            time::sleep(Duration::from_secs(2)).await;
+        }
+    }
+
+    pub(super) fn spawn_pending_audit_replay() {
+        if AUDIT_OUTBOX_REPLAY_RUNNING
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            )
+            .is_err()
+        {
+            return;
+        }
+        tokio::spawn(async {
+            Self::replay_pending_audit_evidence().await;
+            AUDIT_OUTBOX_REPLAY_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
+            if audit_outbox::pending().is_ok_and(|records| !records.is_empty()) {
+                Self::spawn_pending_audit_replay();
+            }
+        });
     }
 
     async fn try_port_forward_loop(
@@ -1239,7 +2009,7 @@ impl Connection {
                     Ok(conns) = hbbs_rx.recv() => {
                         if conns.contains(&self.inner.id) {
                             // todo: check reconnect
-                            bail!("Closed manually by the web console");
+                            bail!("Closed by management policy");
                         }
                     }
                 }
@@ -1301,6 +2071,11 @@ impl Connection {
 
     async fn on_open(&mut self, addr: SocketAddr) -> bool {
         log::debug!("#{} Connection opened from {}.", self.inner.id, addr);
+        if !crate::hbbs_http::sync::incoming_connections_allowed() {
+            self.send_login_error("Device is disabled by management")
+                .await;
+            return false;
+        }
         if !self.check_whitelist(&addr).await {
             return false;
         }
@@ -1316,14 +2091,6 @@ impl Connection {
         msg_out.set_hash(self.hash.clone());
         self.send(msg_out).await;
         self.get_api_server();
-        let mut audit = json!({
-            "ip": addr.ip(),
-            "action": "new",
-        });
-        if let Some(audit_ref) = self.conn_audit_ref() {
-            audit["conn_audit_ref"] = json!(audit_ref);
-        }
-        self.post_conn_audit(audit);
         true
     }
 
@@ -1352,20 +2119,110 @@ impl Connection {
         }
     }
 
-    fn post_conn_audit(&self, v: Value) {
-        if self.server_audit_conn.is_empty() {
-            return;
+    fn prepare_audit_post(url: String, mut body: Value, kind: AuditPostKind) -> AuditPost {
+        body["version"] = json!(if kind == AuditPostKind::FileEvidence {
+            FILE_AUDIT_PROTOCOL_VERSION
+        } else {
+            AUDIT_PROTOCOL_VERSION
+        });
+        body["event_id"] = json!(Uuid::new_v4().to_string());
+        if matches!(kind, AuditPostKind::Evidence | AuditPostKind::FileEvidence) {
+            body["receipt_version"] = json!(AUDIT_EVIDENCE_RECEIPT_VERSION);
         }
-        let url = self.server_audit_conn.clone();
-        let mut v = v;
-        v["id"] = json!(Config::get_id());
-        v["uuid"] = json!(crate::encode64(camellia_remote_protocol::get_uuid()));
-        v["conn_id"] = json!(self.inner.id);
-        v["session_id"] = json!(self.lr.session_id);
-        allow_err!(self.tx_post_seq.send((url, v)));
+        AuditPost {
+            url,
+            body,
+            kind,
+            created_at: Instant::now(),
+        }
     }
 
-    fn get_files_for_audit(job_type: fs::JobType, mut files: Vec<FileEntry>) -> Vec<(String, i64)> {
+    fn try_enqueue_audit(&self, request: AuditPost) -> bool {
+        let kind = request.kind;
+        if matches!(
+            kind,
+            AuditPostKind::Heartbeat | AuditPostKind::Evidence | AuditPostKind::FileEvidence
+        ) && self.tx_audit.capacity() <= AUDIT_RESERVED_SLOTS
+        {
+            log::warn!("Dropping {kind:?} audit request to preserve lifecycle queue capacity");
+            return false;
+        }
+        match self.tx_audit.try_send(request) {
+            Ok(()) => true,
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                log::warn!("Dropping {kind:?} audit request because its bounded queue is full");
+                false
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                log::warn!("Dropping {kind:?} audit request because its worker stopped");
+                false
+            }
+        }
+    }
+
+    fn prepare_conn_audit(&self, mut body: Value, kind: AuditPostKind) -> Option<AuditPost> {
+        if self.server_audit_conn.is_empty() {
+            return None;
+        }
+        body["id"] = json!(Config::get_id());
+        body["uuid"] = json!(crate::encode64(camellia_remote_protocol::get_uuid()));
+        body["conn_id"] = json!(self.inner.id);
+        body["session_id"] = json!(self.lr.session_id);
+        Some(Self::prepare_audit_post(
+            self.server_audit_conn.clone(),
+            body,
+            kind,
+        ))
+    }
+
+    fn post_conn_audit(&self, body: Value) -> bool {
+        let kind = match body.get("action").and_then(Value::as_str) {
+            Some("new") => AuditPostKind::Open,
+            Some("heartbeat") => AuditPostKind::Heartbeat,
+            Some("close") => AuditPostKind::Close,
+            _ => AuditPostKind::Lifecycle,
+        };
+        self.prepare_conn_audit(body, kind)
+            .map(|request| self.try_enqueue_audit(request))
+            .unwrap_or(false)
+    }
+
+    fn maybe_post_conn_audit_heartbeat(&mut self) {
+        if !self.audit_opened
+            || self.last_audit_heartbeat.elapsed() < AUDIT_HEARTBEAT_INTERVAL
+            || self.tx_audit.capacity() <= AUDIT_RESERVED_SLOTS
+        {
+            return;
+        }
+        let Some(revision) = self.audit_heartbeat_revision.checked_add(1) else {
+            log::error!("Connection audit heartbeat revision exhausted");
+            return;
+        };
+        if self.post_conn_audit(json!({
+            "action": "heartbeat",
+            "heartbeat_revision": revision,
+        })) {
+            self.audit_heartbeat_revision = revision;
+            self.last_audit_heartbeat = Instant::now();
+        }
+    }
+
+    async fn post_conn_close_audit(&self) {
+        let Some(request) =
+            self.prepare_conn_audit(json!({"action": "close"}), AuditPostKind::Close)
+        else {
+            return;
+        };
+        match time::timeout(Duration::from_secs(1), self.tx_audit.send(request)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => {
+                log::warn!("Connection audit worker stopped before close could be queued")
+            }
+            Err(_) => log::warn!("Timed out reserving bounded capacity for connection audit close"),
+        }
+    }
+
+    fn get_files_for_audit(job_type: fs::JobType, mut files: Vec<FileEntry>) -> Vec<(String, u64)> {
         files
             .drain(..)
             .map(|f| {
@@ -1375,46 +2232,293 @@ impl Connection {
                     } else {
                         f.name
                     },
-                    f.size as _,
+                    f.size,
                 )
             })
             .collect()
     }
 
-    fn post_file_audit(
+    fn file_audit_base_body(
         &self,
-        r#type: FileAuditType,
+        direction: FileAuditType,
         path: &str,
-        files: Vec<(String, i64)>,
-        info: Value,
-    ) {
+        files: Vec<(String, u64)>,
+        source_kind: &'static str,
+    ) -> Option<(Value, u64)> {
+        if path.len() > 500 {
+            log::warn!("Skipping file audit because its root path exceeds 500 bytes");
+            return None;
+        }
+        let manifest = match Self::summarize_file_audit_manifest(files) {
+            Ok(manifest) => manifest,
+            Err(error) => {
+                log::warn!("Skipping file audit: {error}");
+                return None;
+            }
+        };
+        let FileAuditManifest {
+            planned_file_count,
+            planned_bytes,
+            is_file,
+            sample_files,
+        } = manifest;
+        Some((
+            json!({
+                "id":json!(Config::get_id()),
+                "uuid":json!(crate::encode64(camellia_remote_protocol::get_uuid())),
+                "peer_id":json!(self.lr.my_id),
+                "conn_id":json!(self.inner.id()),
+                "direction": direction as i8,
+                "path":path,
+                "is_file":is_file,
+                "planned_file_count": planned_file_count,
+                "planned_bytes": planned_bytes,
+                "sample_files": sample_files,
+                "source_kind": source_kind,
+            }),
+            planned_bytes,
+        ))
+    }
+
+    fn summarize_file_audit_manifest(files: Vec<(String, u64)>) -> ResultType<FileAuditManifest> {
+        let planned_file_count = u64::try_from(files.len()).map_err(|_| {
+            camellia_remote_protocol::anyhow::anyhow!("manifest count is out of range")
+        })?;
+        let planned_bytes = files
+            .iter()
+            .try_fold(0u64, |total, (_, size)| total.checked_add(*size))
+            .filter(|total| *total <= FILE_AUDIT_MAX_BYTES)
+            .ok_or_else(|| {
+                camellia_remote_protocol::anyhow::anyhow!("manifest byte total is out of range")
+            })?;
+        let is_file = files.len() == 1 && files.first().is_some_and(|(name, _)| name.is_empty());
+        let mut samples = files
+            .iter()
+            .filter(|(name, _)| name.len() <= 500)
+            .cloned()
+            .collect::<Vec<_>>();
+        samples.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        samples.truncate(10);
+        let sample_files = samples
+            .into_iter()
+            .map(|(path, size)| json!({"path": path, "size": size}))
+            .collect::<Vec<_>>();
+        Ok(FileAuditManifest {
+            planned_file_count,
+            planned_bytes,
+            is_file,
+            sample_files,
+        })
+    }
+
+    fn prepare_file_audit_update(
+        &self,
+        tracker: &FileAuditTracker,
+        revision: u64,
+        state: &'static str,
+        transferred_bytes: u64,
+        terminal_reason: &'static str,
+    ) -> AuditPost {
+        let mut body = tracker.base_body.clone();
+        body["transfer_id"] = json!(tracker.transfer_id);
+        body["transfer_revision"] = json!(revision);
+        body["state"] = json!(state);
+        body["transferred_bytes"] = json!(transferred_bytes);
+        body["terminal_reason"] = json!(terminal_reason);
+        Self::prepare_audit_post(
+            self.server_audit_file.clone(),
+            body,
+            AuditPostKind::FileEvidence,
+        )
+    }
+
+    fn start_file_audit(
+        &mut self,
+        job_id: Option<i32>,
+        direction: FileAuditType,
+        path: &str,
+        files: Vec<(String, u64)>,
+        source_kind: &'static str,
+    ) -> bool {
         if self.server_audit_file.is_empty() {
+            return false;
+        }
+        if job_id.is_some_and(|id| self.file_audits.contains_key(&id)) {
+            log::warn!("Skipping file audit for a concurrently reused transfer job id");
+            return false;
+        }
+        let Some((base_body, planned_bytes)) =
+            self.file_audit_base_body(direction, path, files, source_kind)
+        else {
+            return false;
+        };
+        let tracker = FileAuditTracker {
+            transfer_id: Uuid::new_v4().to_string(),
+            base_body,
+            revision: 0,
+            planned_bytes,
+            last_reported_bytes: 0,
+            last_reported_at: Instant::now(),
+            pending_terminal: None,
+        };
+        let request = self.prepare_file_audit_update(&tracker, 1, "started", 0, "");
+        if !self.try_enqueue_audit(request) {
+            return false;
+        }
+        if let Some(id) = job_id {
+            if self.file_audits.len() >= FILE_AUDIT_TRACKER_CAPACITY {
+                log::warn!(
+                    "File audit tracker is full; Management will reconcile this started transfer on connection close"
+                );
+            } else {
+                self.file_audits.insert(
+                    id,
+                    FileAuditTracker {
+                        revision: 1,
+                        ..tracker
+                    },
+                );
+            }
+        }
+        true
+    }
+
+    fn report_file_audit_progress(&mut self, id: i32, total_size: u64, transferred_bytes: u64) {
+        let Some(tracker) = self.file_audits.get(&id) else {
+            return;
+        };
+        if total_size != tracker.planned_bytes || transferred_bytes > tracker.planned_bytes {
+            self.finish_file_audit(
+                id,
+                total_size,
+                transferred_bytes,
+                "failed",
+                "metric_mismatch",
+            );
             return;
         }
-        let url = self.server_audit_file.clone();
-        let file_num = files.len();
-        let mut files = files;
-        files.sort_by(|a, b| b.1.cmp(&a.1));
-        files.truncate(10);
-        let is_file = files.len() == 1 && files[0].0.is_empty();
-        let mut info = info;
-        info["ip"] = json!(self.ip.clone());
-        info["name"] = json!(self.lr.my_name.clone());
-        info["num"] = json!(file_num);
-        info["files"] = json!(files);
-        let v = json!({
-            "id":json!(Config::get_id()),
-            "uuid":json!(crate::encode64(camellia_remote_protocol::get_uuid())),
-            "peer_id":json!(self.lr.my_id),
-            "conn_id":json!(self.inner.id()),
-            "type": r#type as i8,
-            "path":path,
-            "is_file":is_file,
-            "info":json!(info).to_string(),
-        });
-        tokio::spawn(async move {
-            allow_err!(Self::post_audit_async(url, v).await);
-        });
+        if transferred_bytes <= tracker.last_reported_bytes
+            || (transferred_bytes - tracker.last_reported_bytes < FILE_AUDIT_PROGRESS_BYTES
+                && tracker.last_reported_at.elapsed() < FILE_AUDIT_PROGRESS_INTERVAL)
+        {
+            return;
+        }
+        let Some(revision) = tracker.revision.checked_add(1) else {
+            log::error!("File audit revision exhausted");
+            return;
+        };
+        let request =
+            self.prepare_file_audit_update(tracker, revision, "progress", transferred_bytes, "");
+        if self.try_enqueue_audit(request) {
+            if let Some(tracker) = self.file_audits.get_mut(&id) {
+                tracker.revision = revision;
+                tracker.last_reported_bytes = transferred_bytes;
+                tracker.last_reported_at = Instant::now();
+            }
+        }
+    }
+
+    fn finish_file_audit(
+        &mut self,
+        id: i32,
+        total_size: u64,
+        transferred_bytes: u64,
+        state: &'static str,
+        reason: &'static str,
+    ) {
+        let Some(tracker) = self.file_audits.get(&id) else {
+            return;
+        };
+        let (state, transferred_bytes, reason) = if total_size != tracker.planned_bytes
+            || transferred_bytes > tracker.planned_bytes
+            || transferred_bytes < tracker.last_reported_bytes
+        {
+            ("failed", tracker.last_reported_bytes, "metric_mismatch")
+        } else {
+            (state, transferred_bytes, reason)
+        };
+        let Some(revision) = tracker.revision.checked_add(1) else {
+            log::error!("File audit revision exhausted");
+            return;
+        };
+        let terminal = FileAuditTerminal {
+            state,
+            transferred_bytes,
+            reason,
+        };
+        let request = self.prepare_file_audit_update(
+            tracker,
+            revision,
+            terminal.state,
+            terminal.transferred_bytes,
+            terminal.reason,
+        );
+        if self.try_enqueue_audit(request) {
+            self.file_audits.remove(&id);
+        } else if let Some(tracker) = self.file_audits.get_mut(&id) {
+            tracker.pending_terminal = Some(terminal);
+        }
+    }
+
+    fn flush_pending_file_audit_terminals(&mut self) {
+        let pending = self
+            .file_audits
+            .iter()
+            .filter_map(|(id, tracker)| {
+                tracker
+                    .pending_terminal
+                    .clone()
+                    .map(|terminal| (*id, terminal))
+            })
+            .collect::<Vec<_>>();
+        for (id, terminal) in pending {
+            let total_size = self
+                .file_audits
+                .get(&id)
+                .map(|tracker| tracker.planned_bytes)
+                .unwrap_or_default();
+            self.finish_file_audit(
+                id,
+                total_size,
+                terminal.transferred_bytes,
+                terminal.state,
+                terminal.reason,
+            );
+        }
+    }
+
+    fn update_file_audit_from_job_log(&mut self, log: &str) {
+        let Ok(update) = serde_json::from_str::<TransferJobAuditLog>(log) else {
+            log::warn!("Ignoring malformed local transfer job audit metrics");
+            return;
+        };
+        if update.done {
+            self.finish_file_audit(
+                update.id,
+                update.total_size,
+                update.transferred,
+                "completed",
+                "",
+            );
+        } else if update.cancel {
+            self.finish_file_audit(
+                update.id,
+                update.total_size,
+                update.transferred,
+                "cancelled",
+                "cancelled_by_peer",
+            );
+        } else if !update.error.is_empty() {
+            self.finish_file_audit(
+                update.id,
+                update.total_size,
+                update.transferred,
+                "failed",
+                "source_read_error",
+            );
+        } else {
+            self.report_file_audit_progress(update.id, update.total_size, update.transferred);
+        }
     }
 
     fn post_alarm_audit(&self, typ: AlarmAuditType, info: Value) {
@@ -1437,9 +2541,7 @@ impl Connection {
                 v["conn_audit_ref"] = json!(audit_ref);
             }
         }
-        tokio::spawn(async move {
-            allow_err!(Self::post_audit_async(url, v).await);
-        });
+        self.try_enqueue_audit(Self::prepare_audit_post(url, v, AuditPostKind::Evidence));
     }
 
     fn post_session_scope_violation_alarm(&self, message: &'static str) {
@@ -1460,11 +2562,16 @@ impl Connection {
     }
 
     #[inline]
-    async fn post_audit_async(url: String, v: Value) -> ResultType<String> {
+    async fn post_audit_async(
+        url: String,
+        v: Value,
+        operation: &crate::common::HttpOperation,
+    ) -> ResultType<String> {
         let Some(auth_header) = crate::get_api_auth_header() else {
             bail!("API account session required for audit upload");
         };
-        crate::post_request(url, v.to_string(), &auth_header).await
+        crate::common::post_request_with_operation(url, v.to_string(), &auth_header, operation)
+            .await
     }
 
     fn set_conn_audit_primary_auth(&mut self, method: ConnAuditPrimaryAuth) {
@@ -1622,6 +2729,7 @@ impl Connection {
         let mut pi = PeerInfo {
             username: username.clone(),
             version: VERSION.to_owned(),
+            file_transfer_protocol_version: fs::FILE_TRANSFER_PROTOCOL_VERSION,
             ..Default::default()
         };
 
@@ -1688,7 +2796,7 @@ impl Connection {
             let is_unix_and_peer_supported = false;
             let is_both_macos = cfg!(target_os = "macos")
                 && self.lr.my_platform
-                    == camellia_remote_protocol::whoami::Platform::MacOS.to_string();
+                    == camellia_remote_protocol::whoami::Platform::Mac.to_string();
             let is_peer_support_paste_if_macos =
                 crate::is_support_file_paste_if_macos(&self.lr.version);
             let has_file_clipboard = is_both_windows
@@ -2362,6 +3470,17 @@ impl Connection {
 
     async fn handle_login_request_without_validation(&mut self, lr: &LoginRequest) {
         self.lr = lr.clone();
+        if !self.audit_opened {
+            let mut audit = json!({
+                "ip": self.ip,
+                "action": "new",
+            });
+            if let Some(audit_ref) = self.conn_audit_ref() {
+                audit["conn_audit_ref"] = json!(audit_ref);
+            }
+            self.post_conn_audit(audit);
+            self.audit_opened = true;
+        }
         self.peer_argb = crate::str2color(&format!("{}{}", &lr.my_id, &lr.my_platform), 0xff);
         if let Some(o) = lr.option.as_ref() {
             self.options_in_login = Some(o.clone());
@@ -2442,8 +3561,16 @@ impl Connection {
                 return true;
             }
             self.reset_session_scope_for_login();
+            let file_transfer_protocol_version = lr.file_transfer_protocol_version;
             match lr.union {
                 Some(login_request::Union::FileTransfer(ft)) => {
+                    if let Err(err) =
+                        fs::validate_file_transfer_protocol_version(file_transfer_protocol_version)
+                    {
+                        self.send_login_error(&err.to_string()).await;
+                        sleep(1.).await;
+                        return false;
+                    }
                     if !Self::permission(
                         keys::OPTION_ENABLE_FILE_TRANSFER,
                         &self.control_permissions,
@@ -2965,7 +4092,15 @@ impl Connection {
                         #[cfg(target_os = "ios")]
                         {
                             let content = if cb.compress {
-                                camellia_remote_protocol::compress::decompress(&cb.content)
+                                match camellia_remote_protocol::compress::decompress(&cb.content) {
+                                    Ok(content) => content,
+                                    Err(err) => {
+                                        log::warn!(
+                                            "Dropping malformed compressed clipboard payload: {err}"
+                                        );
+                                        return true;
+                                    }
+                                }
                             } else {
                                 cb.content.into()
                             };
@@ -2995,15 +4130,16 @@ impl Connection {
                 #[cfg(any(target_os = "windows", feature = "unix-file-copy-paste"))]
                 Some(message::Union::Cliprdr(clip)) => {
                     if let Some(cliprdr::Union::Files(files)) = &clip.union {
-                        self.post_file_audit(
+                        self.start_file_audit(
+                            None,
                             FileAuditType::RemoteReceive,
                             "",
                             files
                                 .files
                                 .iter()
-                                .map(|f| (f.name.clone(), f.size as i64))
-                                .collect::<Vec<(String, i64)>>(),
-                            json!({}),
+                                .map(|f| (f.name.clone(), f.size))
+                                .collect(),
+                            "clipboard",
                         );
                     } else if let Some(clip) = msg_2_clip(clip) {
                         #[cfg(target_os = "windows")]
@@ -3048,15 +4184,16 @@ impl Connection {
                                     if let Some(cliprdr::Union::Files(files)) =
                                         cliprdr.union.as_ref()
                                     {
-                                        self.post_file_audit(
+                                        self.start_file_audit(
+                                            None,
                                             FileAuditType::RemoteSend,
                                             "",
                                             files
                                                 .files
                                                 .iter()
-                                                .map(|f| (f.name.clone(), f.size as i64))
-                                                .collect::<Vec<(String, i64)>>(),
-                                            json!({}),
+                                                .map(|f| (f.name.clone(), f.size))
+                                                .collect(),
+                                            "clipboard",
                                         );
                                         continue;
                                     }
@@ -3150,6 +4287,12 @@ impl Connection {
                             Some(file_action::Union::Send(s)) => {
                                 // server to client
                                 let id = s.id;
+                                if let Err(err) = fs::validate_file_transfer_protocol_version(
+                                    self.lr.file_transfer_protocol_version,
+                                ) {
+                                    self.send(fs::new_error(id, err, s.file_num)).await;
+                                    return true;
+                                }
                                 let path = s.path.clone();
                                 let job_type = JobType::from_proto(s.file_type);
                                 match job_type {
@@ -3217,11 +4360,28 @@ impl Connection {
                             }
                             Some(file_action::Union::Receive(r)) => {
                                 // client to server
+                                if let Err(err) = fs::validate_file_transfer_protocol_version(
+                                    self.lr.file_transfer_protocol_version,
+                                ) {
+                                    self.send(fs::new_error(r.id, err, r.file_num)).await;
+                                    return true;
+                                }
                                 // note: 1.1.10 introduced identical file detection, which breaks original logic of send/recv files
                                 // whenever got send/recv request, check peer version to ensure old version of rustdesk
                                 let od = can_enable_overwrite_detection(get_version_number(
                                     &self.lr.version,
                                 ));
+                                let audit_files = Self::get_files_for_audit(
+                                    fs::JobType::Generic,
+                                    r.files.clone(),
+                                );
+                                self.start_file_audit(
+                                    Some(r.id),
+                                    FileAuditType::RemoteReceive,
+                                    &r.path,
+                                    audit_files,
+                                    "file_transfer",
+                                );
                                 self.send_fs(ipc::FS::NewWrite {
                                     path: r.path.clone(),
                                     id: r.id,
@@ -3230,18 +4390,16 @@ impl Connection {
                                         .files
                                         .to_vec()
                                         .drain(..)
-                                        .map(|f| (f.name, f.modified_time))
+                                        .map(|f| ipc::FileTransferEntry {
+                                            name: f.name,
+                                            size: f.size,
+                                            modified_time: f.modified_time,
+                                        })
                                         .collect(),
                                     overwrite_detection: od,
                                     total_size: r.total_size,
                                     conn_id: self.inner.id(),
                                 });
-                                self.post_file_audit(
-                                    FileAuditType::RemoteReceive,
-                                    &r.path,
-                                    Self::get_files_for_audit(fs::JobType::Generic, r.files),
-                                    json!({}),
-                                );
                                 self.file_transferred = true;
                             }
                             Some(file_action::Union::RemoveDir(d)) => {
@@ -3284,27 +4442,52 @@ impl Connection {
                                     conn_id: self.inner.id(),
                                 });
                                 if let Some(job) = fs::remove_job(c.id, &mut self.read_jobs) {
+                                    let job_log = fs::serialize_transfer_job(&job, false, true, "");
+                                    self.update_file_audit_from_job_log(&job_log);
                                     self.send_to_cm(ipc::Data::FileTransferLog((
                                         "transfer".to_string(),
-                                        fs::serialize_transfer_job(&job, false, true, ""),
+                                        job_log,
                                     )));
                                 }
                             }
                             Some(file_action::Union::SendConfirm(r)) => {
-                                if let Some(job) = fs::get_job(r.id, &mut self.read_jobs) {
-                                    job.confirm(&r).await;
-                                } else if self.cm_read_job_ids.contains(&r.id) {
-                                    // Forward to CM for CM-read jobs
-                                    self.send_fs(ipc::FS::SendConfirmForRead {
-                                        id: r.id,
-                                        file_num: r.file_num,
-                                        skip: r.skip(),
-                                        offset_blk: r.offset_blk(),
-                                        conn_id: self.inner.id(),
-                                    });
-                                } else {
-                                    if let Ok(sc) = r.write_to_bytes() {
-                                        self.send_fs(ipc::FS::SendConfirm(sc));
+                                let direct_confirmation =
+                                    if let Some(job) = fs::get_job(r.id, &mut self.read_jobs) {
+                                        if job.confirm(&r).await {
+                                            Some(None)
+                                        } else {
+                                            Some(Some(job.job_error().unwrap_or_else(|| {
+                                                "file transfer confirmation failed".to_owned()
+                                            })))
+                                        }
+                                    } else {
+                                        None
+                                    };
+                                match direct_confirmation {
+                                    Some(Some(err)) => {
+                                        if let Some(job) = fs::remove_job(r.id, &mut self.read_jobs)
+                                        {
+                                            let job_log = fs::serialize_transfer_job(
+                                                &job, false, false, &err,
+                                            );
+                                            self.update_file_audit_from_job_log(&job_log);
+                                        }
+                                        self.send(fs::new_error(r.id, err, r.file_num)).await;
+                                    }
+                                    Some(None) => {}
+                                    None if self.cm_read_job_ids.contains(&r.id) => {
+                                        self.send_fs(ipc::FS::SendConfirmForRead {
+                                            id: r.id,
+                                            file_num: r.file_num,
+                                            skip: r.skip(),
+                                            offset_bytes: r.offset_bytes(),
+                                            conn_id: self.inner.id(),
+                                        });
+                                    }
+                                    None => {
+                                        if let Ok(sc) = r.write_to_bytes() {
+                                            self.send_fs(ipc::FS::SendConfirm(sc));
+                                        }
                                     }
                                 }
                             }
@@ -3333,6 +4516,7 @@ impl Connection {
                         self.send_fs(ipc::FS::WriteBlock {
                             id: block.id,
                             file_num: block.file_num,
+                            blk_id: block.blk_id,
                             data: block.data,
                             compressed: block.compressed,
                         });
@@ -4835,11 +6019,12 @@ impl Connection {
                     .await;
 
                 // Post audit for file transfer
-                self.post_file_audit(
+                self.start_file_audit(
+                    Some(id),
                     FileAuditType::RemoteSend,
                     &path_str,
                     Self::get_files_for_audit(fs::JobType::Generic, file_entries),
-                    json!({}),
+                    "file_transfer",
                 );
 
                 // CM will handle the actual file reading and send blocks via IPC
@@ -4852,6 +6037,7 @@ impl Connection {
         &mut self,
         id: i32,
         file_num: i32,
+        blk_id: u32,
         data: bytes::Bytes,
         compressed: bool,
     ) {
@@ -4869,6 +6055,7 @@ impl Connection {
         let mut block = FileTransferBlock::new();
         block.id = id;
         block.file_num = file_num;
+        block.blk_id = blk_id;
         block.data = data.to_vec().into();
         block.compressed = compressed;
 
@@ -4955,6 +6142,7 @@ impl Connection {
         let job_id = job.id;
         let files = job.files().to_owned();
         let job_type = job.r#type;
+        let total_size = job.total_size();
         let audit_path = if job_type == fs::JobType::Printer {
             "Remote print".to_owned()
         } else {
@@ -4965,11 +6153,21 @@ impl Connection {
         self.read_jobs.push(job);
         self.send(fs::new_dir(job_id, path, files.clone())).await;
         self.file_timer = crate::rustdesk_interval(time::interval(MILLI1));
-        self.post_file_audit(
+        let audit_files = if job_type == fs::JobType::Printer {
+            vec![("Remote print".to_owned(), total_size)]
+        } else {
+            Self::get_files_for_audit(job_type, files)
+        };
+        self.start_file_audit(
+            Some(job_id),
             FileAuditType::RemoteSend,
             &audit_path,
-            Self::get_files_for_audit(job_type, files),
-            json!({}),
+            audit_files,
+            if job_type == fs::JobType::Printer {
+                "printer"
+            } else {
+                "file_transfer"
+            },
         );
     }
 
@@ -5965,11 +7163,12 @@ async fn start_ipc(
                             // Note: Empty data (for empty files) is correctly handled. BytesCodec with
                             // raw=false adds a length prefix, so next_raw() returns empty BytesMut for
                             // zero-length frames. This mirrors the WriteBlock pattern below.
-                            ipc::Data::FileBlockFromCM { id, file_num, data: _, compressed, conn_id } => {
+                            ipc::Data::FileBlockFromCM { id, file_num, blk_id, data: _, compressed, conn_id } => {
                                 let raw_data = stream.next_raw().await?;
                                 tx_from_cm.send(ipc::Data::FileBlockFromCM {
                                     id,
                                     file_num,
+                                    blk_id,
                                     data: raw_data.into(),
                                     compressed,
                                     conn_id,
@@ -5988,9 +7187,10 @@ async fn start_ipc(
                     Some(data) => {
                         if let Data::FS(ipc::FS::WriteBlock{id,
                             file_num,
+                            blk_id,
                             data,
                             compressed}) = data {
-                                stream.send(&Data::FS(ipc::FS::WriteBlock{id, file_num, data: Bytes::new(), compressed})).await?;
+                                stream.send(&Data::FS(ipc::FS::WriteBlock{id, file_num, blk_id, data: Bytes::new(), compressed})).await?;
                                 stream.send_raw(data).await?;
                         } else {
                             stream.send(&data).await?;
@@ -6687,6 +7887,552 @@ mod test {
         assert!(Ipv6Addr::from_str("::1").is_ok());
         assert!(Ipv6Addr::from_str("127.0.0.1").is_err());
         assert!(Ipv6Addr::from_str("0").is_err());
+    }
+
+    #[test]
+    fn file_audit_manifest_counts_all_files_before_sampling_and_rejects_overflow() {
+        let files = (1..=100)
+            .map(|size| (format!("file-{size}.bin"), size))
+            .collect::<Vec<_>>();
+        let manifest = Connection::summarize_file_audit_manifest(files).unwrap();
+        assert_eq!(manifest.planned_file_count, 100);
+        assert_eq!(manifest.planned_bytes, 5050);
+        assert!(!manifest.is_file);
+        assert_eq!(manifest.sample_files.len(), 10);
+        assert_eq!(
+            manifest.sample_files[0],
+            json!({"path": "file-100.bin", "size": 100})
+        );
+        assert_eq!(
+            manifest.sample_files[9],
+            json!({"path": "file-91.bin", "size": 91})
+        );
+
+        let single = Connection::summarize_file_audit_manifest(vec![(String::new(), 42)]).unwrap();
+        assert!(single.is_file);
+        assert_eq!(single.planned_file_count, 1);
+        assert_eq!(single.planned_bytes, 42);
+
+        assert!(Connection::summarize_file_audit_manifest(vec![
+            ("first".to_owned(), FILE_AUDIT_MAX_BYTES),
+            ("overflow".to_owned(), 1),
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn file_audit_response_requires_v4_transfer_acknowledgement() {
+        let capability = Uuid::new_v4().to_string();
+        let event_id = Uuid::new_v4().to_string();
+        let transfer_id = Uuid::new_v4().to_string();
+        let request = AuditPost {
+            url: String::new(),
+            body: json!({
+                "event_id": event_id,
+                "receipt_version": AUDIT_EVIDENCE_RECEIPT_VERSION,
+                "reporter_sequence": 4,
+                "transfer_id": transfer_id,
+                "transfer_revision": 2,
+                "state": "progress",
+                "transferred_bytes": 1024,
+            }),
+            kind: AuditPostKind::FileEvidence,
+            created_at: Instant::now(),
+        };
+        let response = Connection::parse_file_audit_post_response(
+            &json!({
+                "version": FILE_AUDIT_PROTOCOL_VERSION,
+                "audit_session_id": capability,
+                "acknowledged_event_id": event_id,
+                "receipt_version": AUDIT_EVIDENCE_RECEIPT_VERSION,
+                "reporter_sequence": 4,
+                "payload_digest": "a".repeat(64),
+                "transfer_id": transfer_id,
+                "transfer_revision": 2,
+                "transfer_state": "progress",
+                "transferred_bytes": 1024,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(
+            Connection::validate_file_audit_progress(&response, &request, Some(&capability),)
+                .is_ok()
+        );
+        assert!(Connection::validate_file_audit_progress(
+            &response,
+            &request,
+            Some(&Uuid::new_v4().to_string()),
+        )
+        .is_err());
+
+        for field in [
+            "event_id",
+            "transfer_id",
+            "state",
+            "transfer_revision",
+            "transferred_bytes",
+        ] {
+            let mut mismatched = request.body.clone();
+            mismatched[field] = match field {
+                "event_id" | "transfer_id" => json!(Uuid::new_v4().to_string()),
+                "state" => json!("completed"),
+                "transfer_revision" => json!(3),
+                _ => json!(1025),
+            };
+            let mismatched = AuditPost {
+                url: String::new(),
+                body: mismatched,
+                kind: AuditPostKind::FileEvidence,
+                created_at: Instant::now(),
+            };
+            assert!(Connection::validate_file_audit_progress(
+                &response,
+                &mismatched,
+                Some(&capability),
+            )
+            .is_err());
+        }
+
+        assert_eq!(
+            Connection::prepare_audit_post(
+                String::new(),
+                Value::default(),
+                AuditPostKind::FileEvidence,
+            )
+            .body["version"],
+            FILE_AUDIT_PROTOCOL_VERSION,
+        );
+    }
+
+    #[test]
+    fn durable_alarm_and_file_receipts_are_bound_to_persisted_requests() {
+        let audit_session_id = Uuid::new_v4().to_string();
+        let alarm_event_id = Uuid::new_v4().to_string();
+        let alarm = PendingEvidence {
+            protocol: 1,
+            event_id: alarm_event_id.clone(),
+            url: "https://management.invalid/api/audit/alarm".to_owned(),
+            body: json!({
+                "version": AUDIT_PROTOCOL_VERSION,
+                "receipt_version": AUDIT_EVIDENCE_RECEIPT_VERSION,
+                "audit_session_id": audit_session_id,
+                "event_id": alarm_event_id,
+                "reporter_sequence": 7,
+            }),
+            kind: EvidenceKind::Alarm,
+            created_at_unix_ms: 1,
+        };
+        let alarm_ack = json!({
+            "version": AUDIT_PROTOCOL_VERSION,
+            "receipt_version": AUDIT_EVIDENCE_RECEIPT_VERSION,
+            "audit_session_id": audit_session_id,
+            "acknowledged_event_id": alarm_event_id,
+            "reporter_sequence": 7,
+            "payload_digest": "a".repeat(64),
+            "event_revision": 3,
+            "state": "active",
+            "lease_remaining_seconds": 90,
+        });
+        assert!(Connection::persisted_evidence_ack_is_valid(
+            &alarm,
+            &alarm_ack.to_string(),
+        ));
+        let mut mismatched_alarm = alarm_ack;
+        mismatched_alarm["reporter_sequence"] = json!(8);
+        assert!(!Connection::persisted_evidence_ack_is_valid(
+            &alarm,
+            &mismatched_alarm.to_string(),
+        ));
+
+        let file_event_id = Uuid::new_v4().to_string();
+        let transfer_id = Uuid::new_v4().to_string();
+        let file = PendingEvidence {
+            protocol: 1,
+            event_id: file_event_id.clone(),
+            url: "https://management.invalid/api/audit/file".to_owned(),
+            body: json!({
+                "version": FILE_AUDIT_PROTOCOL_VERSION,
+                "receipt_version": AUDIT_EVIDENCE_RECEIPT_VERSION,
+                "audit_session_id": audit_session_id,
+                "event_id": file_event_id,
+                "reporter_sequence": 8,
+                "transfer_id": transfer_id,
+                "transfer_revision": 2,
+                "state": "progress",
+                "transferred_bytes": 1024,
+            }),
+            kind: EvidenceKind::File,
+            created_at_unix_ms: 2,
+        };
+        let file_ack = json!({
+            "version": FILE_AUDIT_PROTOCOL_VERSION,
+            "receipt_version": AUDIT_EVIDENCE_RECEIPT_VERSION,
+            "audit_session_id": audit_session_id,
+            "acknowledged_event_id": file_event_id,
+            "reporter_sequence": 8,
+            "payload_digest": "b".repeat(64),
+            "transfer_id": transfer_id,
+            "transfer_revision": 2,
+            "transfer_state": "progress",
+            "transferred_bytes": 1024,
+        });
+        assert!(Connection::persisted_evidence_ack_is_valid(
+            &file,
+            &file_ack.to_string(),
+        ));
+        let mut mismatched_file = file_ack;
+        mismatched_file["payload_digest"] = json!("B".repeat(64));
+        assert!(!Connection::persisted_evidence_ack_is_valid(
+            &file,
+            &mismatched_file.to_string(),
+        ));
+    }
+
+    #[test]
+    fn durable_evidence_retry_deadline_is_finite_and_clock_safe() {
+        assert_eq!(AUDIT_EVIDENCE_INLINE_RETRY_WINDOW, Duration::from_secs(10));
+        assert_eq!(AUDIT_EVIDENCE_DURABLE_RETRY_WINDOW, Duration::from_secs(90));
+        let now_ms = 1_000_000;
+        assert!(Connection::durable_evidence_timestamp_is_valid(
+            now_ms + 5_000,
+            now_ms,
+        ));
+        assert!(!Connection::durable_evidence_timestamp_is_valid(
+            now_ms + 5_001,
+            now_ms,
+        ));
+        assert!(Connection::durable_evidence_timestamp_is_valid(
+            now_ms - 89_999,
+            now_ms,
+        ));
+        assert!(!Connection::durable_evidence_timestamp_is_valid(
+            now_ms - 90_000,
+            now_ms,
+        ));
+    }
+
+    #[test]
+    fn durable_evidence_replay_is_bound_to_the_current_management_authority() {
+        let event_id = Uuid::new_v4().to_string();
+        let mut record = PendingEvidence {
+            protocol: 1,
+            event_id: event_id.clone(),
+            url: "https://management.invalid/api/audit/alarm".to_owned(),
+            body: json!({
+                "version": AUDIT_PROTOCOL_VERSION,
+                "receipt_version": AUDIT_EVIDENCE_RECEIPT_VERSION,
+                "audit_session_id": Uuid::new_v4().to_string(),
+                "event_id": event_id,
+                "reporter_sequence": 1,
+            }),
+            kind: EvidenceKind::Alarm,
+            created_at_unix_ms: 1,
+        };
+        let alarm_url = "https://management.invalid/api/audit/alarm";
+        let file_url = "https://management.invalid/api/audit/file";
+        assert!(
+            Connection::durable_evidence_url_matches_configured_authority(
+                &record, alarm_url, file_url,
+            )
+        );
+        assert!(
+            !Connection::durable_evidence_url_matches_configured_authority(
+                &record,
+                "https://replacement.invalid/api/audit/alarm",
+                file_url,
+            )
+        );
+        record.kind = EvidenceKind::File;
+        assert!(
+            !Connection::durable_evidence_url_matches_configured_authority(
+                &record, alarm_url, file_url,
+            )
+        );
+        record.url = file_url.to_owned();
+        assert!(
+            Connection::durable_evidence_url_matches_configured_authority(
+                &record, alarm_url, file_url,
+            )
+        );
+        assert!(
+            !Connection::durable_evidence_url_matches_configured_authority(&record, alarm_url, "",)
+        );
+    }
+
+    #[test]
+    fn audit_response_requires_v3_lease_state_acknowledgement_and_monotonic_revisions() {
+        let capability = Uuid::new_v4().to_string();
+        let event_id = Uuid::new_v4().to_string();
+        let request = AuditPost {
+            url: String::new(),
+            body: json!({"event_id": event_id}),
+            kind: AuditPostKind::Open,
+            created_at: Instant::now(),
+        };
+        let response = Connection::parse_audit_post_response(
+            &json!({
+                "version": AUDIT_PROTOCOL_VERSION,
+                "audit_session_id": capability,
+                "acknowledged_event_id": event_id,
+                "event_revision": 7,
+                "state": "starting",
+                "state_revision": 1,
+                "heartbeat_revision": 0,
+                "lease_remaining_seconds": 90,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(response.version, AUDIT_PROTOCOL_VERSION);
+        assert_eq!(response.event_revision, 7);
+        assert!(Connection::validate_audit_progress(&response, &request, None, 0, 0, 0).is_ok());
+        let mismatched_event = AuditPost {
+            url: String::new(),
+            body: json!({"event_id": Uuid::new_v4().to_string()}),
+            kind: AuditPostKind::Lifecycle,
+            created_at: Instant::now(),
+        };
+        assert!(Connection::validate_audit_progress(
+            &response,
+            &mismatched_event,
+            Some(&capability),
+            7,
+            1,
+            0,
+        )
+        .is_err());
+        let matching_event = AuditPost {
+            url: String::new(),
+            body: json!({"event_id": event_id}),
+            kind: AuditPostKind::Lifecycle,
+            created_at: Instant::now(),
+        };
+        assert!(Connection::validate_audit_progress(
+            &response,
+            &matching_event,
+            Some(&Uuid::new_v4().to_string()),
+            6,
+            1,
+            0,
+        )
+        .is_err());
+
+        // A lifecycle POST may be replayed after Management committed it but
+        // its response was lost. Repeating validation of the same event and
+        // server revision must remain acceptable.
+        assert!(Connection::validate_audit_progress(
+            &response,
+            &matching_event,
+            Some(&capability),
+            6,
+            1,
+            0,
+        )
+        .is_ok());
+        assert!(Connection::validate_audit_progress(
+            &response,
+            &matching_event,
+            Some(&capability),
+            6,
+            1,
+            0,
+        )
+        .is_ok());
+
+        let heartbeat_event_id = Uuid::new_v4().to_string();
+        let heartbeat_request = AuditPost {
+            url: String::new(),
+            body: json!({
+                "event_id": heartbeat_event_id,
+                "heartbeat_revision": 2,
+            }),
+            kind: AuditPostKind::Heartbeat,
+            created_at: Instant::now(),
+        };
+        let heartbeat_response = Connection::parse_audit_post_response(
+            &json!({
+                "version": AUDIT_PROTOCOL_VERSION,
+                "audit_session_id": capability,
+                "acknowledged_event_id": heartbeat_event_id,
+                "event_revision": 7,
+                "state": "active",
+                "state_revision": 2,
+                "heartbeat_revision": 2,
+                "lease_remaining_seconds": 89,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(Connection::validate_audit_progress(
+            &heartbeat_response,
+            &heartbeat_request,
+            Some(&capability),
+            7,
+            2,
+            1,
+        )
+        .is_ok());
+        let wrong_heartbeat_response = AuditPostResponse {
+            heartbeat_revision: 3,
+            ..heartbeat_response
+        };
+        assert!(Connection::validate_audit_progress(
+            &wrong_heartbeat_response,
+            &heartbeat_request,
+            Some(&capability),
+            7,
+            2,
+            1,
+        )
+        .is_err());
+
+        for terminal_state in ["closed", "aborted"] {
+            let close_event_id = Uuid::new_v4().to_string();
+            let close_request = AuditPost {
+                url: String::new(),
+                body: json!({"event_id": close_event_id}),
+                kind: AuditPostKind::Close,
+                created_at: Instant::now(),
+            };
+            let close_response = Connection::parse_audit_post_response(
+                &json!({
+                    "version": AUDIT_PROTOCOL_VERSION,
+                    "audit_session_id": capability,
+                    "acknowledged_event_id": close_event_id,
+                    "event_revision": 8,
+                    "state": terminal_state,
+                    "state_revision": 3,
+                    "heartbeat_revision": 2,
+                    "lease_remaining_seconds": 0,
+                })
+                .to_string(),
+            )
+            .unwrap();
+            assert!(Connection::validate_audit_progress(
+                &close_response,
+                &close_request,
+                Some(&capability),
+                7,
+                2,
+                2,
+            )
+            .is_ok());
+        }
+
+        for (terminal_state, lease_remaining_seconds) in
+            [("active", 0), ("closed", 1), ("expired", 0)]
+        {
+            let close_event_id = Uuid::new_v4().to_string();
+            let close_request = AuditPost {
+                url: String::new(),
+                body: json!({"event_id": close_event_id}),
+                kind: AuditPostKind::Close,
+                created_at: Instant::now(),
+            };
+            let invalid_close = Connection::parse_audit_post_response(
+                &json!({
+                    "version": AUDIT_PROTOCOL_VERSION,
+                    "audit_session_id": capability,
+                    "acknowledged_event_id": close_event_id,
+                    "event_revision": 8,
+                    "state": terminal_state,
+                    "state_revision": 3,
+                    "heartbeat_revision": 2,
+                    "lease_remaining_seconds": lease_remaining_seconds,
+                })
+                .to_string(),
+            )
+            .unwrap();
+            assert!(Connection::validate_audit_progress(
+                &invalid_close,
+                &close_request,
+                Some(&capability),
+                7,
+                2,
+                2,
+            )
+            .is_err());
+        }
+
+        let evidence_event_id = Uuid::new_v4().to_string();
+        let evidence_request = AuditPost {
+            url: String::new(),
+            body: json!({"event_id": evidence_event_id}),
+            kind: AuditPostKind::Evidence,
+            created_at: Instant::now(),
+        };
+        for terminal_state in ["closed", "expired"] {
+            let terminal_evidence = Connection::parse_audit_post_response(
+                &json!({
+                    "version": AUDIT_PROTOCOL_VERSION,
+                    "audit_session_id": capability,
+                    "acknowledged_event_id": evidence_event_id,
+                    "event_revision": 8,
+                    "state": terminal_state,
+                    "state_revision": 3,
+                    "heartbeat_revision": 2,
+                    "lease_remaining_seconds": 0,
+                })
+                .to_string(),
+            )
+            .unwrap();
+            assert!(Connection::validate_audit_progress(
+                &terminal_evidence,
+                &evidence_request,
+                Some(&capability),
+                7,
+                2,
+                2,
+            )
+            .is_err());
+        }
+
+        for invalid in [
+            json!({
+                "version": 1,
+                "audit_session_id": Uuid::new_v4().to_string(),
+                "acknowledged_event_id": Uuid::new_v4().to_string(),
+                "event_revision": 1,
+                "state": "starting",
+                "state_revision": 1,
+                "heartbeat_revision": 0,
+                "lease_remaining_seconds": 90,
+            }),
+            json!({
+                "version": AUDIT_PROTOCOL_VERSION,
+                "audit_session_id": Uuid::nil().to_string(),
+                "acknowledged_event_id": Uuid::new_v4().to_string(),
+                "event_revision": 1,
+                "state": "starting",
+                "state_revision": 1,
+                "heartbeat_revision": 0,
+                "lease_remaining_seconds": 90,
+            }),
+            json!({
+                "version": AUDIT_PROTOCOL_VERSION,
+                "audit_session_id": Uuid::new_v4().to_string(),
+                "acknowledged_event_id": Uuid::nil().to_string(),
+                "event_revision": 1,
+                "state": "starting",
+                "state_revision": 1,
+                "heartbeat_revision": 0,
+                "lease_remaining_seconds": 90,
+            }),
+            json!({
+                "version": AUDIT_PROTOCOL_VERSION,
+                "audit_session_id": Uuid::new_v4().to_string(),
+                "acknowledged_event_id": Uuid::new_v4().to_string(),
+                "event_revision": 0,
+                "state": "starting",
+                "state_revision": 1,
+                "heartbeat_revision": 0,
+                "lease_remaining_seconds": 90,
+            }),
+            json!({"error": "Connection is closed"}),
+        ] {
+            assert!(Connection::parse_audit_post_response(&invalid.to_string()).is_err());
+        }
     }
 
     fn msg(set: impl FnOnce(&mut Message)) -> Message {

@@ -30,3 +30,26 @@ class JsContext {
 }
 
 const context = JsContext();
+
+@JS('getDeviceProof')
+external JSPromise<JSString> _getDeviceProof(
+  JSString purpose,
+  JSString id,
+  JSString uuid,
+  JSString token,
+);
+
+Future<String> getDeviceProof(
+  String purpose,
+  String id,
+  String uuid,
+  String token,
+) async {
+  final result = await _getDeviceProof(
+    purpose.toJS,
+    id.toJS,
+    uuid.toJS,
+    token.toJS,
+  ).toDart;
+  return result.toDart;
+}

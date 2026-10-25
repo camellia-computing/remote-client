@@ -1,7 +1,6 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:camellia_remote_app/common.dart';
 import 'package:camellia_remote_app/common/widgets/setting_widgets.dart';
 import 'package:camellia_remote_app/common/widgets/login.dart';
@@ -17,8 +16,6 @@ class WebClientSettingsPage extends StatefulWidget {
 }
 
 class _WebClientSettingsPageState extends State<WebClientSettingsPage> {
-  late final TextEditingController _directPortController;
-  final FocusNode _directPortFocusNode = FocusNode();
   late final Future<_AboutInfo> _aboutFuture;
 
   final List<({String key, String label})> _langs = [];
@@ -27,18 +24,8 @@ class _WebClientSettingsPageState extends State<WebClientSettingsPage> {
   @override
   void initState() {
     super.initState();
-    _directPortController = TextEditingController(
-      text: bind.mainGetOptionSync(key: kOptionDirectAccessPort),
-    );
     _aboutFuture = _loadAboutInfo();
     _loadLanguages();
-  }
-
-  @override
-  void dispose() {
-    _directPortController.dispose();
-    _directPortFocusNode.dispose();
-    super.dispose();
   }
 
   Future<void> _loadLanguages() async {
@@ -77,13 +64,6 @@ class _WebClientSettingsPageState extends State<WebClientSettingsPage> {
     );
   }
 
-  Future<void> _setBoolOption(String key, bool value) async {
-    await mainSetBoolOption(key, value);
-    if (mounted) {
-      setState(() {});
-    }
-  }
-
   Future<void> _setUserDefaultOption(String key, String value) async {
     await bind.mainSetUserDefaultOption(key: key, value: value);
     if (mounted) {
@@ -104,10 +84,16 @@ class _WebClientSettingsPageState extends State<WebClientSettingsPage> {
 
   Future<ServerConfig> _loadServerConfig() async {
     try {
-      final options = jsonDecode(await bind.mainGetOptions()) as Map<String, dynamic>;
+      final options =
+          jsonDecode(await bind.mainGetOptions()) as Map<String, dynamic>;
       return ServerConfig.fromOptions(options);
     } catch (_) {
-      return ServerConfig(idServer: '', relayServer: '', apiServer: '', key: '');
+      return ServerConfig(
+        idServer: '',
+        relayServer: '',
+        apiServer: '',
+        key: '',
+      );
     }
   }
 
@@ -225,11 +211,7 @@ class _WebClientSettingsPageState extends State<WebClientSettingsPage> {
                         hint: 'https://api.example.com',
                       ),
                       const SizedBox(height: 10),
-                      buildField(
-                        label: 'Key',
-                        controller: keyCtrl,
-                        error: '',
-                      ),
+                      buildField(label: 'Key', controller: keyCtrl, error: ''),
                       if (isInProgress) ...[
                         const SizedBox(height: 12),
                         const LinearProgressIndicator(),
@@ -254,19 +236,6 @@ class _WebClientSettingsPageState extends State<WebClientSettingsPage> {
       },
     );
   }
-
-  Future<void> _applyDirectAccessPort() async {
-    final value = int.tryParse(_directPortController.text.trim());
-    if (value == null || value <= 0 || value > 65535) {
-      showToast(translate('Invalid port'));
-      return;
-    }
-    await bind.mainSetOption(key: kOptionDirectAccessPort, value: '$value');
-    if (mounted) {
-      setState(() {});
-    }
-  }
-
 
   String _otherLabel(String raw) {
     if (raw == 'show_monitors_tip') {
@@ -326,49 +295,50 @@ class _WebClientSettingsPageState extends State<WebClientSettingsPage> {
 
   @override
   Widget build(BuildContext context) {
-    final directIpEnabled = mainGetBoolOptionSync(kOptionEnableDirectServer);
     final allowWebSocket = mainGetBoolOptionSync(kOptionAllowWebSocket);
-    final isDirectIpFixed = isOptionFixed(kOptionEnableDirectServer);
-    final isDirectPortFixed = isOptionFixed(kOptionDirectAccessPort);
-    final storedDirectPort = bind.mainGetOptionSync(key: kOptionDirectAccessPort);
-    if (!_directPortFocusNode.hasFocus &&
-        _directPortController.text != storedDirectPort) {
-      _directPortController.text = storedDirectPort;
-    }
 
     final viewStyleRaw = bind.mainGetUserDefaultOption(key: kOptionViewStyle);
-    final viewStyle = const {
-      kRemoteViewStyleOriginal,
-      kRemoteViewStyleAdaptive,
-    }.contains(viewStyleRaw)
+    final viewStyle =
+        const {
+          kRemoteViewStyleOriginal,
+          kRemoteViewStyleAdaptive,
+        }.contains(viewStyleRaw)
         ? viewStyleRaw
         : kRemoteViewStyleOriginal;
-    final scrollStyleRaw = bind.mainGetUserDefaultOption(key: kOptionScrollStyle);
-    final scrollStyle = const {
-      kRemoteScrollStyleAuto,
-      kRemoteScrollStyleBar,
-    }.contains(scrollStyleRaw)
+    final scrollStyleRaw = bind.mainGetUserDefaultOption(
+      key: kOptionScrollStyle,
+    );
+    final scrollStyle =
+        const {
+          kRemoteScrollStyleAuto,
+          kRemoteScrollStyleBar,
+        }.contains(scrollStyleRaw)
         ? scrollStyleRaw
         : kRemoteScrollStyleAuto;
-    final imageQualityRaw = bind.mainGetUserDefaultOption(key: kOptionImageQuality);
-    final imageQuality = const {
-      kRemoteImageQualityBest,
-      kRemoteImageQualityBalanced,
-      kRemoteImageQualityLow,
-      kRemoteImageQualityCustom,
-    }.contains(imageQualityRaw)
+    final imageQualityRaw = bind.mainGetUserDefaultOption(
+      key: kOptionImageQuality,
+    );
+    final imageQuality =
+        const {
+          kRemoteImageQualityBest,
+          kRemoteImageQualityBalanced,
+          kRemoteImageQualityLow,
+          kRemoteImageQualityCustom,
+        }.contains(imageQualityRaw)
         ? imageQualityRaw
         : kRemoteImageQualityBalanced;
-    final codecPreferenceRaw =
-        bind.mainGetUserDefaultOption(key: kOptionCodecPreference);
-    final codecPreference = const {
-      'auto',
-      'vp8',
-      'vp9',
-      'av1',
-      'h264',
-      'h265',
-    }.contains(codecPreferenceRaw)
+    final codecPreferenceRaw = bind.mainGetUserDefaultOption(
+      key: kOptionCodecPreference,
+    );
+    final codecPreference =
+        const {
+          'auto',
+          'vp8',
+          'vp9',
+          'av1',
+          'h264',
+          'h265',
+        }.contains(codecPreferenceRaw)
         ? codecPreferenceRaw
         : 'auto';
 
@@ -379,9 +349,7 @@ class _WebClientSettingsPageState extends State<WebClientSettingsPage> {
     }
 
     return Scaffold(
-      appBar: AppBar(
-        title: Text(translate('Settings')),
-      ),
+      appBar: AppBar(title: Text(translate('Settings'))),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
@@ -392,8 +360,10 @@ class _WebClientSettingsPageState extends State<WebClientSettingsPage> {
                 title: 'Language',
                 value: currentLang,
                 items: _langs
-                    .map((e) =>
-                        DropdownMenuItem(value: e.key, child: Text(e.label)))
+                    .map(
+                      (e) =>
+                          DropdownMenuItem(value: e.key, child: Text(e.label)),
+                    )
                     .toList(),
                 onChanged: isOptionFixed(kCommConfKeyLang)
                     ? null
@@ -453,43 +423,13 @@ class _WebClientSettingsPageState extends State<WebClientSettingsPage> {
               ),
             ),
             const Divider(height: 1),
-            SwitchListTile(
-              value: directIpEnabled,
-              onChanged: isDirectIpFixed
-                  ? null
-                  : (value) => _setBoolOption(kOptionEnableDirectServer, value),
-              title: Text(translate('Enable direct IP access')),
-              subtitle: const Text(
-                'Requires target host WS/WSS endpoint, for example ws://host:21118.',
+            const ListTile(
+              leading: Icon(Icons.lock_outline),
+              title: Text('Direct IP access unavailable'),
+              subtitle: Text(
+                'Use a device ID with the authenticated ID/Relay route. Direct endpoints stay disabled until they support peer identity verification and end-to-end session encryption.',
               ),
             ),
-            if (directIpEnabled)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: _directPortController,
-                        focusNode: _directPortFocusNode,
-                        enabled: !isDirectPortFixed,
-                        keyboardType: TextInputType.number,
-                        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                        decoration: InputDecoration(
-                          labelText: translate('Port'),
-                          hintText: '21118',
-                          isDense: true,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    ElevatedButton(
-                      onPressed: isDirectPortFixed ? null : _applyDirectAccessPort,
-                      child: Text(translate('Apply')),
-                    ),
-                  ],
-                ),
-              ),
           ]),
           const SizedBox(height: 12),
           _sectionCard('Display', [
@@ -499,9 +439,13 @@ class _WebClientSettingsPageState extends State<WebClientSettingsPage> {
               value: viewStyle,
               items: const [
                 DropdownMenuItem(
-                    value: kRemoteViewStyleOriginal, child: Text('Scale original')),
+                  value: kRemoteViewStyleOriginal,
+                  child: Text('Scale original'),
+                ),
                 DropdownMenuItem(
-                    value: kRemoteViewStyleAdaptive, child: Text('Scale adaptive')),
+                  value: kRemoteViewStyleAdaptive,
+                  child: Text('Scale adaptive'),
+                ),
               ],
               onChanged: isOptionFixed(kOptionViewStyle)
                   ? null
@@ -514,9 +458,13 @@ class _WebClientSettingsPageState extends State<WebClientSettingsPage> {
               value: scrollStyle,
               items: const [
                 DropdownMenuItem(
-                    value: kRemoteScrollStyleAuto, child: Text('ScrollAuto')),
+                  value: kRemoteScrollStyleAuto,
+                  child: Text('ScrollAuto'),
+                ),
                 DropdownMenuItem(
-                    value: kRemoteScrollStyleBar, child: Text('Scrollbar')),
+                  value: kRemoteScrollStyleBar,
+                  child: Text('Scrollbar'),
+                ),
               ],
               onChanged: isOptionFixed(kOptionScrollStyle)
                   ? null
@@ -529,12 +477,21 @@ class _WebClientSettingsPageState extends State<WebClientSettingsPage> {
               value: imageQuality,
               items: const [
                 DropdownMenuItem(
-                    value: kRemoteImageQualityBest, child: Text('Good image quality')),
+                  value: kRemoteImageQualityBest,
+                  child: Text('Good image quality'),
+                ),
                 DropdownMenuItem(
-                    value: kRemoteImageQualityBalanced, child: Text('Balanced')),
+                  value: kRemoteImageQualityBalanced,
+                  child: Text('Balanced'),
+                ),
                 DropdownMenuItem(
-                    value: kRemoteImageQualityLow, child: Text('Optimize reaction time')),
-                DropdownMenuItem(value: kRemoteImageQualityCustom, child: Text('Custom')),
+                  value: kRemoteImageQualityLow,
+                  child: Text('Optimize reaction time'),
+                ),
+                DropdownMenuItem(
+                  value: kRemoteImageQualityCustom,
+                  child: Text('Custom'),
+                ),
               ],
               onChanged: isOptionFixed(kOptionImageQuality)
                   ? null
@@ -560,7 +517,8 @@ class _WebClientSettingsPageState extends State<WebClientSettingsPage> {
               ],
               onChanged: isOptionFixed(kOptionCodecPreference)
                   ? null
-                  : (v) => _setUserDefaultOption(kOptionCodecPreference, v ?? ''),
+                  : (v) =>
+                        _setUserDefaultOption(kOptionCodecPreference, v ?? ''),
             ),
           ]),
           const SizedBox(height: 12),

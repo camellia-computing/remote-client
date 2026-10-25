@@ -1546,6 +1546,7 @@ void msgBox(
   ReconnectHandle? reconnect,
   int? reconnectTimeout,
   VoidCallback? onSubmit,
+  VoidCallback? onCancel,
   int? submitTimeout,
 }) {
   dialogManager.dismissAll();
@@ -1602,6 +1603,7 @@ void msgBox(
   }
 
   cancel() {
+    onCancel?.call();
     dialogManager.dismissAll();
   }
 
@@ -1642,6 +1644,7 @@ void msgBox(
       dialogButton(
         'Close',
         onPressed: () {
+          onCancel?.call();
           dialogManager.dismissAll();
         },
       ),

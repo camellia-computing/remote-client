@@ -4,11 +4,13 @@ use serde_json::{Map, Value};
 
 #[cfg(feature = "flutter")]
 pub mod account;
+mod dns;
 mod http_client;
 pub mod record_upload;
 pub mod sync;
-pub use http_client::{
-    create_http_client_async_with_tls, create_http_client_with_url, get_url_for_tls,
+pub(crate) use dns::resolve_endpoint;
+pub(crate) use http_client::{
+    create_http_client_async_for_configuration, create_http_client_for_configuration,
 };
 
 #[derive(Debug)]

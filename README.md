@@ -49,6 +49,12 @@ Useful component paths:
 
 - Pairing, session, file-transfer, clipboard, input, and proxy inputs are bounded and validated before resource allocation or filesystem access.
 - Secrets and deployment endpoints must be supplied through the documented build/deployment trust channel; never commit private keys, access tokens, or customer configuration.
+- Account login and deployment use one-use `camellia-device-proof-v1` challenges signed by the persistent Ed25519 device identity. Native clients use the existing persisted host key; Web keeps a per-browser signing identity in its encrypted local-secret envelope. Both clients validate the complete canonical purpose, challenge, rid, UUID, generation, public-key hash, and expiry before signing, so a configured Management endpoint cannot turn the device key into an arbitrary-message signing oracle. Enrolled-device login fails closed without current-key proof; a lost key requires an administrator's exact, ten-minute, one-use recovery approval.
+- A managed host accepts incoming sessions only while it holds a bound Management heartbeat lease. The 60-second lease is renewed on the existing 15-second idle or 3-second active cadence, uses a monotonic local deadline, and rejects identity mismatch, generation rollback, or an excessive duration. Explicit disable/deletion revocation immediately closes direct, relay, file, terminal, and other active sessions, stops rendezvous registration and direct listening, and rejects connection races. Transient Management/network failures use the remaining lease as bounded grace and fail closed when it expires. `register-device=N` installations remain explicitly unmanaged and do not use this lease.
+- Connection auditing uses Management protocol v3. The host serializes open, authorization, 20-second heartbeat, evidence, and close requests through one ordered 64-item queue that preserves two terminal slots; lifecycle requests reuse their UUIDv4 event ID for at most the 90-second lease window. Each logical audit event also binds that ID to `X-Camellia-Event-ID` and a stable W3C trace ID across retry, while every direct HTTP or TCP-proxy attempt gets a fresh span ID; caller-supplied correlation headers cannot override it. Controller lookup accepts only a matching v3 acknowledgement for an `active` lease. `closed`, pre-authorization `aborted`, and telemetry-lost `expired` sessions can never be returned as active or revived by a late heartbeat.
+- File and Alarm evidence uses receipt protocol v1. Before its first attempt, the Client assigns a session-local reporter sequence and atomically persists the unchanged event ID, Management capability, URL, and bounded body in a checksummed, user-private 256-entry outbox; the bearer is never stored. Response loss retries the same record for a finite 90-second window, and the next process/connection resumes pending records only when their exact endpoint still belongs to the currently configured Management authority. Only a matching immutable acknowledgement, a permanent authority rejection, or expiry removes the record.
+- The installed `camellia-remote-admin` control commands send a canonical UUID `Idempotency-Key` and print the exact operation ID and target before mutation. Replaying an ID requires the complete original request/generation snapshot; strategy assignment freezes every target generation. After restart, target deletion or inventory change, read the immutable receipt using `camellia-remote-admin operations --url <management-url> --token <bearer> --operation-id <uuid>` instead of replaying the write. Receipt retention is finite; a missing receipt is not proof of non-commit. A single-target ID is never reused across multiple matches, and only matching complete receipts count as success.
+- Opt-in incoming-session recording upload uses only Management protocol v2. Before creating or mutating remote state, the Client persists a two-slot, checksummed sidecar containing the create/upload identity, committed offset/revision, and any pending chunk or finalize intent. Sidecars use mode 0600 on Unix and the recording directory's ACL on Windows; they contain no bearer token. Create, pending chunk/status, and terminal requests respectively use the persisted create, chunk, or upload UUID as their stable event/trace identity and generate a fresh span for each network attempt. Lost responses are resolved from Management status, and an advanced offset is accepted only when the server confirms the exact pending chunk ID, range, revision, length, and SHA-256 receipt. A completed local file is published remotely only after full-size and full-digest finalize succeeds; an interrupted recorder is aborted rather than presented as complete. The legacy header-overwrite `tail` protocol is intentionally unsupported.
 - Desktop application data uses the `com.camellia.remote` identity. No old application directory is scanned or migrated.
 - The application contains no version service or background updater and never
   discovers or downloads releases. Obtain an immutable reviewed Release,
@@ -57,6 +63,17 @@ Useful component paths:
 - Web assets embedded by the management server are accepted only from the full commit in `web-client.lock` after a successful client push CI run.
 
 Report vulnerabilities through GitHub private vulnerability reporting as described in [SECURITY.md](SECURITY.md).
+
+## Management CLI
+
+Use the Client-owned Python package (`uv sync --locked`, then
+`uv run --locked camellia-remote-admin --help`). Sources and tests live once in
+`tools/admin-cli/`; the former `res/*.py` command paths are removed.
+Management control commands expose typed nonzero outcomes, `--json` reports,
+explicit `--allow-empty`, and frozen-target confirmation with `--yes`. Numeric
+device RIDs/usernames are never guessed to be database identifiers; use
+`guid:<identifier>` for strategy-assignment GUID selectors. See the
+[CLI outcome contract](docs/admin-cli.md) before unattended administration.
 
 ## CI and release
 

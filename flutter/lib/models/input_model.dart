@@ -18,6 +18,7 @@ import '../../models/platform_model.dart';
 import '../../models/state_model.dart';
 import 'input_modifier_utils.dart';
 import 'relative_mouse_model.dart';
+import 'remote_window_geometry.dart';
 import '../common.dart';
 import '../consts.dart';
 
@@ -2014,13 +2015,13 @@ class InputModel {
   }
 
   bool _isInCurrentWindow(double x, double y) {
-    var w = _windowRect!.width;
-    var h = _windowRect!.height;
-    if (isWindows) {
-      w /= devicePixelRatio;
-      h /= devicePixelRatio;
-    }
-    return x >= 0 && y >= 0 && x <= w && y <= h;
+    return isLocalPointInsideWindowFrame(
+      x: x,
+      y: y,
+      windowFrame: _windowRect!,
+      devicePixelRatio: devicePixelRatio,
+      frameUsesPhysicalPixels: isWindows,
+    );
   }
 
   static RemoteWindowCoords? findRemoteCoords(

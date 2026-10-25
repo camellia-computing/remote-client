@@ -401,7 +401,8 @@ fn run_cursor(sp: MouseCursorService, state: &mut StateCursor) -> ResultType<()>
                 msg = cached.clone();
             } else {
                 let mut data = crate::get_cursor_data(hcursor)?;
-                data.colors = camellia_remote_protocol::compress::compress(&data.colors[..]).into();
+                data.colors =
+                    camellia_remote_protocol::compress::compress(&data.colors[..])?.into();
                 let mut tmp = Message::new();
                 tmp.set_cursor_data(data);
                 msg = Arc::new(tmp);

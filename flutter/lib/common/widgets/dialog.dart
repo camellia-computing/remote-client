@@ -2736,13 +2736,7 @@ void showWindowsSessionsDialog(
 
 void addPeersToAbDialog(List<Peer> peers) async {
   Future<bool> addTo(String abname) async {
-    final mapList = peers.map((e) {
-      var json = e.toJson();
-      // remove password when add to another address book to avoid re-share
-      json.remove('password');
-      json.remove('hash');
-      return json;
-    }).toList();
+    final mapList = peers.map((e) => e.toAddressBookCopyJson()).toList();
     final errMsg = await gFFI.abModel.addPeersTo(mapList, abname);
     if (errMsg == null) {
       showToast(translate('Successful'));

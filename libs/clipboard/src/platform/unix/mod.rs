@@ -8,8 +8,15 @@ pub use filetype::{FileDescription, FileType};
 pub mod fuse;
 #[cfg(target_os = "macos")]
 pub mod macos;
+#[cfg(all(test, not(target_os = "macos")))]
+#[path = "macos/paste_task.rs"]
+mod macos_paste_task_compile_test;
 
 pub mod local_file;
+#[cfg(any(target_os = "macos", test))]
+mod paste_state;
+#[cfg(any(target_os = "macos", test))]
+mod paste_storage;
 pub mod serv_files;
 
 /// has valid file attributes
@@ -32,7 +39,7 @@ pub const FILECONTENTS_FORMAT_ID: i32 = 49267;
 pub const FILECONTENTS_FORMAT_NAME: &str = "FileContents";
 
 /// block size for fuse, align to our asynchronic request size over FileContentsRequest.
-pub(crate) const BLOCK_SIZE: u32 = 4 * 1024 * 1024;
+pub(crate) const BLOCK_SIZE: u32 = crate::FILE_CONTENTS_MAX_REQUEST_BYTES;
 
 // begin of epoch used by microsoft
 // 1601-01-01 00:00:00 + LDAP_EPOCH_DELTA*(100 ns) = 1970-01-01 00:00:00

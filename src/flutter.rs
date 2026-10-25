@@ -645,7 +645,13 @@ impl FlutterHandler {
 
 impl InvokeUiSession for FlutterHandler {
     fn set_cursor_data(&self, cd: CursorData) {
-        let colors = camellia_remote_protocol::compress::decompress(&cd.colors);
+        let colors = match camellia_remote_protocol::compress::decompress(&cd.colors) {
+            Ok(colors) => colors,
+            Err(err) => {
+                log::warn!("Dropping cursor update with malformed compressed colors: {err}");
+                return;
+            }
+        };
         self.push_event(
             "cursor_data",
             &[
@@ -747,6 +753,18 @@ impl InvokeUiSession for FlutterHandler {
         self.push_event(
             "job_done",
             &[("id", &id.to_string()), ("file_num", &file_num.to_string())],
+            &[],
+        );
+    }
+
+    fn file_listing_error(&self, path: String, err: String, empty_dirs: bool) {
+        self.push_event(
+            "file_listing_error",
+            &[
+                ("path", &path),
+                ("err", &err),
+                ("empty_dirs", &empty_dirs.to_string()),
+            ],
             &[],
         );
     }
@@ -1131,7 +1149,15 @@ impl InvokeUiSession for FlutterHandler {
             Some(Union::Data(data)) => {
                 // Decompress data if needed
                 let output_data = if data.compressed {
-                    camellia_remote_protocol::compress::decompress(&data.data)
+                    match camellia_remote_protocol::compress::decompress(&data.data) {
+                        Ok(output) => output,
+                        Err(err) => {
+                            log::warn!(
+                                "Dropping terminal output with malformed compressed data: {err}"
+                            );
+                            return;
+                        }
+                    }
                 } else {
                     data.data.to_vec()
                 };

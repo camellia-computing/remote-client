@@ -822,8 +822,13 @@ Future<void> mainChangeId({required String newId}) =>
 Future<String> mainGetAsyncStatus() =>
     RustLib.instance.api.crateFlutterFfiMainGetAsyncStatus();
 
-Future<String?> mainGetHttpStatus({required String url}) =>
-    RustLib.instance.api.crateFlutterFfiMainGetHttpStatus(url: url);
+Future<String> mainGetHttpStatus({required String requestId}) =>
+    RustLib.instance.api.crateFlutterFfiMainGetHttpStatus(requestId: requestId);
+
+Future<void> mainCancelHttpRequest({required String requestId}) => RustLib
+    .instance
+    .api
+    .crateFlutterFfiMainCancelHttpRequest(requestId: requestId);
 
 Future<String> mainGetOption({required String key}) =>
     RustLib.instance.api.crateFlutterFfiMainGetOption(key: key);
@@ -915,6 +920,19 @@ Future<void> mainDiscover() =>
 Future<String> mainGetApiServer() =>
     RustLib.instance.api.crateFlutterFfiMainGetApiServer();
 
+/// Obtain and sign a one-use Management device proof challenge.
+Future<String> mainGetDeviceProof({
+  required String purpose,
+  required String id,
+  required String uuid,
+  required String token,
+}) => RustLib.instance.api.crateFlutterFfiMainGetDeviceProof(
+  purpose: purpose,
+  id: id,
+  uuid: uuid,
+  token: token,
+);
+
 /// Registers this device against the configured API server.
 ///
 /// `deploy_device` already handles every platform - desktop reads and rewrites
@@ -925,7 +943,7 @@ Future<String> mainDeployDevice({required String token, required String id}) =>
 String mainResolveAvatarUrl({required String avatar}) =>
     RustLib.instance.api.crateFlutterFfiMainResolveAvatarUrl(avatar: avatar);
 
-Future<void> mainHttpRequest({
+Future<String> mainHttpRequest({
   required String url,
   required String method,
   String? body,
@@ -935,6 +953,20 @@ Future<void> mainHttpRequest({
   method: method,
   body: body,
   header: header,
+);
+
+/// Native-only durable reservation backend. Error envelopes contain stable
+/// codes, never filesystem paths, raw I/O errors, request bodies or credentials.
+Future<String> mainManagementOperationJournal({
+  required String action,
+  required String operationId,
+  required String scope,
+  required String createdAtMs,
+}) => RustLib.instance.api.crateFlutterFfiMainManagementOperationJournal(
+  action: action,
+  operationId: operationId,
+  scope: scope,
+  createdAtMs: createdAtMs,
 );
 
 String mainGetLocalOption({required String key}) =>

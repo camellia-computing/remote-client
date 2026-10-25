@@ -579,8 +579,10 @@ class RustdeskImpl {
   Future<void> mainChangeId({required String newId}) =>
       ffi.mainChangeId(newId: newId);
   Future<String> mainGetAsyncStatus() => ffi.mainGetAsyncStatus();
-  Future<String?> mainGetHttpStatus({required String url}) =>
-      ffi.mainGetHttpStatus(url: url);
+  Future<String> mainGetHttpStatus({required String requestId}) =>
+      ffi.mainGetHttpStatus(requestId: requestId);
+  Future<void> mainCancelHttpRequest({required String requestId}) =>
+      ffi.mainCancelHttpRequest(requestId: requestId);
   Future<String> mainGetOption({required String key}) =>
       ffi.mainGetOption(key: key);
   String mainGetOptionSync({required String key}) =>
@@ -619,19 +621,41 @@ class RustdeskImpl {
   Future<bool> mainIsUsingPublicServer() => ffi.mainIsUsingPublicServer();
   Future<void> mainDiscover() => ffi.mainDiscover();
   Future<String> mainGetApiServer() => ffi.mainGetApiServer();
+  Future<String> mainGetDeviceProof({
+    required String purpose,
+    required String id,
+    required String uuid,
+    required String token,
+  }) => ffi.mainGetDeviceProof(
+    purpose: purpose,
+    id: id,
+    uuid: uuid,
+    token: token,
+  );
   Future<String> mainDeployDevice({
     required String token,
     required String id,
   }) => ffi.mainDeployDevice(token: token, id: id);
   String mainResolveAvatarUrl({required String avatar}) =>
       ffi.mainResolveAvatarUrl(avatar: avatar);
-  Future<void> mainHttpRequest({
+  Future<String> mainHttpRequest({
     required String url,
     required String method,
     String? body,
     required String header,
   }) =>
       ffi.mainHttpRequest(url: url, method: method, body: body, header: header);
+  Future<String> mainManagementOperationJournal({
+    required String action,
+    required String operationId,
+    required String scope,
+    required String createdAtMs,
+  }) => ffi.mainManagementOperationJournal(
+    action: action,
+    operationId: operationId,
+    scope: scope,
+    createdAtMs: createdAtMs,
+  );
   String mainGetLocalOption({required String key}) =>
       ffi.mainGetLocalOption(key: key);
   bool mainGetUseTextureRender() => ffi.mainGetUseTextureRender();

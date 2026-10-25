@@ -533,18 +533,27 @@ impl FuseServer {
         offset: i64,
         size: u32,
     ) -> Result<Vec<u8>, std::io::Error> {
-        let request_stream_id = rand::random();
-        let cb_requested = unsafe {
-            // convert `size` from u32 to i32
-            // yet with same bit representation
-            std::mem::transmute::<u32, i32>(size)
-        };
-
-        let (n_position_high, n_position_low) =
-            ((offset >> 32) as i32, (offset & (u32::MAX as i64)) as i32);
+        if size == 0 {
+            return Ok(Vec::new());
+        }
+        let offset = u64::try_from(offset).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "negative file read offset",
+            )
+        })?;
+        let list_index = u32::try_from(node.index).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "clipboard file index is not representable",
+            )
+        })?;
+        let request_stream_id: u32 = rand::random();
+        let cb_requested = size.min(BLOCK_SIZE);
+        let (n_position_high, n_position_low) = ((offset >> 32) as u32, offset as u32);
         let request = ClipboardFile::FileContentsRequest {
             stream_id: request_stream_id,
-            list_index: node.index as i32,
+            list_index,
             dw_flags: 2,
             n_position_low,
             n_position_high,
@@ -592,6 +601,12 @@ impl FuseServer {
                             std::io::Error::new(std::io::ErrorKind::Other, e)
                         })?;
                         continue;
+                    }
+                    if requested_data.len() > cb_requested as usize {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "file content response exceeds the outstanding request",
+                        ));
                     }
                     return Ok(requested_data);
                 }

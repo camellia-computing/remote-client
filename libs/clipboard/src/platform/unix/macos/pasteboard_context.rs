@@ -338,8 +338,14 @@ impl PasteboardContext {
         let target_dir = target_dir.to_owned();
         match FileDescription::parse_file_descriptors(format_data, conn_id) {
             Ok(files) => {
-                task_lock.start(target_dir, files);
-                Ok(())
+                let result = task_lock.start(target_dir, files);
+                if result.is_err() {
+                    PASTE_OBSERVER_INFO
+                        .lock()
+                        .unwrap()
+                        .replace(PasteObserverInfo::default());
+                }
+                result
             }
             Err(e) => {
                 PASTE_OBSERVER_INFO
@@ -354,8 +360,8 @@ impl PasteboardContext {
     fn handle_file_contents_response(
         &self,
         conn_id: i32,
-        msg_flags: i32,
-        stream_id: i32,
+        msg_flags: u32,
+        stream_id: u32,
         requested_data: Vec<u8>,
     ) -> Result<(), CliprdrError> {
         log::debug!("handle file contents response");
@@ -366,8 +372,9 @@ impl PasteboardContext {
                 stream_id,
                 requested_data,
             })
-            .ok();
-        Ok(())
+            .map_err(|err| CliprdrError::CommonError {
+                description: format!("failed to queue file content response: {err}"),
+            })
     }
 
     fn handle_try_empty(&mut self, conn_id: i32) {

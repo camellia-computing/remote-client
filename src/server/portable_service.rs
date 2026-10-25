@@ -25,7 +25,7 @@ use std::{
     ops::{Deref, DerefMut},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         Arc, Mutex,
     },
     time::Duration,
@@ -36,23 +36,72 @@ use winapi::{
 };
 use windows::Win32::Storage::FileSystem::{FILE_GENERIC_EXECUTE, FILE_GENERIC_READ};
 
+use super::portable_service_sync::{
+    CaptureParameters, CaptureParametersSnapshot, SharedCaptureParameters, SharedSlotCounter,
+};
 use super::video_qos;
 
-const SIZE_COUNTER: usize = size_of::<i32>() * 2;
 const FRAME_ALIGN: usize = 64;
+const RUNTIME_SHMEM_MAGIC: [u8; 8] = *b"CMRPSHM\0";
+const RUNTIME_SHMEM_ABI_VERSION: u32 = 2;
+
+const fn align_addr(value: usize, align: usize) -> usize {
+    (value + align - 1) / align * align
+}
 
 const ADDR_IPC_TOKEN: usize = 0;
-const ADDR_CURSOR_PARA: usize = ADDR_IPC_TOKEN + IPC_TOKEN_LEN;
-const ADDR_CURSOR_COUNTER: usize = ADDR_CURSOR_PARA + size_of::<CURSORINFO>();
-
-const ADDR_CAPTURER_PARA: usize = ADDR_CURSOR_COUNTER + SIZE_COUNTER;
-const ADDR_CAPTURE_FRAME_INFO: usize = ADDR_CAPTURER_PARA + size_of::<CapturerPara>();
-const ADDR_CAPTURE_WOULDBLOCK: usize = ADDR_CAPTURE_FRAME_INFO + size_of::<FrameInfo>();
-const ADDR_CAPTURE_FRAME_COUNTER: usize = ADDR_CAPTURE_WOULDBLOCK + size_of::<i32>();
-
-const ADDR_CAPTURE_FRAME: usize =
-    (ADDR_CAPTURE_FRAME_COUNTER + SIZE_COUNTER + FRAME_ALIGN - 1) / FRAME_ALIGN * FRAME_ALIGN;
+const ADDR_RUNTIME_HEADER: usize = align_addr(
+    ADDR_IPC_TOKEN + IPC_TOKEN_LEN,
+    std::mem::align_of::<RuntimeShmemHeader>(),
+);
+const ADDR_CURSOR_PARA: usize = align_addr(
+    ADDR_RUNTIME_HEADER + size_of::<RuntimeShmemHeader>(),
+    std::mem::align_of::<CURSORINFO>(),
+);
+const ADDR_CURSOR_COUNTER: usize = align_addr(
+    ADDR_CURSOR_PARA + size_of::<CURSORINFO>(),
+    std::mem::align_of::<SharedSlotCounter>(),
+);
+const ADDR_CAPTURER_PARA: usize = align_addr(
+    ADDR_CURSOR_COUNTER + size_of::<SharedSlotCounter>(),
+    std::mem::align_of::<SharedCaptureParameters>(),
+);
+const ADDR_CAPTURE_FRAME_INFO: usize = align_addr(
+    ADDR_CAPTURER_PARA + size_of::<SharedCaptureParameters>(),
+    std::mem::align_of::<FrameInfo>(),
+);
+const ADDR_CAPTURE_WOULDBLOCK: usize = align_addr(
+    ADDR_CAPTURE_FRAME_INFO + size_of::<FrameInfo>(),
+    std::mem::align_of::<std::sync::atomic::AtomicI32>(),
+);
+const ADDR_CAPTURE_FRAME_COUNTER: usize = align_addr(
+    ADDR_CAPTURE_WOULDBLOCK + size_of::<std::sync::atomic::AtomicI32>(),
+    std::mem::align_of::<SharedSlotCounter>(),
+);
+const ADDR_CAPTURE_FRAME: usize = align_addr(
+    ADDR_CAPTURE_FRAME_COUNTER + size_of::<SharedSlotCounter>(),
+    FRAME_ALIGN,
+);
 const MIN_RUNTIME_SHMEM_LEN: usize = ADDR_CAPTURE_FRAME + FRAME_ALIGN;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RuntimeShmemHeader {
+    magic: [u8; 8],
+    abi_version: u32,
+    header_len: u32,
+    shmem_len: u64,
+    frame_addr: u64,
+}
+
+const _: () = {
+    assert!(size_of::<RuntimeShmemHeader>() == 32);
+    assert!(ADDR_RUNTIME_HEADER % std::mem::align_of::<RuntimeShmemHeader>() == 0);
+    assert!(ADDR_CURSOR_COUNTER % std::mem::align_of::<SharedSlotCounter>() == 0);
+    assert!(ADDR_CAPTURER_PARA % std::mem::align_of::<SharedCaptureParameters>() == 0);
+    assert!(ADDR_CAPTURE_FRAME_COUNTER % std::mem::align_of::<SharedSlotCounter>() == 0);
+    assert!(ADDR_CAPTURE_FRAME % FRAME_ALIGN == 0);
+};
 
 const IPC_SUFFIX: &str = "_portable_service";
 pub const SHMEM_NAME: &str = "_portable_service";
@@ -115,12 +164,60 @@ fn read_ipc_token_from_shmem(shmem: &SharedMemory) -> Option<String> {
 }
 
 #[inline]
+fn initialize_runtime_shmem_layout(shmem: &SharedMemory) -> ResultType<()> {
+    if shmem.len() < MIN_RUNTIME_SHMEM_LEN {
+        bail!(
+            "Portable service shared memory too small for runtime layout: len={}, need>={}",
+            shmem.len(),
+            MIN_RUNTIME_SHMEM_LEN
+        );
+    }
+    let header = RuntimeShmemHeader {
+        magic: RUNTIME_SHMEM_MAGIC,
+        abi_version: RUNTIME_SHMEM_ABI_VERSION,
+        header_len: size_of::<RuntimeShmemHeader>() as u32,
+        shmem_len: u64::try_from(shmem.len())?,
+        frame_addr: ADDR_CAPTURE_FRAME as u64,
+    };
+    let bytes = unsafe {
+        slice::from_raw_parts(
+            (&header as *const RuntimeShmemHeader).cast::<u8>(),
+            size_of::<RuntimeShmemHeader>(),
+        )
+    };
+    shmem.write(ADDR_RUNTIME_HEADER, bytes);
+    Ok(())
+}
+
+#[inline]
 fn validate_runtime_shmem_layout(shmem: &SharedMemory) -> ResultType<()> {
     if shmem.len() < MIN_RUNTIME_SHMEM_LEN {
         bail!(
             "Portable service shared memory too small for runtime layout: len={}, need>={}",
             shmem.len(),
             MIN_RUNTIME_SHMEM_LEN
+        );
+    }
+    let header = unsafe {
+        std::ptr::read_unaligned(
+            shmem
+                .as_ptr()
+                .add(ADDR_RUNTIME_HEADER)
+                .cast::<RuntimeShmemHeader>(),
+        )
+    };
+    if header.magic != RUNTIME_SHMEM_MAGIC
+        || header.abi_version != RUNTIME_SHMEM_ABI_VERSION
+        || header.header_len as usize != size_of::<RuntimeShmemHeader>()
+        || header.shmem_len != shmem.len() as u64
+        || header.frame_addr != ADDR_CAPTURE_FRAME as u64
+    {
+        bail!(
+            "Portable service shared-memory ABI mismatch: version={}, header_len={}, shmem_len={}, frame_addr={}",
+            header.abi_version,
+            header.header_len,
+            header.shmem_len,
+            header.frame_addr
         );
     }
     Ok(())
@@ -241,7 +338,13 @@ pub struct SharedMemory {
     inner: Shmem,
 }
 
+// SAFETY: `Shmem` owns a process-local mapping handle. Moving the handle does not move or
+// invalidate the mapping. All concurrently mutable regions are accessed through the atomic
+// protocols in `portable_service_sync`; raw payload copies happen only while one side owns the
+// corresponding single-producer/single-consumer slot.
 unsafe impl Send for SharedMemory {}
+// SAFETY: see the `Send` invariant above. Callers may share the mapping, but must use disjoint
+// immutable regions or the capture-parameter/slot protocols for every concurrent mutation.
 unsafe impl Sync for SharedMemory {}
 
 impl Deref for SharedMemory {
@@ -354,82 +457,68 @@ impl SharedMemory {
 
 mod utils {
     use core::slice;
-    use std::mem::size_of;
+    use std::{
+        mem::{align_of, size_of},
+        sync::atomic::{AtomicI32, Ordering},
+    };
 
     use super::{
-        CapturerPara, FrameInfo, SharedMemory, ADDR_CAPTURER_PARA, ADDR_CAPTURE_FRAME_INFO,
+        CaptureParameters, CaptureParametersSnapshot, FrameInfo, SharedCaptureParameters,
+        SharedMemory, SharedSlotCounter, ADDR_CAPTURER_PARA, ADDR_CAPTURE_FRAME_INFO,
+        ADDR_CAPTURE_WOULDBLOCK,
     };
 
     #[inline]
-    pub fn i32_to_vec(i: i32) -> Vec<u8> {
-        i.to_ne_bytes().to_vec()
+    pub fn counter(shmem: &SharedMemory, addr: usize) -> &SharedSlotCounter {
+        debug_assert_eq!(addr % align_of::<SharedSlotCounter>(), 0);
+        debug_assert!(addr + size_of::<SharedSlotCounter>() <= shmem.len());
+        unsafe { &*shmem.as_ptr().add(addr).cast::<SharedSlotCounter>() }
     }
 
     #[inline]
-    pub fn ptr_to_i32(ptr: *const u8) -> i32 {
+    fn capture_parameters(shmem: &SharedMemory) -> &SharedCaptureParameters {
+        debug_assert_eq!(
+            ADDR_CAPTURER_PARA % align_of::<SharedCaptureParameters>(),
+            0
+        );
+        debug_assert!(ADDR_CAPTURER_PARA + size_of::<SharedCaptureParameters>() <= shmem.len());
         unsafe {
-            let v = slice::from_raw_parts(ptr, size_of::<i32>());
-            i32::from_ne_bytes([v[0], v[1], v[2], v[3]])
+            &*shmem
+                .as_ptr()
+                .add(ADDR_CAPTURER_PARA)
+                .cast::<SharedCaptureParameters>()
         }
     }
 
     #[inline]
-    pub fn counter_ready(counter: *const u8) -> bool {
-        unsafe {
-            let wptr = counter;
-            let rptr = counter.add(size_of::<i32>());
-            let iw = ptr_to_i32(wptr);
-            let ir = ptr_to_i32(rptr);
-            if ir != iw {
-                std::ptr::copy_nonoverlapping(wptr, rptr as *mut _, size_of::<i32>());
-                true
-            } else {
-                false
-            }
-        }
+    pub fn read_para(shmem: &SharedMemory) -> Option<CaptureParametersSnapshot> {
+        capture_parameters(shmem).read()
     }
 
     #[inline]
-    pub fn counter_equal(counter: *const u8) -> bool {
-        unsafe {
-            let wptr = counter;
-            let rptr = counter.add(size_of::<i32>());
-            let iw = ptr_to_i32(wptr);
-            let ir = ptr_to_i32(rptr);
-            iw == ir
-        }
+    pub fn set_para(shmem: &SharedMemory, para: CaptureParameters) {
+        capture_parameters(shmem).write(para);
     }
 
     #[inline]
-    pub fn increase_counter(counter: *mut u8) {
-        unsafe {
-            let wptr = counter;
-            let rptr = counter.add(size_of::<i32>());
-            let iw = ptr_to_i32(counter);
-            let ir = ptr_to_i32(counter);
-            let iw_plus1 = if iw == i32::MAX { 0 } else { iw + 1 };
-            let v = i32_to_vec(iw_plus1);
-            std::ptr::copy_nonoverlapping(v.as_ptr(), wptr, size_of::<i32>());
-            if ir == iw_plus1 {
-                let v = i32_to_vec(iw);
-                std::ptr::copy_nonoverlapping(v.as_ptr(), rptr, size_of::<i32>());
-            }
-        }
+    pub fn set_wouldblock(shmem: &SharedMemory, value: i32) {
+        debug_assert_eq!(ADDR_CAPTURE_WOULDBLOCK % align_of::<AtomicI32>(), 0);
+        debug_assert!(ADDR_CAPTURE_WOULDBLOCK + size_of::<AtomicI32>() <= shmem.len());
+        unsafe { AtomicI32::from_ptr(shmem.as_ptr().add(ADDR_CAPTURE_WOULDBLOCK).cast::<i32>()) }
+            .store(value, Ordering::Release);
+    }
+
+    #[inline]
+    pub fn wouldblock(shmem: &SharedMemory) -> i32 {
+        debug_assert_eq!(ADDR_CAPTURE_WOULDBLOCK % align_of::<AtomicI32>(), 0);
+        debug_assert!(ADDR_CAPTURE_WOULDBLOCK + size_of::<AtomicI32>() <= shmem.len());
+        unsafe { AtomicI32::from_ptr(shmem.as_ptr().add(ADDR_CAPTURE_WOULDBLOCK).cast::<i32>()) }
+            .load(Ordering::Acquire)
     }
 
     #[inline]
     pub fn align(v: usize, align: usize) -> usize {
         (v + align - 1) / align * align
-    }
-
-    #[inline]
-    pub fn set_para(shmem: &SharedMemory, para: CapturerPara) {
-        let para_ptr = &para as *const CapturerPara as *const u8;
-        let para_data;
-        unsafe {
-            para_data = slice::from_raw_parts(para_ptr, size_of::<CapturerPara>());
-        }
-        shmem.write(ADDR_CAPTURER_PARA, para_data);
     }
 
     #[inline]
@@ -440,6 +529,18 @@ mod utils {
             data = slice::from_raw_parts(ptr, size_of::<FrameInfo>());
         }
         shmem.write(ADDR_CAPTURE_FRAME_INFO, data);
+    }
+
+    #[inline]
+    pub fn read_frame_info(shmem: &SharedMemory) -> FrameInfo {
+        unsafe {
+            std::ptr::read_unaligned(
+                shmem
+                    .as_ptr()
+                    .add(ADDR_CAPTURE_FRAME_INFO)
+                    .cast::<FrameInfo>(),
+            )
+        }
     }
 }
 
@@ -575,12 +676,24 @@ pub mod server {
             if EXIT.lock().unwrap().clone() {
                 break;
             }
-            unsafe {
-                let para = shmem.as_ptr().add(ADDR_CURSOR_PARA) as *mut CURSORINFO;
-                (*para).cbSize = size_of::<CURSORINFO>() as _;
-                let result = winuser::GetCursorInfo(para);
+            let counter = utils::counter(&shmem, ADDR_CURSOR_COUNTER);
+            if counter.can_publish() {
+                let mut cursor: CURSORINFO = unsafe { std::mem::zeroed() };
+                cursor.cbSize = size_of::<CURSORINFO>() as _;
+                let result = unsafe { winuser::GetCursorInfo(&mut cursor) };
                 if result == TRUE {
-                    utils::increase_counter(shmem.as_ptr().add(ADDR_CURSOR_COUNTER));
+                    let bytes = unsafe {
+                        slice::from_raw_parts(
+                            (&cursor as *const CURSORINFO).cast::<u8>(),
+                            size_of::<CURSORINFO>(),
+                        )
+                    };
+                    shmem.write(ADDR_CURSOR_PARA, bytes);
+                    if !counter.publish() {
+                        log::error!("Portable service cursor slot lost producer ownership");
+                        *EXIT.lock().unwrap() = true;
+                        return;
+                    }
                 }
             }
             // more frequent in case of `Error of mouse_cursor service`
@@ -593,142 +706,145 @@ pub mod server {
         let mut last_current_display = usize::MAX;
         let mut last_timeout_ms: i32 = 33;
         let mut spf = Duration::from_millis(last_timeout_ms as _);
-        let mut first_frame_captured = false;
         let mut dxgi_failed_times = 0;
         let mut display_width = 0;
         let mut display_height = 0;
+        let mut para_generation = 0;
+        let mut para = None;
+        let mut capture_epoch = 0;
+        let mut recreate_pending = false;
         loop {
             if EXIT.lock().unwrap().clone() {
                 break;
             }
-            unsafe {
-                let para_ptr = shmem.as_ptr().add(ADDR_CAPTURER_PARA);
-                let para = para_ptr as *const CapturerPara;
-                let recreate = (*para).recreate;
-                let current_display = (*para).current_display;
-                let timeout_ms = (*para).timeout_ms;
-                if c.is_none() {
-                    let Ok(mut displays) = display_service::try_get_displays() else {
-                        log::error!("Failed to get displays");
-                        *EXIT.lock().unwrap() = true;
-                        return;
-                    };
-                    if displays.len() <= current_display {
-                        log::error!("Invalid display index:{}", current_display);
-                        *EXIT.lock().unwrap() = true;
-                        return;
-                    }
-                    let display = displays.remove(current_display);
-                    display_width = display.width();
-                    display_height = display.height();
-                    match Capturer::new(display) {
-                        Ok(mut v) => {
-                            c = {
-                                last_current_display = current_display;
-                                first_frame_captured = false;
-                                if dxgi_failed_times > MAX_DXGI_FAIL_TIME {
-                                    dxgi_failed_times = 0;
-                                    v.set_gdi();
-                                }
-                                utils::set_para(
-                                    &shmem,
-                                    CapturerPara {
-                                        recreate: false,
-                                        current_display: (*para).current_display,
-                                        timeout_ms: (*para).timeout_ms,
-                                    },
-                                );
-                                Some(v)
-                            }
-                        }
-                        Err(e) => {
-                            log::error!("Failed to create gdi capturer: {:?}", e);
-                            std::thread::sleep(std::time::Duration::from_secs(1));
-                            continue;
-                        }
-                    }
-                } else {
-                    if recreate || current_display != last_current_display {
-                        log::info!(
-                            "create capturer, display: {} -> {}",
-                            last_current_display,
-                            current_display,
-                        );
-                        c = None;
-                        continue;
-                    }
-                    if timeout_ms != last_timeout_ms
-                        && timeout_ms >= 1000 / video_qos::MAX_FPS as i32
-                        && timeout_ms <= 1000 / video_qos::MIN_FPS as i32
-                    {
-                        last_timeout_ms = timeout_ms;
-                        spf = Duration::from_millis(timeout_ms as _);
-                    }
+            if let Some(snapshot) = utils::read_para(&shmem) {
+                if snapshot.generation != para_generation {
+                    para_generation = snapshot.generation;
+                    recreate_pending =
+                        capture_epoch != 0 && capture_epoch != snapshot.value.capture_epoch;
+                    capture_epoch = snapshot.value.capture_epoch;
+                    para = Some(snapshot.value);
                 }
-                if first_frame_captured {
-                    if !utils::counter_equal(shmem.as_ptr().add(ADDR_CAPTURE_FRAME_COUNTER)) {
-                        std::thread::sleep(std::time::Duration::from_millis(1));
-                        continue;
-                    }
+            }
+            let Some(para) = para else {
+                std::thread::sleep(Duration::from_millis(1));
+                continue;
+            };
+            let current_display = para.current_display as usize;
+            if c.is_none() {
+                let Ok(mut displays) = display_service::try_get_displays() else {
+                    log::error!("Failed to get displays");
+                    *EXIT.lock().unwrap() = true;
+                    return;
+                };
+                if displays.len() <= current_display {
+                    log::error!("Invalid display index:{}", current_display);
+                    *EXIT.lock().unwrap() = true;
+                    return;
                 }
-                match c.as_mut().map(|f| f.frame(spf)) {
-                    Some(Ok(f)) => match f {
-                        Frame::PixelBuffer(f) => {
-                            let frame_capacity = shmem.len().saturating_sub(ADDR_CAPTURE_FRAME);
-                            if f.data().len() > frame_capacity {
-                                log::error!(
-                                    "Portable service capture frame exceeds shared memory capacity: frame_len={}, capacity={}, shmem_len={}",
-                                    f.data().len(),
-                                    frame_capacity,
-                                    shmem.len()
-                                );
-                                *EXIT.lock().unwrap() = true;
-                                return;
-                            }
-                            utils::set_frame_info(
-                                &shmem,
-                                FrameInfo {
-                                    length: f.data().len(),
-                                    width: display_width,
-                                    height: display_height,
-                                },
-                            );
-                            shmem.write(ADDR_CAPTURE_FRAME, f.data());
-                            shmem.write(ADDR_CAPTURE_WOULDBLOCK, &utils::i32_to_vec(TRUE));
-                            utils::increase_counter(shmem.as_ptr().add(ADDR_CAPTURE_FRAME_COUNTER));
-                            first_frame_captured = true;
+                let display = displays.remove(current_display);
+                display_width = display.width();
+                display_height = display.height();
+                match Capturer::new(display) {
+                    Ok(mut v) => {
+                        last_current_display = current_display;
+                        recreate_pending = false;
+                        if dxgi_failed_times > MAX_DXGI_FAIL_TIME {
                             dxgi_failed_times = 0;
+                            v.set_gdi();
                         }
-                        Frame::Texture(_) => {
-                            // should not happen
+                        c = Some(v);
+                    }
+                    Err(e) => {
+                        log::error!("Failed to create gdi capturer: {:?}", e);
+                        std::thread::sleep(std::time::Duration::from_secs(1));
+                        continue;
+                    }
+                }
+            } else {
+                if recreate_pending || current_display != last_current_display {
+                    log::info!(
+                        "create capturer, display: {} -> {}",
+                        last_current_display,
+                        current_display,
+                    );
+                    recreate_pending = false;
+                    c = None;
+                    continue;
+                }
+                if para.timeout_ms != last_timeout_ms
+                    && para.timeout_ms >= 1000 / video_qos::MAX_FPS as i32
+                    && para.timeout_ms <= 1000 / video_qos::MIN_FPS as i32
+                {
+                    last_timeout_ms = para.timeout_ms;
+                    spf = Duration::from_millis(para.timeout_ms as _);
+                }
+            }
+            let frame_counter = utils::counter(&shmem, ADDR_CAPTURE_FRAME_COUNTER);
+            if !frame_counter.can_publish() {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+                continue;
+            }
+            match c.as_mut().map(|f| f.frame(spf)) {
+                Some(Ok(f)) => match f {
+                    Frame::PixelBuffer(f) => {
+                        let frame_capacity = shmem.len().saturating_sub(ADDR_CAPTURE_FRAME);
+                        if f.data().len() > frame_capacity {
+                            log::error!(
+                                "Portable service capture frame exceeds shared memory capacity: frame_len={}, capacity={}, shmem_len={}",
+                                f.data().len(),
+                                frame_capacity,
+                                shmem.len()
+                            );
+                            *EXIT.lock().unwrap() = true;
+                            return;
                         }
-                    },
-                    Some(Err(e)) => {
-                        if crate::platform::windows::desktop_changed() {
-                            crate::platform::try_change_desktop();
+                        utils::set_frame_info(
+                            &shmem,
+                            FrameInfo {
+                                length: f.data().len() as u64,
+                                width: display_width as u64,
+                                height: display_height as u64,
+                            },
+                        );
+                        shmem.write(ADDR_CAPTURE_FRAME, f.data());
+                        utils::set_wouldblock(&shmem, TRUE);
+                        if !frame_counter.publish() {
+                            log::error!("Portable service frame slot lost producer ownership");
+                            *EXIT.lock().unwrap() = true;
+                            return;
+                        }
+                        dxgi_failed_times = 0;
+                    }
+                    Frame::Texture(_) => {
+                        // should not happen
+                    }
+                },
+                Some(Err(e)) => {
+                    if crate::platform::windows::desktop_changed() {
+                        crate::platform::try_change_desktop();
+                        c = None;
+                        std::thread::sleep(spf);
+                        continue;
+                    }
+                    if e.kind() != std::io::ErrorKind::WouldBlock {
+                        // DXGI_ERROR_INVALID_CALL after each success on Microsoft GPU driver
+                        // log::error!("capture frame failed: {:?}", e);
+                        if c.as_ref().map(|c| c.is_gdi()) == Some(false) {
+                            // nog gdi
+                            dxgi_failed_times += 1;
+                        }
+                        if dxgi_failed_times > MAX_DXGI_FAIL_TIME {
                             c = None;
+                            utils::set_wouldblock(&shmem, FALSE);
                             std::thread::sleep(spf);
-                            continue;
                         }
-                        if e.kind() != std::io::ErrorKind::WouldBlock {
-                            // DXGI_ERROR_INVALID_CALL after each success on Microsoft GPU driver
-                            // log::error!("capture frame failed: {:?}", e);
-                            if c.as_ref().map(|c| c.is_gdi()) == Some(false) {
-                                // nog gdi
-                                dxgi_failed_times += 1;
-                            }
-                            if dxgi_failed_times > MAX_DXGI_FAIL_TIME {
-                                c = None;
-                                shmem.write(ADDR_CAPTURE_WOULDBLOCK, &utils::i32_to_vec(FALSE));
-                                std::thread::sleep(spf);
-                            }
-                        } else {
-                            shmem.write(ADDR_CAPTURE_WOULDBLOCK, &utils::i32_to_vec(TRUE));
-                        }
+                    } else {
+                        utils::set_wouldblock(&shmem, TRUE);
                     }
-                    _ => {
-                        println!("unreachable!");
-                    }
+                }
+                _ => {
+                    println!("unreachable!");
                 }
             }
         }
@@ -843,6 +959,7 @@ pub mod client {
         static ref RUNNING: Arc<Mutex<bool>> = Default::default();
         static ref STARTING: Arc<Mutex<bool>> = Default::default();
         static ref STARTING_TOKEN: AtomicU64 = AtomicU64::new(0);
+        static ref CAPTURE_EPOCH: AtomicU32 = AtomicU32::new(0);
         static ref SHMEM: Arc<Mutex<Option<SharedMemory>>> = Default::default();
         static ref SHMEM_RUNTIME_NAME: Arc<Mutex<Option<String>>> = Default::default();
         static ref IPC_RUNTIME_TOKEN: Arc<Mutex<Option<String>>> = Default::default();
@@ -1064,7 +1181,8 @@ pub mod client {
                 unsafe {
                     libc::memset(shmem.as_ptr() as _, 0, shmem.len() as _);
                 }
-                write_ipc_token_to_shmem(shmem, &ipc_token)
+                initialize_runtime_shmem_layout(shmem)
+                    .and_then(|()| write_ipc_token_to_shmem(shmem, &ipc_token))
             } else {
                 Ok(())
             };
@@ -1149,6 +1267,10 @@ pub mod client {
     pub struct CapturerPortable {
         width: usize,
         height: usize,
+        current_display: u32,
+        capture_epoch: u32,
+        timeout_ms: i32,
+        frame_data: Vec<u8>,
     }
 
     impl CapturerPortable {
@@ -1156,24 +1278,28 @@ pub mod client {
         where
             Self: Sized,
         {
+            let current_display_wire = u32::try_from(current_display).unwrap_or(u32::MAX);
+            let previous_capture_epoch = CAPTURE_EPOCH
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
+                    Some(if value == u32::MAX { 1 } else { value + 1 })
+                })
+                .unwrap_or(0);
+            let capture_epoch = if previous_capture_epoch == u32::MAX {
+                1
+            } else {
+                previous_capture_epoch + 1
+            };
             let mut option = SHMEM.lock().unwrap();
             if let Some(shmem) = option.as_mut() {
-                unsafe {
-                    libc::memset(
-                        shmem.as_ptr().add(ADDR_CURSOR_PARA) as _,
-                        0,
-                        shmem.len().saturating_sub(ADDR_CURSOR_PARA) as _,
-                    );
-                }
                 utils::set_para(
                     shmem,
-                    CapturerPara {
-                        recreate: true,
-                        current_display,
+                    CaptureParameters {
+                        capture_epoch,
+                        current_display: current_display_wire,
                         timeout_ms: 33,
                     },
                 );
-                shmem.write(ADDR_CAPTURE_WOULDBLOCK, &utils::i32_to_vec(TRUE));
+                utils::set_wouldblock(shmem, TRUE);
             }
             let (mut width, mut height) = (0, 0);
             if let Ok(displays) = display_service::try_get_displays() {
@@ -1182,7 +1308,14 @@ pub mod client {
                     height = display.height();
                 }
             }
-            CapturerPortable { width, height }
+            CapturerPortable {
+                width,
+                height,
+                current_display: current_display_wire,
+                capture_epoch,
+                timeout_ms: 33,
+                frame_data: Vec::new(),
+            }
         }
     }
 
@@ -1193,72 +1326,80 @@ pub mod client {
                 std::io::ErrorKind::Other,
                 "shmem dropped".to_string(),
             ))?;
-            unsafe {
-                let base = shmem.as_ptr();
-                let para_ptr = base.add(ADDR_CAPTURER_PARA);
-                let para = para_ptr as *const CapturerPara;
-                if timeout.as_millis() != (*para).timeout_ms as _ {
+            let base = shmem.as_ptr();
+            if timeout.as_millis() != self.timeout_ms as u128 {
+                if let Ok(timeout_ms) = i32::try_from(timeout.as_millis()) {
+                    self.timeout_ms = timeout_ms;
                     utils::set_para(
                         shmem,
-                        CapturerPara {
-                            recreate: (*para).recreate,
-                            current_display: (*para).current_display,
-                            timeout_ms: timeout.as_millis() as _,
+                        CaptureParameters {
+                            capture_epoch: self.capture_epoch,
+                            current_display: self.current_display,
+                            timeout_ms,
                         },
                     );
                 }
-                if utils::counter_ready(base.add(ADDR_CAPTURE_FRAME_COUNTER)) {
-                    let frame_info_ptr = shmem.as_ptr().add(ADDR_CAPTURE_FRAME_INFO);
-                    let frame_info = frame_info_ptr as *const FrameInfo;
-                    let frame_len = (*frame_info).length;
-                    if !is_valid_capture_frame_length(shmem.len(), frame_len) {
-                        log::error!(
-                            "Portable service frame length exceeds shared memory capacity: frame_len={}, shmem_len={}, frame_addr={}",
-                            frame_len,
-                            shmem.len(),
-                            ADDR_CAPTURE_FRAME
-                        );
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            "invalid portable service frame length".to_string(),
-                        ));
-                    }
-                    if (*frame_info).width != self.width || (*frame_info).height != self.height {
-                        log::info!(
-                            "skip frame, ({},{}) != ({},{})",
-                            (*frame_info).width,
-                            (*frame_info).height,
-                            self.width,
-                            self.height,
-                        );
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::WouldBlock,
-                            "wouldblock error".to_string(),
-                        ));
-                    }
-                    let frame_ptr = base.add(ADDR_CAPTURE_FRAME);
-                    let data = slice::from_raw_parts(frame_ptr, frame_len);
-                    Ok(Frame::PixelBuffer(PixelBuffer::with_BGRA(
-                        data,
+            }
+            let frame_counter = utils::counter(shmem, ADDR_CAPTURE_FRAME_COUNTER);
+            let frame_result = if let Some(_read_guard) = frame_counter.try_acquire() {
+                let frame_info = utils::read_frame_info(shmem);
+                let Ok(frame_len) = usize::try_from(frame_info.length) else {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "invalid portable service frame length".to_string(),
+                    ));
+                };
+                if !is_valid_capture_frame_length(shmem.len(), frame_len) {
+                    log::error!(
+                        "Portable service frame length exceeds shared memory capacity: frame_len={}, shmem_len={}, frame_addr={}",
+                        frame_len,
+                        shmem.len(),
+                        ADDR_CAPTURE_FRAME
+                    );
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "invalid portable service frame length".to_string(),
+                    ));
+                }
+                if frame_info.width != self.width as u64 || frame_info.height != self.height as u64
+                {
+                    log::info!(
+                        "skip frame, ({},{}) != ({},{})",
+                        frame_info.width,
+                        frame_info.height,
                         self.width,
                         self.height,
-                    )))
-                } else {
-                    let ptr = base.add(ADDR_CAPTURE_WOULDBLOCK);
-                    let wouldblock = utils::ptr_to_i32(ptr);
-                    if wouldblock == TRUE {
-                        Err(std::io::Error::new(
-                            std::io::ErrorKind::WouldBlock,
-                            "wouldblock error".to_string(),
-                        ))
-                    } else {
-                        Err(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            "other error".to_string(),
-                        ))
-                    }
+                    );
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::WouldBlock,
+                        "wouldblock error".to_string(),
+                    ));
                 }
-            }
+                self.frame_data.resize(frame_len, 0);
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        base.add(ADDR_CAPTURE_FRAME),
+                        self.frame_data.as_mut_ptr(),
+                        frame_len,
+                    );
+                }
+                Ok(Frame::PixelBuffer(PixelBuffer::with_BGRA(
+                    &self.frame_data,
+                    self.width,
+                    self.height,
+                )))
+            } else if utils::wouldblock(shmem) == TRUE {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::WouldBlock,
+                    "wouldblock error".to_string(),
+                ))
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "other error".to_string(),
+                ))
+            };
+            frame_result
         }
 
         // control by itself
@@ -1429,7 +1570,8 @@ pub mod client {
     fn get_cursor_info_(shmem: &mut SharedMemory, pci: PCURSORINFO) -> BOOL {
         unsafe {
             let shmem_addr_para = shmem.as_ptr().add(ADDR_CURSOR_PARA);
-            if utils::counter_ready(shmem.as_ptr().add(ADDR_CURSOR_COUNTER)) {
+            let counter = utils::counter(shmem, ADDR_CURSOR_COUNTER);
+            if let Some(_read_guard) = counter.try_acquire() {
                 std::ptr::copy_nonoverlapping(shmem_addr_para, pci as _, size_of::<CURSORINFO>());
                 return TRUE;
             }
@@ -1540,22 +1682,41 @@ pub mod client {
 }
 
 #[repr(C)]
-pub struct CapturerPara {
-    recreate: bool,
-    current_display: usize,
-    timeout_ms: i32,
-}
-
-#[repr(C)]
 pub struct FrameInfo {
-    length: usize,
-    width: usize,
-    height: usize,
+    length: u64,
+    width: u64,
+    height: u64,
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{is_valid_capture_frame_length, ADDR_CAPTURE_FRAME};
+    use super::{
+        is_valid_capture_frame_length, FrameInfo, RuntimeShmemHeader, SharedCaptureParameters,
+        SharedSlotCounter, ADDR_CAPTURER_PARA, ADDR_CAPTURE_FRAME, ADDR_CAPTURE_FRAME_COUNTER,
+        ADDR_CAPTURE_FRAME_INFO, ADDR_CURSOR_COUNTER, ADDR_CURSOR_PARA, ADDR_RUNTIME_HEADER,
+    };
+    use std::mem::{align_of, size_of};
+
+    #[test]
+    fn runtime_layout_regions_are_ordered_and_atomically_aligned() {
+        assert_eq!(size_of::<RuntimeShmemHeader>(), 32);
+        assert_eq!(ADDR_RUNTIME_HEADER % align_of::<RuntimeShmemHeader>(), 0);
+        assert!(ADDR_RUNTIME_HEADER + size_of::<RuntimeShmemHeader>() <= ADDR_CURSOR_PARA);
+        assert_eq!(ADDR_CURSOR_COUNTER % align_of::<SharedSlotCounter>(), 0);
+        assert_eq!(
+            ADDR_CAPTURER_PARA % align_of::<SharedCaptureParameters>(),
+            0
+        );
+        assert!(
+            ADDR_CAPTURER_PARA + size_of::<SharedCaptureParameters>() <= ADDR_CAPTURE_FRAME_INFO
+        );
+        assert!(ADDR_CAPTURE_FRAME_INFO + size_of::<FrameInfo>() <= ADDR_CAPTURE_FRAME_COUNTER);
+        assert_eq!(
+            ADDR_CAPTURE_FRAME_COUNTER % align_of::<SharedSlotCounter>(),
+            0
+        );
+        assert_eq!(ADDR_CAPTURE_FRAME % 64, 0);
+    }
 
     #[test]
     fn test_is_valid_capture_frame_length_rejects_zero_length() {

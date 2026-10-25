@@ -57,6 +57,7 @@ use camellia_remote_protocol::{
     rendezvous_proto::*,
     sha2::{Digest, Sha256},
     socket_client::{connect_tcp, connect_tcp_local, ipv4_to_ipv6, new_direct_udp_for},
+    tcp::CipherRole,
     timeout,
     tokio::{
         self,
@@ -782,7 +783,7 @@ impl Client {
             ..Default::default()
         });
         timeout(CONNECT_TIMEOUT, conn.send(&msg_out)).await??;
-        conn.set_key(key);
+        conn.set_key(key, CipherRole::Initiator);
         if !conn.is_secured() {
             bail!("Handshake failed: encrypted transport was not activated");
         }
@@ -1715,6 +1716,7 @@ pub struct LoginConfigHandler {
     config: PeerConfig,
     pub port_forward: (String, i32),
     pub version: i64,
+    pub file_transfer_protocol_version: u32,
     features: Option<Features>,
     pub session_id: u64, // used for local <-> server communication
     pub supported_encoding: SupportedEncoding,
@@ -2514,6 +2516,7 @@ impl LoginConfigHandler {
         if !pi.version.is_empty() {
             self.version = camellia_remote_protocol::get_version_number(&pi.version);
         }
+        self.file_transfer_protocol_version = pi.file_transfer_protocol_version;
         self.features = pi.features.clone().into_option();
         let serde = PeerInfoSerde {
             username: pi.username.clone(),
@@ -2700,6 +2703,8 @@ impl LoginConfigHandler {
             option: self.get_option_message(true).into(),
             session_id: self.session_id,
             version: crate::VERSION.to_string(),
+            file_transfer_protocol_version:
+                camellia_remote_protocol::fs::FILE_TRANSFER_PROTOCOL_VERSION,
             os_login: Some(OSLogin {
                 username: os_username,
                 password: os_password,
@@ -3746,7 +3751,8 @@ pub enum Data {
     RemoveDirAll((i32, String, bool, bool)),
     ConfirmDeleteFiles((i32, i32)),
     SetNoConfirm(i32),
-    RemoveDir((i32, String)),
+    RemoveDir((i32, String, bool)),
+    RemoveDirResult((i32, Option<String>)),
     RemoveFile((i32, String, i32, bool)),
     CreateDir((i32, String, bool)),
     CancelJob(i32),
