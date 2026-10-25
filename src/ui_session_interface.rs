@@ -9,7 +9,7 @@ use crate::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use camellia_remote_protocol::{
-    allow_err,
+    bail,
     config::{Config, LocalConfig, PeerConfig},
     get_version_number, log,
     message_proto::*,
@@ -19,7 +19,7 @@ use camellia_remote_protocol::{
         sync::mpsc,
         time::{Duration as TokioDuration, Instant},
     },
-    whoami, Stream,
+    whoami, ResultType, Stream,
 };
 use rdev::{Event, EventType::*, KeyCode};
 #[cfg(all(feature = "vram", feature = "flutter"))]
@@ -48,6 +48,7 @@ use crate::keyboard;
 use crate::{client::Data, client::Interface};
 
 const CHANGE_RESOLUTION_VALID_TIMEOUT_SECS: u64 = 15;
+const AUDIT_PROTOCOL_VERSION: u64 = 3;
 
 #[derive(Clone, Default)]
 pub struct Session<T: InvokeUiSession> {
@@ -536,11 +537,20 @@ impl<T: InvokeUiSession> Session<T> {
 
     pub fn send_note(&self, note: String) {
         let url = self.get_audit_server("conn".to_string());
-        let id = self.get_id();
-        let session_id = self.lc.read().unwrap().session_id;
-        *self.last_audit_note.lock().unwrap() = note.clone();
+        let audit_session_id = self.audit_guid.lock().unwrap().clone();
+        if url.is_empty() || audit_session_id.is_empty() {
+            log::warn!(
+                "Cannot send an audit note before the audit session capability is available"
+            );
+            return;
+        }
+        let last_audit_note = self.last_audit_note.clone();
         std::thread::spawn(move || {
-            send_note(url, id, session_id, note);
+            if let Err(error) = send_note(url, audit_session_id, note.clone()) {
+                log::warn!("Failed to persist the audit note: {error}");
+                return;
+            }
+            *last_audit_note.lock().unwrap() = note;
         });
     }
 
@@ -1569,6 +1579,7 @@ pub trait InvokeUiSession: Send + Sync + Clone + 'static + Sized + Default {
     fn set_fingerprint(&self, fingerprint: String);
     fn job_error(&self, id: i32, err: String, file_num: i32);
     fn job_done(&self, id: i32, file_num: i32);
+    fn file_listing_error(&self, path: String, err: String, empty_dirs: bool);
     fn clear_all_jobs(&self);
     fn new_message(&self, msg: String);
     fn update_transfer_list(&self);
@@ -1944,9 +1955,138 @@ async fn start_one_port_forward<T: InvokeUiSession>(
 }
 
 #[tokio::main(flavor = "current_thread")]
-async fn send_note(url: String, id: String, sid: u64, note: String) {
-    let body = serde_json::json!({ "id": id, "session_id": sid, "note": note });
-    if let Some(auth_header) = crate::get_api_auth_header() {
-        allow_err!(crate::post_request(url, body.to_string(), &auth_header).await);
+async fn send_note(url: String, audit_session_id: String, note: String) -> ResultType<()> {
+    let event_id = Uuid::new_v4().to_string();
+    let body = serde_json::json!({
+        "version": AUDIT_PROTOCOL_VERSION,
+        "event_id": &event_id,
+        "audit_session_id": &audit_session_id,
+        "note": note,
+    });
+    let Some(auth_header) = crate::get_api_auth_header() else {
+        bail!("API account session required for an audit note");
+    };
+    let operation = crate::common::HttpOperation::from_event_id(&event_id)?;
+    let response =
+        crate::common::post_request_with_operation(url, body.to_string(), &auth_header, &operation)
+            .await?;
+    validate_audit_note_response(&response, &audit_session_id, &event_id)
+}
+
+fn validate_audit_note_response(
+    body: &str,
+    expected_audit_session_id: &str,
+    expected_event_id: &str,
+) -> ResultType<()> {
+    let response: serde_json::Value = serde_json::from_str(body)?;
+    if response.get("version").and_then(serde_json::Value::as_u64) != Some(AUDIT_PROTOCOL_VERSION)
+        || response
+            .get("acknowledged_event_id")
+            .and_then(serde_json::Value::as_str)
+            != Some(expected_event_id)
+        || response
+            .get("event_revision")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0)
+            == 0
+        || response
+            .get("state_revision")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0)
+            == 0
+        || response
+            .get("heartbeat_revision")
+            .and_then(serde_json::Value::as_u64)
+            .is_none()
+        || response.get("state").and_then(serde_json::Value::as_str) != Some("active")
+        || response
+            .get("lease_remaining_seconds")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0)
+            == 0
+        || response
+            .get("audit_session_id")
+            .and_then(serde_json::Value::as_str)
+            != Some(expected_audit_session_id)
+    {
+        bail!("Management returned an incompatible audit note response");
+    }
+    let capability = Uuid::parse_str(expected_audit_session_id)?;
+    if capability.get_version_num() != 4 || capability.to_string() != expected_audit_session_id {
+        bail!("Management returned an invalid audit session capability");
+    }
+    let event_id = Uuid::parse_str(expected_event_id)?;
+    if event_id.get_version_num() != 4 || event_id.to_string() != expected_event_id {
+        bail!("Management returned an invalid audit event acknowledgement");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod audit_tests {
+    use super::*;
+
+    #[test]
+    fn audit_note_response_is_bound_to_the_v3_active_session_lease_and_event() {
+        let capability = Uuid::new_v4().to_string();
+        let event_id = Uuid::new_v4().to_string();
+        let valid = serde_json::json!({
+            "version": AUDIT_PROTOCOL_VERSION,
+            "audit_session_id": capability,
+            "acknowledged_event_id": event_id,
+            "event_revision": 4,
+            "state": "active",
+            "state_revision": 2,
+            "heartbeat_revision": 1,
+            "lease_remaining_seconds": 89,
+        });
+        assert!(validate_audit_note_response(&valid.to_string(), &capability, &event_id).is_ok());
+
+        for invalid in [
+            serde_json::json!({
+                "version": 2,
+                "audit_session_id": capability,
+                "acknowledged_event_id": event_id,
+                "event_revision": 4,
+                "state": "active",
+                "state_revision": 2,
+                "heartbeat_revision": 1,
+                "lease_remaining_seconds": 89,
+            }),
+            serde_json::json!({
+                "version": AUDIT_PROTOCOL_VERSION,
+                "audit_session_id": Uuid::new_v4().to_string(),
+                "acknowledged_event_id": event_id,
+                "event_revision": 4,
+                "state": "active",
+                "state_revision": 2,
+                "heartbeat_revision": 1,
+                "lease_remaining_seconds": 89,
+            }),
+            serde_json::json!({
+                "version": AUDIT_PROTOCOL_VERSION,
+                "audit_session_id": capability,
+                "acknowledged_event_id": Uuid::new_v4().to_string(),
+                "event_revision": 4,
+                "state": "active",
+                "state_revision": 2,
+                "heartbeat_revision": 1,
+                "lease_remaining_seconds": 89,
+            }),
+            serde_json::json!({
+                "version": AUDIT_PROTOCOL_VERSION,
+                "audit_session_id": capability,
+                "acknowledged_event_id": event_id,
+                "event_revision": 4,
+                "state": "closed",
+                "state_revision": 3,
+                "heartbeat_revision": 1,
+                "lease_remaining_seconds": 0,
+            }),
+        ] {
+            assert!(
+                validate_audit_note_response(&invalid.to_string(), &capability, &event_id).is_err()
+            );
+        }
     }
 }

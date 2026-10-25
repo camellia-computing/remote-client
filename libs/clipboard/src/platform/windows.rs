@@ -6,7 +6,8 @@
 #![allow(deref_nullptr)]
 
 use crate::{
-    send_data, send_data_exclude, ClipboardFile, CliprdrError, CliprdrServiceContext,
+    send_data, send_data_exclude, validate_file_contents_payload_len,
+    validate_file_contents_request, ClipboardFile, CliprdrError, CliprdrServiceContext,
     ProgressPercent, ResultType, ERR_CODE_INVALID_PARAMETER, ERR_CODE_SEND_MSG,
     ERR_CODE_SERVER_FUNCTION_NONE, VEC_MSG_CHANNEL,
 };
@@ -909,29 +910,34 @@ pub fn server_format_data_response(
 pub fn server_file_contents_request(
     context: &mut CliprdrClientContext,
     conn_id: i32,
-    stream_id: i32,
-    list_index: i32,
-    dw_flags: i32,
-    n_position_low: i32,
-    n_position_high: i32,
-    cb_requested: i32,
+    stream_id: u32,
+    list_index: u32,
+    dw_flags: u32,
+    n_position_low: u32,
+    n_position_high: u32,
+    cb_requested: u32,
     have_clip_data_id: bool,
-    clip_data_id: i32,
+    clip_data_id: u32,
 ) -> u32 {
+    if validate_file_contents_request(dw_flags, n_position_low, n_position_high, cb_requested)
+        .is_err()
+    {
+        return ERR_CODE_INVALID_PARAMETER;
+    }
     unsafe {
         let file_contents_request = CLIPRDR_FILE_CONTENTS_REQUEST {
             connID: conn_id as UINT32,
             msgType: 0 as UINT16,
             msgFlags: 0 as UINT16,
             dataLen: 0 as UINT32,
-            streamId: stream_id as UINT32,
-            listIndex: list_index as UINT32,
-            dwFlags: dw_flags as UINT32,
-            nPositionLow: n_position_low as UINT32,
-            nPositionHigh: n_position_high as UINT32,
-            cbRequested: cb_requested as UINT32,
+            streamId: stream_id,
+            listIndex: list_index,
+            dwFlags: dw_flags,
+            nPositionLow: n_position_low,
+            nPositionHigh: n_position_high,
+            cbRequested: cb_requested,
             haveClipDataId: if have_clip_data_id { TRUE } else { FALSE },
-            clipDataId: clip_data_id as UINT32,
+            clipDataId: clip_data_id,
         };
         if let Some(f) = context.ServerFileContentsRequest {
             f(context, &file_contents_request)
@@ -944,18 +950,24 @@ pub fn server_file_contents_request(
 pub fn server_file_contents_response(
     context: &mut CliprdrClientContext,
     conn_id: i32,
-    msg_flags: i32,
-    stream_id: i32,
+    msg_flags: u32,
+    stream_id: u32,
     mut requested_data: Vec<u8>,
 ) -> u32 {
+    let Ok(response_len) = validate_file_contents_payload_len(requested_data.len()) else {
+        return ERR_CODE_INVALID_PARAMETER;
+    };
+    let Ok(msg_flags) = u16::try_from(msg_flags) else {
+        return ERR_CODE_INVALID_PARAMETER;
+    };
     unsafe {
         let file_contents_response = CLIPRDR_FILE_CONTENTS_RESPONSE {
             connID: conn_id as UINT32,
             msgType: 0 as UINT16,
-            msgFlags: msg_flags as UINT16,
-            dataLen: 4 + requested_data.len() as UINT32,
-            streamId: stream_id as UINT32,
-            cbRequested: requested_data.len() as UINT32,
+            msgFlags: msg_flags,
+            dataLen: 4 + response_len,
+            streamId: stream_id,
+            cbRequested: response_len,
             requestedData: requested_data.as_mut_ptr(),
         };
         if let Some(f) = context.ServerFileContentsResponse {
@@ -1234,16 +1246,6 @@ extern "C" fn client_file_contents_request(
     _context: *mut CliprdrClientContext,
     file_contents_request: *const CLIPRDR_FILE_CONTENTS_REQUEST,
 ) -> UINT {
-    // TODO: support huge file?
-    // if (!cliprdr->hasHugeFileSupport)
-    // {
-    // 	if (((UINT64)fileContentsRequest->cbRequested + fileContentsRequest->nPositionLow) >
-    // 	    UINT32_MAX)
-    // 		return ERROR_INVALID_PARAMETER;
-    // 	if (fileContentsRequest->nPositionHigh != 0)
-    // 		return ERROR_INVALID_PARAMETER;
-    // }
-
     let conn_id;
     let stream_id;
     let list_index;
@@ -1255,14 +1257,19 @@ extern "C" fn client_file_contents_request(
     let clip_data_id;
     unsafe {
         conn_id = (*file_contents_request).connID as i32;
-        stream_id = (*file_contents_request).streamId as i32;
-        list_index = (*file_contents_request).listIndex as i32;
-        dw_flags = (*file_contents_request).dwFlags as i32;
-        n_position_low = (*file_contents_request).nPositionLow as i32;
-        n_position_high = (*file_contents_request).nPositionHigh as i32;
-        cb_requested = (*file_contents_request).cbRequested as i32;
+        stream_id = (*file_contents_request).streamId;
+        list_index = (*file_contents_request).listIndex;
+        dw_flags = (*file_contents_request).dwFlags;
+        n_position_low = (*file_contents_request).nPositionLow;
+        n_position_high = (*file_contents_request).nPositionHigh;
+        cb_requested = (*file_contents_request).cbRequested;
         have_clip_data_id = (*file_contents_request).haveClipDataId == TRUE;
-        clip_data_id = (*file_contents_request).clipDataId as i32;
+        clip_data_id = (*file_contents_request).clipDataId;
+    }
+    if validate_file_contents_request(dw_flags, n_position_low, n_position_high, cb_requested)
+        .is_err()
+    {
+        return ERR_CODE_INVALID_PARAMETER;
     }
     let data = ClipboardFile::FileContentsRequest {
         stream_id,
@@ -1294,9 +1301,15 @@ extern "C" fn client_file_contents_response(
     let requested_data;
     unsafe {
         conn_id = (*file_contents_response).connID as i32;
-        msg_flags = (*file_contents_response).msgFlags as i32;
-        stream_id = (*file_contents_response).streamId as i32;
+        msg_flags = u32::from((*file_contents_response).msgFlags);
+        stream_id = (*file_contents_response).streamId;
+        if (*file_contents_response).cbRequested > crate::FILE_CONTENTS_MAX_REQUEST_BYTES {
+            return ERR_CODE_INVALID_PARAMETER;
+        }
         if (*file_contents_response).requestedData.is_null() {
+            if (*file_contents_response).cbRequested != 0 {
+                return ERR_CODE_INVALID_PARAMETER;
+            }
             requested_data = Vec::new();
         } else {
             requested_data = std::slice::from_raw_parts(

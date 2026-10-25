@@ -1165,6 +1165,16 @@ class RustdeskImpl {
     return Future(() => js.context.callMethod('getByName', ['api_server']));
   }
 
+  Future<String> mainGetDeviceProof({
+    required String purpose,
+    required String id,
+    required String uuid,
+    required String token,
+    dynamic hint,
+  }) {
+    return js.getDeviceProof(purpose, id, uuid, token);
+  }
+
   Future<void> mainPostRequest({
     required String url,
     required String body,
@@ -1178,7 +1188,7 @@ class RustdeskImpl {
     return Future(() => false);
   }
 
-  Future<void> mainHttpRequest({
+  Future<String> mainHttpRequest({
     required String url,
     required String method,
     String? body,
@@ -1188,8 +1198,12 @@ class RustdeskImpl {
     throw UnimplementedError("mainHttpRequest");
   }
 
-  Future<String?> mainGetHttpStatus({required String url, dynamic hint}) {
+  Future<String> mainGetHttpStatus({required String requestId, dynamic hint}) {
     throw UnimplementedError("mainGetHttpStatus");
+  }
+
+  Future<void> mainCancelHttpRequest({required String requestId, dynamic hint}) {
+    throw UnimplementedError("mainCancelHttpRequest");
   }
 
   String mainGetLocalOption({required String key, dynamic hint}) {

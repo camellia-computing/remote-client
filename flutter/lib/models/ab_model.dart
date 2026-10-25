@@ -13,6 +13,27 @@ import 'package:bot_toast/bot_toast.dart';
 
 import '../utils/http_service.dart' as http;
 import '../common.dart';
+import 'address_book_snapshot.dart';
+import 'address_book_mutations.dart';
+import 'address_book_journal.dart';
+
+String? parseSharedCredentialResponse(String body, int statusCode) {
+  if (statusCode != 200) {
+    return null;
+  }
+  try {
+    final decoded = jsonDecode(body);
+    if (decoded is! Map<String, dynamic>) {
+      return null;
+    }
+    final password = decoded['password'];
+    return password is String && password.isNotEmpty && password.length <= 60
+        ? password
+        : null;
+  } catch (_) {
+    return null;
+  }
+}
 
 final syncAbOption = 'sync-ab-with-recent-sessions';
 bool shouldSyncAb() {
@@ -61,6 +82,299 @@ class AbModel {
   RxString get currentAbPushError => current.pushError;
   String? _personalAbGuid;
   String _personalAbName = _personalAddressBookName;
+  int? _personalAbGeneration;
+  String? _personalAbApi;
+  String? _personalAbToken;
+  int _listEpoch = 0;
+  int _mutationViewEpoch = 0;
+  int _journalReadEpoch = 0;
+  AddressBookMutationJournal? _mutationJournal;
+  http.HttpCancellation? _mutationCancellation;
+  AddressBookMutationJournal get _journal =>
+      _mutationJournal ??= createAddressBookMutationJournal();
+  final mutationBusy = false.obs;
+  final mutationJournalReady = false.obs;
+  final mutationJournalError = ''.obs;
+  final mutationStatus = ''.obs;
+  final pendingMutations = <PendingAddressBookOperation>[].obs;
+
+  bool get mutationsBlocked =>
+      mutationBusy.value ||
+      !mutationJournalReady.value ||
+      mutationJournalError.value.isNotEmpty ||
+      pendingMutations.isNotEmpty;
+
+  Future<void> refreshMutationJournal() async {
+    final epoch = ++_journalReadEpoch;
+    try {
+      final pending = await _journal.readPending().timeout(
+        const Duration(seconds: 5),
+      );
+      if (epoch != _journalReadEpoch) return;
+      pendingMutations.assignAll(pending);
+      mutationJournalError.value = '';
+      mutationJournalReady.value = true;
+    } catch (_) {
+      if (epoch != _journalReadEpoch) return;
+      mutationJournalReady.value = false;
+      mutationJournalError.value =
+          'Address book operation storage is unavailable. Writes are disabled.';
+    }
+  }
+
+  String _apiIdentity(String api) => api.replaceFirst(RegExp(r'/+$'), '');
+  Future<String> _currentMutationApi() async => _apiIdentity(
+    await bind.mainGetApiServer().timeout(const Duration(seconds: 5)),
+  );
+
+  /// One admission owner for every book and all GUI/background entry points.
+  /// Never publish receipt generations onto old content: refresh one complete
+  /// snapshot after the whole batch, not after each child.
+  Future<AddressBookMutationBatchOutcome?> _mutate(
+    Ab book,
+    List<AddressBookMutationInput> inputs,
+  ) async {
+    if (!book.canWrite() || inputs.isEmpty) return null;
+    final generation = book._snapshotGeneration!;
+    final snapshotApi = book._snapshotApi!;
+    final token = bind.mainGetLocalOption(key: 'access_token');
+    final personalGuid = _personalAbGuid;
+    final guid = book.profile.guid;
+    final listEpoch = _listEpoch;
+    final viewEpoch = _mutationViewEpoch;
+    mutationBusy.value = true;
+    mutationStatus.value = '';
+    book.invalidateSnapshot();
+    final snapshotEpoch = book._snapshotEpoch;
+    bool ownsContext() =>
+        listEpoch == _listEpoch &&
+        viewEpoch == _mutationViewEpoch &&
+        personalGuid != null &&
+        personalGuid == _personalAbGuid &&
+        _personalAbApi == snapshotApi &&
+        _personalAbToken == token &&
+        token.isNotEmpty &&
+        token == bind.mainGetLocalOption(key: 'access_token') &&
+        book.profile.guid == guid &&
+        book._snapshotEpoch == snapshotEpoch &&
+        addressbooks.values.any((value) => identical(value, book));
+    var ownsResult = false;
+    final cancellation = http.HttpCancellation();
+    _mutationCancellation = cancellation;
+    AddressBookMutationBatchOutcome? outcome;
+    try {
+      // Freeze payloads synchronously, before endpoint lookup or persistence.
+      final base = Uri.parse(snapshotApi);
+      final scope = addressBookMutationScope(base, personalGuid ?? '');
+      final batch = AddressBookMutationBatch(
+        apiBase: base,
+        guid: guid,
+        expectedGeneration: generation,
+        inputs: inputs,
+      );
+      final api = await _currentMutationApi();
+      if (!ownsContext() || api != snapshotApi) {
+        if (ownsContext()) {
+          mutationStatus.value =
+              'Address book context changed. Refresh before editing.';
+        }
+        return null;
+      }
+      final service = AddressBookMutationService(
+        journal: _journal,
+        cancelTransport: cancellation.cancel,
+        currentScope: () => ownsContext() ? scope : '',
+        beforeSend: () async {
+          final currentApi = await _currentMutationApi();
+          return ownsContext() && api == currentApi;
+        },
+        send: (command) async {
+          final response = await http.HttpService().sendRequest(
+            command.uri,
+            switch (command.kind.method) {
+              'POST' => http.HttpMethod.post,
+              'PUT' => http.HttpMethod.put,
+              'DELETE' => http.HttpMethod.delete,
+              _ => throw const AddressBookMutationException('invalid_request'),
+            },
+            headers: command.headers(token),
+            body: command.body,
+            cancellation: cancellation,
+          );
+          return AddressBookMutationResponse(
+            response.statusCode,
+            response.headers,
+            response.bodyBytes,
+          );
+        },
+      );
+      outcome = await service.executeBatch(batch, scope: scope);
+      final currentApi = await _currentMutationApi();
+      ownsResult = ownsContext() && api == currentApi;
+      if (ownsResult) {
+        final unknown = outcome.unknownOperationIds;
+        mutationStatus.value = outcome.fullyConfirmed && !outcome.pendingCleanup
+            ? ''
+            : 'Address book batch: ${outcome.confirmed} confirmed, ${outcome.rejected} rejected, '
+                  '${unknown.length} unknown, ${outcome.notAttempted} not sent.'
+                  '${unknown.isEmpty ? '' : ' Operation ID: ${unknown.single}.'}'
+                  '${outcome.pendingCleanup ? ' Operation storage requires attention.' : ''}'
+                  ' ${outcome.outcomes.last.code}';
+      }
+    } catch (error) {
+      if (ownsContext()) {
+        mutationStatus.value =
+            'Address book write could not be completed: '
+            '${error is AddressBookMutationException ? error.code : 'operation_unavailable'}';
+      }
+    } finally {
+      cancellation.cancel();
+      if (identical(_mutationCancellation, cancellation)) {
+        _mutationCancellation = null;
+      }
+      await refreshMutationJournal();
+      mutationBusy.value = false;
+    }
+    try {
+      if (ownsResult &&
+          ownsContext() &&
+          snapshotApi == await _currentMutationApi() &&
+          ownsContext()) {
+        await book.pullAb(quiet: false);
+        if (listEpoch == _listEpoch &&
+            viewEpoch == _mutationViewEpoch &&
+            token == bind.mainGetLocalOption(key: 'access_token')) {
+          _refreshTab();
+          _callbackPeerUpdate();
+          _saveCache();
+        } else {
+          ownsResult = false;
+        }
+      } else {
+        ownsResult = false;
+      }
+    } catch (_) {
+      // The write's immutable receipt is still true if refresh fails. Keep the
+      // snapshot non-editable; never retry the write to repair a read failure.
+      if (listEpoch != _listEpoch ||
+          viewEpoch != _mutationViewEpoch ||
+          token != bind.mainGetLocalOption(key: 'access_token')) {
+        ownsResult = false;
+      }
+    }
+    return ownsResult ? outcome : null;
+  }
+
+  Future<void> recoverMutation(PendingAddressBookOperation pending) async {
+    if (mutationBusy.value) return;
+    final token = bind.mainGetLocalOption(key: 'access_token');
+    final personalGuid = _personalAbGuid;
+    final epoch = _listEpoch;
+    final cancellation = http.HttpCancellation();
+    _mutationCancellation = cancellation;
+    mutationBusy.value = true;
+    try {
+      final api = await _currentMutationApi();
+      if (personalGuid == null ||
+          epoch != _listEpoch ||
+          personalGuid != _personalAbGuid ||
+          token.isEmpty ||
+          token != bind.mainGetLocalOption(key: 'access_token') ||
+          _personalAbApi != api ||
+          _personalAbToken != token) {
+        if (epoch == _listEpoch &&
+            token == bind.mainGetLocalOption(key: 'access_token')) {
+          mutationStatus.value =
+              'Refresh the account and address book before looking up the original operation.';
+        }
+        return;
+      }
+      final base = Uri.parse(api);
+      final scope = addressBookMutationScope(base, personalGuid);
+      final service = AddressBookMutationService(
+        journal: _journal,
+        cancelTransport: cancellation.cancel,
+        currentScope: () =>
+            epoch == _listEpoch &&
+                token == bind.mainGetLocalOption(key: 'access_token') &&
+                personalGuid == _personalAbGuid
+            ? scope
+            : '',
+        send: (_) => throw StateError('Recovery cannot send a mutation'),
+      );
+      final result = await service.recover(
+        pending,
+        apiBase: base,
+        read: (uri) async {
+          if (api != await _currentMutationApi() ||
+              epoch != _listEpoch ||
+              token != bind.mainGetLocalOption(key: 'access_token')) {
+            throw const AddressBookMutationException('context_changed');
+          }
+          final response = await http.get(
+            uri,
+            headers: {'Authorization': 'Bearer $token'},
+            cancellation: cancellation,
+          );
+          return AddressBookMutationResponse(
+            response.statusCode,
+            response.headers,
+            response.bodyBytes,
+          );
+        },
+      );
+      if (epoch == _listEpoch &&
+          token == bind.mainGetLocalOption(key: 'access_token') &&
+          api == await _currentMutationApi()) {
+        mutationStatus.value = result.resolved
+            ? 'Operation ${pending.operationId}: ${result.code}.'
+                  '${result.pendingCleanup ? ' Operation storage requires attention.' : ''}'
+            : 'Operation ${pending.operationId} remains unresolved: ${result.code}. '
+                  'Use the original account and server; a missing receipt does not prove the write failed.';
+      }
+    } catch (_) {
+      if (epoch == _listEpoch) {
+        mutationStatus.value =
+            'Operation recovery is unavailable. The original operation is retained.';
+      }
+    } finally {
+      cancellation.cancel();
+      if (identical(_mutationCancellation, cancellation)) {
+        _mutationCancellation = null;
+      }
+      await refreshMutationJournal();
+      mutationBusy.value = false;
+    }
+    // Read current truth, never relabel cached content with an old receipt.
+    if (epoch == _listEpoch &&
+        token == bind.mainGetLocalOption(key: 'access_token')) {
+      await pullAb(force: ForcePullAb.current, quiet: false);
+    }
+  }
+
+  Future<void> reconcileMutation(
+    PendingAddressBookOperation pending, {
+    required String confirmedId,
+    required bool verifiedOriginalState,
+  }) async {
+    if (mutationBusy.value ||
+        !verifiedOriginalState ||
+        confirmedId != pending.operationId) {
+      return;
+    }
+    mutationBusy.value = true;
+    try {
+      await _journal.acknowledge(pending).timeout(const Duration(seconds: 5));
+      mutationStatus.value =
+          'Operation ${pending.operationId} cleared after explicit manual reconciliation. No write was retried.';
+    } catch (_) {
+      mutationStatus.value =
+          'Operation record could not be cleared. No write was retried.';
+    } finally {
+      await refreshMutationJournal();
+      mutationBusy.value = false;
+    }
+  }
 
   // Only handles peers add/remove
   final Map<String, VoidCallback> _peerIdUpdateListeners = {};
@@ -101,6 +415,17 @@ class AbModel {
 
   reset() async {
     print("reset ab model");
+    _listEpoch++;
+    _mutationViewEpoch++;
+    _mutationCancellation?.cancel();
+    _personalAbGuid = null;
+    _personalAbGeneration = null;
+    _personalAbApi = null;
+    _personalAbToken = null;
+    mutationStatus.value = '';
+    for (final book in addressbooks.values.whereType<Ab>()) {
+      book.invalidateSnapshot();
+    }
     addressbooks.clear();
     _currentName.value = '';
     _listPullError.value = '';
@@ -125,6 +450,7 @@ class AbModel {
     required ForcePullAb? force,
     required bool quiet,
   }) async {
+    if (mutationBusy.value) return;
     if (!gFFI.userModel.isLogin) return;
     if (gFFI.userModel.networkError.isNotEmpty) return;
     if (_pulling) return;
@@ -148,13 +474,20 @@ class AbModel {
     required ForcePullAb? force,
     required bool quiet,
   }) async {
+    if (!mutationBusy.value) await refreshMutationJournal();
     if (force == null && listInitialized && current.initialized) return;
     debugPrint("pullAb, force: $force, quiet: $quiet");
     if (!listInitialized || force == ForcePullAb.listAndCurrent) {
       try {
+        final epoch = _listEpoch;
+        final token = bind.mainGetLocalOption(key: 'access_token');
+        final api = await bind.mainGetApiServer();
         // Refresh personal address book metadata on each list pull.
         _personalAbGuid = null;
         _personalAbName = _personalAddressBookName;
+        _personalAbGeneration = null;
+        _personalAbApi = null;
+        _personalAbToken = null;
         // `true`: continue init. `false`: stop, error already recorded.
         if (!await _getPersonalAbGuid(quiet: quiet)) {
           return;
@@ -172,21 +505,32 @@ class AbModel {
             null,
             ShareRule.read.value,
             null,
+            authorizationGeneration: _personalAbGeneration,
           ),
         );
         // get all address book name
         if (!await _getSharedAbProfiles(abProfiles, quiet: quiet)) {
           return;
         }
-        addressbooks.removeWhere(
-          (key, value) =>
-              abProfiles.firstWhereOrNull((e) => e.name == key) == null,
-        );
+        final currentApi = await bind.mainGetApiServer();
+        if (epoch != _listEpoch ||
+            api != currentApi ||
+            token != bind.mainGetLocalOption(key: 'access_token')) {
+          throw const AddressBookSnapshotException('context_changed');
+        }
+        addressbooks.removeWhere((key, value) {
+          final removed =
+              abProfiles.firstWhereOrNull((e) => e.name == key) == null;
+          if (removed && value is Ab) value.invalidateSnapshot();
+          return removed;
+        });
         for (int i = 0; i < abProfiles.length; i++) {
           AbProfile p = abProfiles[i];
-          if (addressbooks.containsKey(p.name)) {
+          if (addressbooks[p.name]?.sharedProfile()?.guid == p.guid) {
             addressbooks[p.name]?.setSharedProfile(p);
           } else {
+            final previous = addressbooks[p.name];
+            if (previous is Ab) previous.invalidateSnapshot();
             addressbooks[p.name] = Ab(p, p.guid == _personalAbGuid);
           }
         }
@@ -271,9 +615,12 @@ class AbModel {
   /// Returns `true` to continue init, `false` to stop after a real error.
   Future<bool> _getPersonalAbGuid({required bool quiet}) async {
     int? statusCode;
+    final token = bind.mainGetLocalOption(key: 'access_token');
+    final epoch = _listEpoch;
     try {
-      final api = "${await bind.mainGetApiServer()}/api/ab/personal";
-      var headers = getHttpHeaders();
+      final apiBase = await _currentMutationApi();
+      final api = '$apiBase/api/ab/personal';
+      var headers = <String, String>{'Authorization': 'Bearer $token'};
       headers['Content-Type'] = "application/json";
       _setEmptyBody(headers);
       final resp = await http.post(Uri.parse(api), headers: headers);
@@ -295,7 +642,16 @@ class AbModel {
       if (guid is! String || guid.trim().isEmpty) {
         throw 'invalid personal address book guid';
       }
+      final snapshot = AddressBookSnapshotIdentity.parse(json);
+      if (epoch != _listEpoch ||
+          token != bind.mainGetLocalOption(key: 'access_token') ||
+          apiBase != await _currentMutationApi()) {
+        throw const AddressBookSnapshotException('context_changed');
+      }
       _personalAbGuid = guid.trim();
+      _personalAbGeneration = snapshot.generation;
+      _personalAbApi = apiBase;
+      _personalAbToken = token;
       final name = json['name'];
       if (name is String && name.trim().isNotEmpty) {
         _personalAbName = name.trim();
@@ -305,7 +661,10 @@ class AbModel {
       return true;
     } catch (err) {
       debugPrint('get personal ab err: ${err.toString()}');
-      _setListPullError(err, quiet: quiet, statusCode: statusCode);
+      if (epoch == _listEpoch &&
+          token == bind.mainGetLocalOption(key: 'access_token')) {
+        _setListPullError(err, quiet: quiet, statusCode: statusCode);
+      }
     }
     // Real error: stop the current pull.
     return false;
@@ -352,12 +711,16 @@ class AbModel {
         if (statusCode != 200) {
           throw 'HTTP $statusCode';
         }
+        if (json['address_book_snapshot_version'] != 1) {
+          throw const AddressBookSnapshotException('unsupported_version');
+        }
         if (json.containsKey('total')) {
           if (total == 0) total = json['total'];
           if (json.containsKey('data')) {
             final data = json['data'];
             if (data is List) {
               for (final profile in data) {
+                AddressBookSnapshotIdentity.parse(profile);
                 final u = AbProfile.fromJson(profile);
                 int index = profiles.indexWhere((e) => e.name == u.name);
                 if (index < 0) {
@@ -417,58 +780,35 @@ class AbModel {
     return ret;
   }
 
-  // Use Map<String, dynamic> rather than Peer to distinguish between empty and null
+  // Preserve absent fields and caller-owned selections; the service freezes the
+  // whole batch before its first await.
   Future<String?> addPeersTo(List<Map<String, dynamic>> ps, String name) async {
-    final ab = addressbooks[name];
-    if (ab == null) {
-      return 'no such addressbook: $name';
+    final book = addressbooks[name];
+    if (book == null) return 'Address book is unavailable.';
+    final selection = ps.map((peer) => Map<String, dynamic>.of(peer)).toList();
+    for (final peer in selection) {
+      book.removeNonExistentTags(peer);
     }
-    for (var p in ps) {
-      ab.removeNonExistentTags(p);
+    final error = await book.addPeers(selection);
+    if (error == null &&
+        addressbooks.values.any((value) => identical(value, book))) {
+      _syncAllFromRecent = true;
     }
-    String? errMsg = await ab.addPeers(ps);
-    await pullNonLegacyAfterChange(name: name);
-    if (name == _currentName.value) {
-      _refreshTab();
-    }
-    _syncAllFromRecent = true;
-    _saveCache();
-    return errMsg;
+    return error;
   }
 
-  Future<bool> changeTagForPeers(List<String> ids, List<dynamic> tags) async {
-    bool ret = await current.changeTagForPeers(ids, tags);
-    await pullNonLegacyAfterChange();
-    currentAbPeers.refresh();
-    _saveCache();
-    return ret;
-  }
+  Future<bool> changeTagForPeers(List<String> ids, List<dynamic> tags) =>
+      current.changeTagForPeers(ids, tags);
 
-  Future<bool> changeAlias({required String id, required String alias}) async {
-    bool res = await current.changeAlias(id: id, alias: alias);
-    await pullNonLegacyAfterChange();
-    currentAbPeers.refresh();
-    _saveCache();
-    return res;
-  }
+  Future<bool> changeAlias({required String id, required String alias}) =>
+      current.changeAlias(id: id, alias: alias);
 
-  Future<bool> changeNote({required String id, required String note}) async {
-    bool res = await current.changeNote(id: id, note: note);
-    await pullNonLegacyAfterChange();
-    currentAbPeers.refresh();
-    // no need to save cache
-    return res;
-  }
+  Future<bool> changeNote({required String id, required String note}) =>
+      current.changeNote(id: id, note: note);
 
   Future<bool> changePersonalHashPassword(String id, String hash) async {
-    var ret = false;
-    final personalAb = addressbooks[_personalAbName];
-    if (personalAb != null) {
-      ret = await personalAb.changePersonalHashPassword(id, hash);
-      await personalAb.pullAb(quiet: true);
-    }
-    _saveCache();
-    return ret;
+    final book = addressbooks[_personalAbName];
+    return book == null ? false : book.changePersonalHashPassword(id, hash);
   }
 
   Future<bool> changeSharedPassword(
@@ -476,70 +816,41 @@ class AbModel {
     String id,
     String password,
   ) async {
-    final ab = addressbooks[abName];
-    if (ab == null) return false;
-    final ret = await ab.changeSharedPassword(id, password);
-    await ab.pullAb(quiet: true);
-    return ret;
+    final book = addressbooks[abName];
+    return book == null ? false : book.changeSharedPassword(id, password);
   }
 
-  Future<bool> deletePeers(List<String> ids) async {
-    final ret = await current.deletePeers(ids);
-    await pullNonLegacyAfterChange();
-    currentAbPeers.refresh();
-    _refreshTab();
-    _saveCache();
-    _callbackPeerUpdate();
-    return ret;
-  }
+  Future<bool> deletePeers(List<String> ids) => current.deletePeers(ids);
 
-  // #endregion
-
-  // #region tags
-  Future<bool> addTags(List<String> tagList) async {
-    tagList.removeWhere((e) => e == kUntagged);
-    final ret = await current.addTags(tagList, {});
-    await pullNonLegacyAfterChange();
-    _saveCache();
-    return ret;
-  }
+  Future<bool> addTags(List<String> tags) =>
+      current.addTags(tags.where((tag) => tag != kUntagged).toList(), {});
 
   Future<bool> renameTag(String oldTag, String newTag) async {
-    final ret = await current.renameTag(oldTag, newTag);
-    await pullNonLegacyAfterChange();
-    selectedTags.value = selectedTags.map((e) {
-      if (e == oldTag) {
-        return newTag;
-      } else {
-        return e;
-      }
-    }).toList();
-    _saveCache();
-    return ret;
+    final book = current;
+    final epoch = _mutationViewEpoch;
+    final result = await book.renameTag(oldTag, newTag);
+    if (result && epoch == _mutationViewEpoch && identical(book, current)) {
+      book.selectedTags.value = book.selectedTags
+          .map((tag) => tag == oldTag ? newTag : tag)
+          .toList();
+    }
+    return result;
   }
 
-  Future<bool> setTagColor(String tag, Color color) async {
-    final ret = await current.setTagColor(tag, color);
-    await pullNonLegacyAfterChange();
-    _saveCache();
-    return ret;
-  }
+  Future<bool> setTagColor(String tag, Color color) =>
+      current.setTagColor(tag, color);
 
-  Future<bool> deleteTag(String tag) async {
-    final ret = await current.deleteTag(tag);
-    await pullNonLegacyAfterChange();
-    _saveCache();
-    return ret;
-  }
-
-  // #endregion
+  Future<bool> deleteTag(String tag) => current.deleteTag(tag);
 
   // #region sync from recent
   Future<void> _syncFromRecent({bool push = true}) async {
     if (!_syncFromRecentLock) {
       _syncFromRecentLock = true;
-      await _syncFromRecentWithoutLock(push: push);
-      _syncFromRecentLock = false;
+      try {
+        await _syncFromRecentWithoutLock(push: push);
+      } finally {
+        _syncFromRecentLock = false;
+      }
     }
   }
 
@@ -580,11 +891,19 @@ class AbModel {
 
     try {
       if (!shouldSyncAb()) return;
+      final book = current;
+      final epoch = _mutationViewEpoch;
+      final token = bind.mainGetLocalOption(key: 'access_token');
       final recents = await getRecentPeers();
+      if (epoch != _mutationViewEpoch ||
+          !identical(book, current) ||
+          token != bind.mainGetLocalOption(key: 'access_token')) {
+        return;
+      }
       if (recents.isEmpty) return;
       debugPrint("sync from recent, len: ${recents.length}");
-      if (current.canWrite() && current.initialized) {
-        await current.syncFromRecent(recents);
+      if (book.canWrite() && book.initialized) {
+        await book.syncFromRecent(recents);
       }
     } catch (e) {
       debugPrint('_syncFromRecentWithoutLock: $e');
@@ -769,6 +1088,14 @@ class AbModel {
         _currentName.value = '';
       }
     }
+    if (oldName != _currentName.value) {
+      _mutationViewEpoch++;
+      _mutationCancellation?.cancel();
+      final previous = addressbooks[oldName];
+      if (previous is Ab && previous._readCancellation != null) {
+        previous.invalidateSnapshot();
+      }
+    }
     if (!current.initialized) {
       await current.pullAb(quiet: false);
     }
@@ -792,17 +1119,6 @@ class AbModel {
 
   void _refreshTab() {
     platformFFI.tryHandle({'name': LoadEvent.addressBook});
-  }
-
-  // should not call this function in a loop call stack
-  Future<void> pullNonLegacyAfterChange({String? name}) async {
-    if (name == null) {
-      return await current.pullAb(quiet: true);
-    }
-    final ab = addressbooks[name];
-    if (ab != null) {
-      return await ab.pullAb(quiet: true);
-    }
   }
 
   List<String> idExistIn(String id) {
@@ -845,24 +1161,31 @@ class AbModel {
     _peerIdUpdateListeners.remove(key);
   }
 
-  String? getdefaultSharedPassword() {
+  Future<String?> getDefaultSharedPassword(String rid) async {
     if (current.isPersonal()) {
       return null;
     }
     final profile = current.sharedProfile();
-    if (profile == null) {
+    if (profile == null || rid.trim().isEmpty) {
       return null;
     }
+    int? statusCode;
     try {
-      if (profile.info is Map) {
-        final password = (profile.info as Map)['password'];
-        if (password is String && password.isNotEmpty) {
-          return password;
-        }
-      }
-      return null;
+      final api = "${await bind.mainGetApiServer()}/api/ab/shared/credential";
+      final headers = getHttpHeaders();
+      headers['Content-Type'] = 'application/json';
+      final response = await http.post(
+        Uri.parse(api),
+        headers: headers,
+        body: jsonEncode({'guid': profile.guid, 'id': rid}),
+      );
+      statusCode = response.statusCode;
+      return parseSharedCredentialResponse(
+        decode_http_response(response),
+        response.statusCode,
+      );
     } catch (e) {
-      debugPrint("getdefaultSharedPassword: $e");
+      debugPrint("getDefaultSharedPassword($statusCode): $e");
       return null;
     }
   }
@@ -973,6 +1296,22 @@ class Ab extends BaseAb {
   AbProfile profile;
   late final bool personal;
   bool get emtpy => peers.isEmpty && tags.isEmpty;
+  int? _snapshotGeneration;
+  int _highestSnapshotGeneration = 0;
+  String? _snapshotToken;
+  String? _snapshotApi;
+  http.HttpCancellation? _readCancellation;
+  int _snapshotEpoch = 0;
+
+  void invalidateSnapshot() {
+    _readCancellation?.cancel();
+    _readCancellation = null;
+    initialized = false;
+    _snapshotEpoch++;
+    _snapshotGeneration = null;
+    _snapshotToken = null;
+    _snapshotApi = null;
+  }
 
   Ab(this.profile, this.personal);
 
@@ -996,6 +1335,10 @@ class Ab extends BaseAb {
 
   @override
   void setSharedProfile(AbProfile profile) {
+    if (this.profile.guid != profile.guid ||
+        _snapshotGeneration != profile.authorizationGeneration) {
+      invalidateSnapshot();
+    }
     this.profile = profile;
   }
 
@@ -1007,6 +1350,16 @@ class Ab extends BaseAb {
 
   @override
   bool canWrite() {
+    if (gFFI.abModel.mutationsBlocked ||
+        gFFI.abModel._pulling ||
+        _snapshotApi == null ||
+        gFFI.abModel._personalAbApi != _snapshotApi ||
+        gFFI.abModel._personalAbToken != _snapshotToken ||
+        _snapshotGeneration == null ||
+        _snapshotGeneration != profile.authorizationGeneration ||
+        _snapshotToken != bind.mainGetLocalOption(key: 'access_token')) {
+      return false;
+    }
     if (personal) {
       return true;
     } else {
@@ -1026,504 +1379,249 @@ class Ab extends BaseAb {
 
   @override
   Future<bool> pullAbImpl({quiet = false}) async {
-    // Only adopt a result the server actually delivered. A transient failure
-    // used to publish the partial list anyway, and every caller persists what
-    // it sees, so one dropped request could blank the address book on screen
-    // and overwrite the offline cache with an empty book.
-    bool ret = true;
-    List<Peer> tmpPeers = [];
-    if (await _fetchPeers(tmpPeers, quiet: quiet)) {
-      peers.value = tmpPeers;
-    } else {
-      ret = false;
-    }
-    List<AbTag> tmpTags = [];
-    if (await _fetchTags(tmpTags, quiet: quiet)) {
-      tags.value = tmpTags.map((e) => e.name).toList();
-      tagColors.value = {for (final t in tmpTags) t.name: t.color};
-    } else {
-      ret = false;
-    }
-    return ret;
-  }
-
-  Future<bool> _fetchPeers(List<Peer> tmpPeers, {quiet = false}) async {
-    final api = "${await bind.mainGetApiServer()}/api/ab/peers";
+    if (gFFI.abModel.mutationBusy.value) return false;
+    final cancellation = http.HttpCancellation();
     int? statusCode;
+    invalidateSnapshot();
+    _readCancellation = cancellation;
+    final epoch = _snapshotEpoch;
+    final guid = profile.guid;
+    final token = bind.mainGetLocalOption(key: 'access_token');
     try {
-      var uri0 = Uri.parse(api);
-      final pageSize = 100;
-      var total = 0;
-      int current = 0;
-      do {
-        current += 1;
-        var uri = Uri(
-          scheme: uri0.scheme,
-          host: uri0.host,
-          path: uri0.path,
-          port: uri0.port,
-          queryParameters: {
-            'current': current.toString(),
-            'pageSize': pageSize.toString(),
-            'ab': profile.guid,
-          },
-        );
-        var headers = getHttpHeaders();
-        headers['Content-Type'] = "application/json";
-        _setEmptyBody(headers);
-        final resp = await http.post(uri, headers: headers);
-        statusCode = resp.statusCode;
-        Map<String, dynamic> json = _jsonDecodeRespMap(
-          decode_http_response(resp),
-          resp.statusCode,
-        );
-        if (json.containsKey('error')) {
-          throw json['error'];
-        }
-        if (resp.statusCode != 200) {
-          throw 'HTTP ${resp.statusCode}';
-        }
-        if (json.containsKey('total')) {
-          if (total == 0) total = json['total'];
-          if (json.containsKey('data')) {
-            final data = json['data'];
-            if (data is List) {
-              for (final profile in data) {
-                if (profile is! Map<String, dynamic>) {
-                  debugPrint('Ignoring invalid address book peer payload');
-                  continue;
-                }
-                final u = Peer.fromJson(profile);
-                if (u.id.trim().isEmpty) {
-                  debugPrint('Ignoring address book peer without an id');
-                  continue;
-                }
-                int index = tmpPeers.indexWhere((e) => e.id == u.id);
-                if (index < 0) {
-                  tmpPeers.add(u);
-                } else {
-                  tmpPeers[index] = u;
-                }
-              }
-            }
-          }
-        }
-      } while (current * pageSize < total);
-      return true;
-    } catch (err) {
-      if (!quiet) {
-        pullError.value =
-            '${translate('pull_ab_failed_tip')}: ${translate(err.toString())}';
-      }
-    } finally {
-      // An expired or revoked token has to sign the user out however the pull
-      // was started. Gating this on pullError skipped it for background pulls,
-      // which are the ones that run after every edit - so the session stayed
-      // half-alive, showing an empty book with no way back to the login form.
-      if (statusCode == 401) {
-        gFFI.userModel.reset(resetOther: true);
-      }
-    }
-    return false;
-  }
-
-  Future<bool> _fetchTags(List<AbTag> tmpTags, {quiet = false}) async {
-    final api = "${await bind.mainGetApiServer()}/api/ab/tags/${profile.guid}";
-    int? statusCode;
-    try {
-      var uri0 = Uri.parse(api);
-      var uri = Uri(
-        scheme: uri0.scheme,
-        host: uri0.host,
-        path: uri0.path,
-        port: uri0.port,
+      final api = (await bind.mainGetApiServer()).replaceFirst(
+        RegExp(r'/+$'),
+        '',
       );
-      var headers = getHttpHeaders();
-      headers['Content-Type'] = "application/json";
+      final headers = <String, String>{
+        'Authorization': 'Bearer $token',
+        'Content-Type': 'application/json',
+      };
       _setEmptyBody(headers);
-      final resp = await http.post(uri, headers: headers);
-      statusCode = resp.statusCode;
-      List<dynamic> json = _jsonDecodeRespList(
-        decode_http_response(resp),
-        resp.statusCode,
+      final snapshot = await AddressBookContentSnapshot.read(
+        apiBase: Uri.parse(api),
+        guid: guid,
+        request: (uri) async {
+          final resp = await http.post(
+            uri,
+            headers: headers,
+            cancellation: cancellation,
+          );
+          statusCode = resp.statusCode;
+          return decodeAddressBookSnapshotResponse(
+            resp.statusCode,
+            resp.headers,
+            resp.bodyBytes,
+          );
+        },
       );
-      if (resp.statusCode != 200) {
-        throw 'HTTP ${resp.statusCode}';
+      final currentApi = (await bind.mainGetApiServer()).replaceFirst(
+        RegExp(r'/+$'),
+        '',
+      );
+      if (gFFI.abModel.mutationBusy.value ||
+          epoch != _snapshotEpoch ||
+          guid != profile.guid ||
+          token != bind.mainGetLocalOption(key: 'access_token') ||
+          api != currentApi) {
+        throw const AddressBookSnapshotException('context_changed');
       }
-
-      for (final d in json) {
-        final t = AbTag.fromJson(d);
-        int index = tmpTags.indexWhere((e) => e.name == t.name);
-        if (index < 0) {
-          tmpTags.add(t);
-        } else {
-          tmpTags[index] = t;
-        }
+      if (snapshot.identity.generation <
+              (profile.authorizationGeneration ?? 0) ||
+          snapshot.identity.generation < _highestSnapshotGeneration) {
+        throw const AddressBookSnapshotException('stale_snapshot');
       }
+      // Parse everything before publishing any part of the new cache.
+      final tmpPeers = snapshot.peers.map(Peer.fromJson).toList();
+      final tmpTags = snapshot.tags.map(AbTag.fromJson).toList();
+      peers.value = tmpPeers;
+      tags.value = tmpTags.map((tag) => tag.name).toList();
+      tagColors.value = {for (final tag in tmpTags) tag.name: tag.color};
+      profile.authorizationGeneration = snapshot.identity.generation;
+      _snapshotToken = token;
+      _snapshotApi = api;
+      _snapshotGeneration = snapshot.identity.generation;
+      _highestSnapshotGeneration = snapshot.identity.generation;
       return true;
     } catch (err) {
       if (!quiet) {
         pullError.value =
-            '${translate('pull_ab_failed_tip')}: ${translate(err.toString())}';
+            '${translate('pull_ab_failed_tip')}: ${err is AddressBookSnapshotException ? err : 'invalid_snapshot'}';
       }
     } finally {
-      // An expired or revoked token has to sign the user out however the pull
-      // was started. Gating this on pullError skipped it for background pulls,
-      // which are the ones that run after every edit - so the session stayed
-      // half-alive, showing an empty book with no way back to the login form.
-      if (statusCode == 401) {
+      cancellation.cancel();
+      if (identical(_readCancellation, cancellation)) _readCancellation = null;
+      if (statusCode == 401 &&
+          epoch == _snapshotEpoch &&
+          token == bind.mainGetLocalOption(key: 'access_token')) {
         gFFI.userModel.reset(resetOther: true);
       }
     }
     return false;
   }
 
-  // #region Peers
+  // #region Content writes
+  Future<bool> _write(List<AddressBookMutationInput> inputs) async {
+    final outcome = await gFFI.abModel._mutate(this, inputs);
+    return outcome?.fullyConfirmed == true;
+  }
+
   @override
   Future<String?> addPeers(List<Map<String, dynamic>> ps) async {
-    try {
-      final api =
-          "${await bind.mainGetApiServer()}/api/ab/peer/add/${profile.guid}";
-      var headers = getHttpHeaders();
-      headers['Content-Type'] = "application/json";
-      for (var p in ps) {
-        if (peers.firstWhereOrNull((e) => e.id == p['id']) != null) {
-          continue;
-        }
-        if (isFull()) {
-          return translate("exceed_max_devices");
-        }
-        if (personal) {
-          removePassword(p);
-        } else {
-          removeHash(p);
-        }
-        String body = jsonEncode(p);
-        final resp = await http.post(
-          Uri.parse(api),
-          headers: headers,
-          body: body,
-        );
-        final errMsg = _jsonDecodeActionResp(resp);
-        if (errMsg.isNotEmpty) {
-          return errMsg;
-        }
+    final existing = peers.map((peer) => peer.id).toSet();
+    final selection = <Map<String, dynamic>>[];
+    for (final original in ps) {
+      if (!existing.add(original['id']?.toString() ?? '')) continue;
+      final peer = Map<String, dynamic>.of(original);
+      if (personal) {
+        removePassword(peer);
+      } else {
+        removeHash(peer);
       }
-    } catch (err) {
-      return err.toString();
+      selection.add(peer);
     }
-    return null;
+    if (selection.isEmpty) return null;
+    final limit = gFFI.abModel._maxPeerOneAb;
+    if (limit > 0 && peers.length + selection.length > limit) {
+      return translate('exceed_max_devices');
+    }
+    final success = await _write([
+      for (final peer in selection)
+        AddressBookMutationInput(AddressBookMutationKind.peerAdd, peer),
+    ]);
+    return success
+        ? null
+        : (gFFI.abModel.mutationStatus.value.isNotEmpty
+              ? gFFI.abModel.mutationStatus.value
+              : 'Address book writes are disabled. Refresh or resolve the pending operation.');
   }
 
   @override
   Future<bool> changeTagForPeers(List<String> ids, List<dynamic> tags) async {
-    try {
-      final api =
-          "${await bind.mainGetApiServer()}/api/ab/peer/update/${profile.guid}";
-      var headers = getHttpHeaders();
-      headers['Content-Type'] = "application/json";
-      var ret = true;
-      for (var id in ids) {
-        final body = jsonEncode({"id": id, "tags": tags});
-        final resp = await http.put(
-          Uri.parse(api),
-          headers: headers,
-          body: body,
-        );
-        final errMsg = _jsonDecodeActionResp(resp);
-        if (errMsg.isNotEmpty) {
-          BotToast.showText(contentColor: Colors.red, text: errMsg);
-          ret = false;
-          break;
-        }
-      }
-      return ret;
-    } catch (err) {
-      debugPrint('changeTagForPeers err: ${err.toString()}');
-      return false;
-    }
+    if (ids.isEmpty) return true;
+    return _write([
+      for (final id in ids.toSet())
+        AddressBookMutationInput(AddressBookMutationKind.peerUpdate, {
+          'id': id,
+          'tags': tags,
+        }),
+    ]);
   }
 
   @override
-  Future<bool> changeAlias({required String id, required String alias}) async {
-    try {
-      final api =
-          "${await bind.mainGetApiServer()}/api/ab/peer/update/${profile.guid}";
-      var headers = getHttpHeaders();
-      headers['Content-Type'] = "application/json";
-      final body = jsonEncode({"id": id, "alias": alias});
-      final resp = await http.put(Uri.parse(api), headers: headers, body: body);
-      final errMsg = _jsonDecodeActionResp(resp);
-      if (errMsg.isNotEmpty) {
-        BotToast.showText(contentColor: Colors.red, text: errMsg);
-        return false;
-      }
-      return true;
-    } catch (err) {
-      debugPrint('changeAlias err: ${err.toString()}');
-      return false;
-    }
-  }
+  Future<bool> changeAlias({required String id, required String alias}) =>
+      _write([
+        AddressBookMutationInput(AddressBookMutationKind.peerUpdate, {
+          'id': id,
+          'alias': alias,
+        }),
+      ]);
 
   @override
-  Future<bool> changeNote({required String id, required String note}) async {
-    try {
-      final api =
-          "${await bind.mainGetApiServer()}/api/ab/peer/update/${profile.guid}";
-      var headers = getHttpHeaders();
-      headers['Content-Type'] = "application/json";
-      final body = jsonEncode({"id": id, "note": note});
-      final resp = await http.put(Uri.parse(api), headers: headers, body: body);
-      final errMsg = _jsonDecodeActionResp(resp);
-      if (errMsg.isNotEmpty) {
-        BotToast.showText(contentColor: Colors.red, text: errMsg);
-        return false;
-      }
-      return true;
-    } catch (err) {
-      debugPrint('changeNote err: ${err.toString()}');
-      return false;
-    }
-  }
-
-  Future<bool> _setPassword(Object bodyContent) async {
-    try {
-      final api =
-          "${await bind.mainGetApiServer()}/api/ab/peer/update/${profile.guid}";
-      var headers = getHttpHeaders();
-      headers['Content-Type'] = "application/json";
-      final body = jsonEncode(bodyContent);
-      final resp = await http.put(Uri.parse(api), headers: headers, body: body);
-      final errMsg = _jsonDecodeActionResp(resp);
-      if (errMsg.isNotEmpty) {
-        BotToast.showText(contentColor: Colors.red, text: errMsg);
-        return false;
-      }
-      return true;
-    } catch (err) {
-      debugPrint('changeSharedPassword err: ${err.toString()}');
-      return false;
-    }
-  }
+  Future<bool> changeNote({required String id, required String note}) =>
+      _write([
+        AddressBookMutationInput(AddressBookMutationKind.peerUpdate, {
+          'id': id,
+          'note': note,
+        }),
+      ]);
 
   @override
   Future<bool> changePersonalHashPassword(String id, String hash) async {
     if (!personal) return false;
-    if (!peers.any((e) => e.id == id)) return true;
-    return await _setPassword({"id": id, "hash": hash});
+    if (!peers.any((peer) => peer.id == id)) return true;
+    return _write([
+      AddressBookMutationInput(AddressBookMutationKind.peerUpdate, {
+        'id': id,
+        'hash': hash,
+      }),
+    ]);
   }
 
   @override
   Future<bool> changeSharedPassword(String id, String password) async {
     if (personal) return false;
-    return await _setPassword({"id": id, "password": password});
+    return _write([
+      AddressBookMutationInput(AddressBookMutationKind.peerUpdate, {
+        'id': id,
+        'password': password,
+      }),
+    ]);
   }
 
   @override
   Future<void> syncFromRecent(List<Peer> recents) async {
-    bool uiUpdate = false;
-    bool saveCache = false;
-    final api =
-        "${await bind.mainGetApiServer()}/api/ab/peer/update/${profile.guid}";
-    var headers = getHttpHeaders();
-    headers['Content-Type'] = "application/json";
-
-    Future<bool> trySyncOnePeer(Peer p, Peer r) async {
-      var map = Map<String, String>.fromEntries([]);
-      if (p.sameServer != true &&
-          r.username.isNotEmpty &&
-          p.username != r.username) {
-        p.username = r.username;
-        map['username'] = r.username;
+    final byId = {for (final recent in recents) recent.id: recent};
+    final inputs = <AddressBookMutationInput>[];
+    for (final peer in peers) {
+      final recent = byId[peer.id];
+      if (recent == null) continue;
+      final patch = peer.addressBookRecentPatch(recent, personal: personal);
+      if (patch != null) {
+        inputs.add(
+          AddressBookMutationInput(AddressBookMutationKind.peerUpdate, patch),
+        );
       }
-      if (p.sameServer != true &&
-          r.hostname.isNotEmpty &&
-          p.hostname != r.hostname) {
-        p.hostname = r.hostname;
-        map['hostname'] = r.hostname;
-      }
-      if (p.sameServer != true &&
-          r.platform.isNotEmpty &&
-          p.platform != r.platform) {
-        p.platform = r.platform;
-        map['platform'] = r.platform;
-      }
-      if (personal && r.hash.isNotEmpty && p.hash != r.hash) {
-        p.hash = r.hash;
-        map['hash'] = r.hash;
-        saveCache = true;
-      }
-      if (map.isEmpty) {
-        // no need to sync
-        return false;
-      }
-      map['id'] = p.id;
-      final body = jsonEncode(map);
-      final resp = await http.put(Uri.parse(api), headers: headers, body: body);
-      final errMsg = _jsonDecodeActionResp(resp);
-      if (errMsg.isNotEmpty) {
-        debugPrint('syncOnePeer errMsg: $errMsg');
-        return false;
-      }
-      uiUpdate = true;
-      return true;
     }
-
-    try {
-      // Not add new peers because IDs that are not on the server can't be synced, then sync will happen every startup.
-      for (var p in peers) {
-        Peer? r = recents.firstWhereOrNull((e) => e.id == p.id);
-        if (r != null) {
-          await trySyncOnePeer(p, r);
-        }
-      }
-      // Pull cannot be used for sync to avoid cyclic sync.
-      if (uiUpdate && gFFI.abModel.currentName.value == profile.name) {
-        peers.refresh();
-      }
-      if (saveCache) {
-        gFFI.abModel._saveCache();
-      }
-    } catch (err) {
-      debugPrint('syncFromRecent err: ${err.toString()}');
-    }
+    if (inputs.isNotEmpty) await _write(inputs);
+    // A failed/conflicting intent is not silently re-created on a new version.
+    // The recent-ID source is consumed once; only new events/user action retry.
   }
 
   @override
   Future<bool> deletePeers(List<String> ids) async {
-    try {
-      final api =
-          "${await bind.mainGetApiServer()}/api/ab/peer/${profile.guid}";
-      var headers = getHttpHeaders();
-      headers['Content-Type'] = "application/json";
-      final body = jsonEncode(ids);
-      final resp = await http.delete(
-        Uri.parse(api),
-        headers: headers,
-        body: body,
-      );
-      final errMsg = _jsonDecodeActionResp(resp);
-      if (errMsg.isNotEmpty) {
-        BotToast.showText(contentColor: Colors.red, text: errMsg);
-        return false;
-      }
-      return true;
-    } catch (err) {
-      debugPrint('deletePeers err: ${err.toString()}');
-      return false;
-    }
+    if (ids.isEmpty) return true;
+    return _write([
+      AddressBookMutationInput(
+        AddressBookMutationKind.peerDelete,
+        ids.toSet().toList(),
+      ),
+    ]);
   }
-  // #endregion
 
-  // #region Tags
   @override
   Future<bool> addTags(
     List<String> tagList,
     Map<String, int> tagColorMap,
   ) async {
-    try {
-      final api =
-          "${await bind.mainGetApiServer()}/api/ab/tag/add/${profile.guid}";
-      var headers = getHttpHeaders();
-      headers['Content-Type'] = "application/json";
-      for (var t in tagList) {
-        final body = jsonEncode({
-          "name": t,
-          "color":
-              tagColorMap[t] ??
-              str2color2(t, existing: tagColors.values.toList()).value,
-        });
-        final resp = await http.post(
-          Uri.parse(api),
-          headers: headers,
-          body: body,
-        );
-        final errMsg = _jsonDecodeActionResp(resp);
-        if (errMsg.isNotEmpty) {
-          BotToast.showText(contentColor: Colors.red, text: errMsg);
-          return false;
-        }
-      }
-      return true;
-    } catch (err) {
-      debugPrint('addTags err: ${err.toString()}');
-      return false;
-    }
+    final selection = tagList
+        .toSet()
+        .where((tag) => !tags.contains(tag))
+        .toList();
+    if (selection.isEmpty) return true;
+    return _write([
+      for (final tag in selection)
+        AddressBookMutationInput(AddressBookMutationKind.tagAdd, {
+          'name': tag,
+          'color':
+              tagColorMap[tag] ??
+              str2color2(tag, existing: tagColors.values.toList()).toARGB32(),
+        }),
+    ]);
   }
 
   @override
   Future<bool> renameTag(String oldTag, String newTag) async {
-    if (tags.contains(newTag)) {
-      BotToast.showText(
-        contentColor: Colors.red,
-        text: 'Tag $newTag already exists',
-      );
-      return false;
-    }
-    try {
-      final api =
-          "${await bind.mainGetApiServer()}/api/ab/tag/rename/${profile.guid}";
-      var headers = getHttpHeaders();
-      headers['Content-Type'] = "application/json";
-      final body = jsonEncode({"old": oldTag, "new": newTag});
-      final resp = await http.put(Uri.parse(api), headers: headers, body: body);
-      final errMsg = _jsonDecodeActionResp(resp);
-      if (errMsg.isNotEmpty) {
-        BotToast.showText(contentColor: Colors.red, text: errMsg);
-        return false;
-      }
-      return true;
-    } catch (err) {
-      debugPrint('renameTag err: ${err.toString()}');
-      return false;
-    }
+    if (tags.contains(newTag)) return false;
+    return _write([
+      AddressBookMutationInput(AddressBookMutationKind.tagRename, {
+        'old': oldTag,
+        'new': newTag,
+      }),
+    ]);
   }
 
   @override
-  Future<bool> setTagColor(String tag, Color color) async {
-    try {
-      final api =
-          "${await bind.mainGetApiServer()}/api/ab/tag/update/${profile.guid}";
-      var headers = getHttpHeaders();
-      headers['Content-Type'] = "application/json";
-      final body = jsonEncode({"name": tag, "color": color.value});
-      final resp = await http.put(Uri.parse(api), headers: headers, body: body);
-      final errMsg = _jsonDecodeActionResp(resp);
-      if (errMsg.isNotEmpty) {
-        BotToast.showText(contentColor: Colors.red, text: errMsg);
-        return false;
-      }
-      return true;
-    } catch (err) {
-      debugPrint('setTagColor err: ${err.toString()}');
-      return false;
-    }
-  }
+  Future<bool> setTagColor(String tag, Color color) => _write([
+    AddressBookMutationInput(AddressBookMutationKind.tagUpdate, {
+      'name': tag,
+      'color': color.toARGB32(),
+    }),
+  ]);
 
   @override
-  Future<bool> deleteTag(String tag) async {
-    try {
-      final api = "${await bind.mainGetApiServer()}/api/ab/tag/${profile.guid}";
-      var headers = getHttpHeaders();
-      headers['Content-Type'] = "application/json";
-      final body = jsonEncode([tag]);
-      final resp = await http.delete(
-        Uri.parse(api),
-        headers: headers,
-        body: body,
-      );
-      final errMsg = _jsonDecodeActionResp(resp);
-      if (errMsg.isNotEmpty) {
-        BotToast.showText(contentColor: Colors.red, text: errMsg);
-        return false;
-      }
-      return true;
-    } catch (err) {
-      debugPrint('deleteTag err: ${err.toString()}');
-      return false;
-    }
-  }
-
+  Future<bool> deleteTag(String tag) => _write([
+    AddressBookMutationInput(AddressBookMutationKind.tagDelete, [tag]),
+  ]);
   // #endregion
 }
 
@@ -1635,45 +1733,6 @@ Map<String, dynamic> _jsonDecodeRespMap(String body, int statusCode) {
     }
     throw err;
   }
-}
-
-List<dynamic> _jsonDecodeRespList(String body, int statusCode) {
-  try {
-    List<dynamic> json = jsonDecode(body);
-    return json;
-  } catch (e) {
-    final err = body.isNotEmpty && body.length < 128 ? body : e.toString();
-    if (statusCode != 200) {
-      throw 'HTTP $statusCode, $err';
-    }
-    throw err;
-  }
-}
-
-String _jsonDecodeActionResp(http.Response resp) {
-  var errMsg = '';
-  if (resp.statusCode == 200 && resp.body.isEmpty) {
-    // ok
-  } else {
-    try {
-      errMsg = jsonDecode(resp.body)['error'].toString();
-    } catch (_) {}
-    if (errMsg.isEmpty) {
-      if (resp.statusCode != 200) {
-        errMsg = 'HTTP ${resp.statusCode}';
-      }
-      if (resp.body.isNotEmpty) {
-        if (errMsg.isNotEmpty) {
-          errMsg += ', ';
-        }
-        errMsg += resp.body;
-      }
-      if (errMsg.isEmpty) {
-        errMsg = "unknown error";
-      }
-    }
-  }
-  return errMsg;
 }
 
 // https://github.com/seanmonstar/reqwest/issues/838

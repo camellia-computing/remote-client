@@ -65,11 +65,14 @@ pub mod input_service {
     pub const NAME_WINDOW_FOCUS: &'static str = "";
 }
 
+mod audit_outbox;
 mod connection;
 pub mod display_service;
 mod login_failure_check;
 #[cfg(windows)]
 pub mod portable_service;
+#[cfg(any(windows, test))]
+mod portable_service_sync;
 mod service;
 mod video_qos;
 pub mod video_service;
@@ -238,11 +241,14 @@ pub async fn create_tcp_connection(
     if peer_key.asymmetric_value.len() != box_::PUBLICKEYBYTES {
         bail!("Handshake failed: invalid peer session-key length");
     }
-    stream.set_key(tcp::Encrypt::decode(
-        &peer_key.symmetric_value,
-        &peer_key.asymmetric_value,
-        &our_sk_b,
-    )?);
+    stream.set_key(
+        tcp::Encrypt::decode(
+            &peer_key.symmetric_value,
+            &peer_key.asymmetric_value,
+            &our_sk_b,
+        )?,
+        tcp::CipherRole::Responder,
+    );
     if !stream.is_secured() {
         bail!("Handshake failed: encrypted transport was not activated");
     }
@@ -554,6 +560,7 @@ pub fn check_zombie() {
 #[cfg(any(target_os = "android", target_os = "ios"))]
 #[tokio::main]
 pub async fn start_server(_is_server: bool) {
+    Connection::spawn_pending_audit_replay();
     crate::RendezvousMediator::start_all().await;
 }
 
@@ -599,6 +606,7 @@ pub async fn start_server(is_server: bool, no_server: bool) {
         }
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         wait_initial_config_sync().await;
+        Connection::spawn_pending_audit_replay();
         #[cfg(target_os = "windows")]
         crate::platform::try_kill_broker();
         #[cfg(feature = "hwcodec")]

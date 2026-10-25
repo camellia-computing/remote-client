@@ -20,6 +20,7 @@ import 'package:flex_color_picker/flex_color_picker.dart';
 import '../../common.dart';
 import 'dialog.dart';
 import 'login.dart';
+import 'address_book_operation_panel.dart';
 
 final hideAbTagsPanel = false.obs;
 
@@ -63,6 +64,21 @@ class _AddressBookState extends State<AddressBook> {
     } else {
       return Column(
         children: [
+          AddressBookOperationPanel(
+            ready: gFFI.abModel.mutationJournalReady.value,
+            busy: gFFI.abModel.mutationBusy.value,
+            storageError: gFFI.abModel.mutationJournalError.value,
+            status: gFFI.abModel.mutationStatus.value,
+            pending: gFFI.abModel.pendingMutations.toList(),
+            onRefresh: gFFI.abModel.refreshMutationJournal,
+            onRecover: gFFI.abModel.recoverMutation,
+            onReconcile: (operation, confirmedId) =>
+                gFFI.abModel.reconcileMutation(
+                  operation,
+                  confirmedId: confirmedId,
+                  verifiedOriginalState: true,
+                ),
+          ),
           if (gFFI.userModel.accountState.value == UserAccountState.offline)
             Container(
               width: double.infinity,

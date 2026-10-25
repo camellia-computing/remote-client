@@ -242,6 +242,21 @@ impl<T: Subscriber + From<ConnInner>> ServiceTmpl<T> {
         conn_ids
     }
 
+    pub fn send_video_frame_with<F>(&self, msg: Message, before_send: F)
+    where
+        F: FnOnce(HashSet<i32>),
+    {
+        let mut lock = self.0.write().unwrap();
+        let conn_ids = lock.subscribes.keys().copied().collect();
+        // Video acknowledgement state must be visible before the first subscriber can
+        // dequeue the frame. The callback must not re-enter this service.
+        before_send(conn_ids);
+        let msg = Arc::new(msg);
+        for subscriber in lock.subscribes.values_mut() {
+            subscriber.send(msg.clone());
+        }
+    }
+
     pub fn send_without(&self, msg: Message, sub: i32) {
         let mut lock = self.0.write().unwrap();
         let msg = Arc::new(msg);

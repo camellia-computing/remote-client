@@ -670,40 +670,63 @@ class CamelliaSection extends StatelessWidget {
             if (title != null || description != null || trailing != null)
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 14, 12, 12),
-                child: Row(
-                  children: [
-                    if (accent != null)
-                      Padding(
-                        padding: const EdgeInsets.only(right: 10),
-                        child: Container(
-                          width: 3.5,
-                          height: 18,
-                          decoration: BoxDecoration(
-                            color: accent,
-                            borderRadius: BorderRadius.circular(
-                              CamelliaRadius.status,
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    // A Row measures non-flex children with an unbounded main
+                    // axis. Bound the shared trailing slot before layouts such
+                    // as OnlineStatusWidget introduce their own Flexible rows.
+                    final availableWidth = constraints.hasBoundedWidth
+                        ? constraints.maxWidth
+                        : MediaQuery.sizeOf(context).width;
+                    final trailingMaxWidth =
+                        availableWidth.isFinite && availableWidth > 0
+                        ? availableWidth / 2
+                        : 0.0;
+                    return Row(
+                      children: [
+                        if (accent != null)
+                          Padding(
+                            padding: const EdgeInsets.only(right: 10),
+                            child: Container(
+                              width: 3.5,
+                              height: 18,
+                              decoration: BoxDecoration(
+                                color: accent,
+                                borderRadius: BorderRadius.circular(
+                                  CamelliaRadius.status,
+                                ),
+                              ),
                             ),
                           ),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              if (title != null)
+                                Text(
+                                  title!,
+                                  style: theme.textTheme.titleMedium,
+                                ),
+                              if (description != null) ...[
+                                const SizedBox(height: 2),
+                                Text(
+                                  description!,
+                                  style: theme.textTheme.bodySmall,
+                                ),
+                              ],
+                            ],
+                          ),
                         ),
-                      ),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          if (title != null)
-                            Text(title!, style: theme.textTheme.titleMedium),
-                          if (description != null) ...[
-                            const SizedBox(height: 2),
-                            Text(
-                              description!,
-                              style: theme.textTheme.bodySmall,
+                        if (trailing != null)
+                          ConstrainedBox(
+                            constraints: BoxConstraints(
+                              maxWidth: trailingMaxWidth,
                             ),
-                          ],
-                        ],
-                      ),
-                    ),
-                    if (trailing != null) trailing!,
-                  ],
+                            child: trailing!,
+                          ),
+                      ],
+                    );
+                  },
                 ),
               ),
             Padding(padding: padding, child: child),

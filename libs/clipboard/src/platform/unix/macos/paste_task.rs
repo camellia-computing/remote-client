@@ -1,13 +1,22 @@
+#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
+
 use crate::{
-    platform::unix::{FileDescription, FileType, BLOCK_SIZE},
-    send_data, ClipboardFile, CliprdrError, ProgressPercent,
+    platform::unix::{
+        paste_state::{
+            checked_add_within, checked_total_size, progress_fraction, write_all_response,
+            OutstandingPasteRequest, PasteResponseRetries,
+        },
+        paste_storage::{normalize_file_descriptions, PasteStorage, PendingPasteFile},
+        FileDescription, FileType, BLOCK_SIZE,
+    },
+    send_data, validate_file_contents_request, ClipboardFile, CliprdrError, ProgressPercent,
 };
-use camellia_remote_protocol::{allow_err, log, tokio::time::Instant};
+use camellia_remote_protocol::{log, tokio::time::Instant};
+#[cfg(target_os = "macos")]
+use std::os::macos::fs::FileTimesExt;
 use std::{
     cmp::min,
     fs::{File, FileTimes},
-    io::{BufWriter, Write},
-    os::macos::fs::FileTimesExt,
     path::{Path, PathBuf},
     sync::{
         mpsc::{Receiver, RecvTimeoutError},
@@ -16,10 +25,11 @@ use std::{
     thread,
     time::{Duration, SystemTime},
 };
+#[cfg(target_os = "macos")]
+use xattr::FileExt as XattrFileExt;
 
 const RECV_RETRY_TIMES: usize = 3;
 
-const DOWNLOAD_EXTENSION: &str = "rddownload";
 const RECEIVE_WAIT_TIMEOUT: Duration = Duration::from_millis(5_000);
 
 // https://stackoverflow.com/a/15112784/1926020
@@ -27,10 +37,46 @@ const RECEIVE_WAIT_TIMEOUT: Duration = Duration::from_millis(5_000);
 const TIMESTAMP_FOR_FILE_PROGRESS_COMPLETED: u64 = 443779200;
 const ATTR_PROGRESS_FRACTION_COMPLETED: &str = "com.apple.progress.fractionCompleted";
 
+fn with_created_time(times: FileTimes, creation_time: SystemTime) -> FileTimes {
+    #[cfg(target_os = "macos")]
+    {
+        times.set_created(creation_time)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = creation_time;
+        times
+    }
+}
+
+fn set_progress_xattr(file: &File, value: &[u8]) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        file.set_xattr(ATTR_PROGRESS_FRACTION_COMPLETED, value)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (file, value);
+        Ok(())
+    }
+}
+
+fn remove_progress_xattr(file: &File) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        file.remove_xattr(ATTR_PROGRESS_FRACTION_COMPLETED)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = file;
+        Ok(())
+    }
+}
+
 pub struct FileContentsResponse {
     pub conn_id: i32,
-    pub msg_flags: i32,
-    pub stream_id: i32,
+    pub msg_flags: u32,
+    pub stream_id: u32,
     pub requested_data: Vec<u8>,
 }
 
@@ -47,14 +93,17 @@ struct PasteTaskProgress {
     download_file_size: u64,
     download_file_path: String,
     download_file_current_size: u64,
-    file_handle: Option<BufWriter<File>>,
+    request_stream_id: u32,
+    outstanding_request: Option<OutstandingPasteRequest>,
+    response_retries: PasteResponseRetries,
+    pending_file: Option<PendingPasteFile>,
     error: Option<CliprdrError>,
     is_canceled: bool,
 }
 
 struct PasteTaskHandle {
     progress: PasteTaskProgress,
-    target_dir: PathBuf,
+    storage: PasteStorage,
     files: Vec<FileDescription>,
 }
 
@@ -88,7 +137,11 @@ impl PasteTask {
         }
     }
 
-    pub fn start(&mut self, target_dir: PathBuf, files: Vec<FileDescription>) {
+    pub fn start(
+        &mut self,
+        target_dir: PathBuf,
+        mut files: Vec<FileDescription>,
+    ) -> Result<(), CliprdrError> {
         let mut task_lock = self.handle.lock().unwrap();
         if task_lock
             .as_ref()
@@ -96,9 +149,11 @@ impl PasteTask {
             .unwrap_or(false)
         {
             log::error!("Previous paste task is not finished, ignore new request.");
-            return;
+            return Ok(());
         }
-        let total_size = files.iter().map(|f| f.size).sum();
+        normalize_file_descriptions(&mut files)?;
+        let storage = PasteStorage::open(&target_dir)?;
+        let total_size = checked_total_size(&files)?;
         let mut task_handle = PasteTaskHandle {
             progress: PasteTaskProgress {
                 list_index: -1,
@@ -110,14 +165,19 @@ impl PasteTask {
                 download_file_size: 0,
                 download_file_path: "".to_owned(),
                 download_file_current_size: 0,
-                file_handle: None,
+                // Keep a new paste task away from the deterministic stream-id prefix of a
+                // previous task while retaining at least half the u32 space before exhaustion.
+                request_stream_id: rand::random::<u32>() & (u32::MAX >> 1),
+                outstanding_request: None,
+                response_retries: PasteResponseRetries::default(),
+                pending_file: None,
                 error: None,
                 is_canceled: false,
             },
-            target_dir,
+            storage,
             files,
         };
-        task_handle.update_next(0).ok();
+        task_handle.update_next(0)?;
         if task_handle.is_finished() {
             task_handle.on_finished();
         } else {
@@ -127,6 +187,7 @@ impl PasteTask {
             }
         }
         *task_lock = Some(task_handle);
+        Ok(())
     }
 
     pub fn cancel(&self) {
@@ -143,7 +204,6 @@ impl PasteTask {
         rx_file_contents: Receiver<FileContentsResponse>,
     ) -> thread::JoinHandle<()> {
         thread::spawn(move || {
-            let mut retry_count = 0;
             loop {
                 if *exit.lock().unwrap() {
                     break;
@@ -159,13 +219,27 @@ impl PasteTask {
                             continue;
                         }
 
-                        if file_contents.stream_id != task_handle.progress.list_index {
-                            // ignore invalid stream id
+                        let matches_request = task_handle
+                            .progress
+                            .outstanding_request
+                            .as_ref()
+                            .is_some_and(|request| {
+                                request.matches_response(
+                                    file_contents.stream_id,
+                                    file_contents.conn_id,
+                                )
+                            });
+                        if !matches_request {
+                            // Ignore stale, duplicate, or cross-connection responses.
                             continue;
                         } else if file_contents.msg_flags != 0x01 {
-                            retry_count += 1;
-                            if retry_count > RECV_RETRY_TIMES {
-                                task_handle.progress.error = Some(CliprdrError::InvalidRequest {
+                            task_handle.progress.outstanding_request = None;
+                            if task_handle
+                                .progress
+                                .response_retries
+                                .record_failure(RECV_RETRY_TIMES)
+                            {
+                                task_handle.on_error(CliprdrError::InvalidRequest {
                                     description: format!(
                                         "Failed to read file contents, stream id: {}, msg_flags: {}",
                                         file_contents.stream_id,
@@ -174,29 +248,7 @@ impl PasteTask {
                                 });
                             }
                         } else {
-                            let resp_list_index = file_contents.stream_id;
-                            let Some(file) = &task_handle.files.get(resp_list_index as usize)
-                            else {
-                                // unreachable
-                                // Because `task_handle.progress.list_index >= task_handle.files.len()` should always be false
-                                log::warn!(
-                                    "Invalid response list index: {}, file length: {}",
-                                    resp_list_index,
-                                    task_handle.files.len()
-                                );
-                                continue;
-                            };
-                            if file.conn_id != file_contents.conn_id {
-                                // unreachable
-                                // We still add log here to make sure we can see the error message when it happens.
-                                log::error!(
-                                    "Invalid response conn id: {}, expected: {}",
-                                    file_contents.conn_id,
-                                    file.conn_id
-                                );
-                                continue;
-                            }
-
+                            task_handle.progress.response_retries.record_success();
                             if let Err(e) = task_handle.handle_file_contents_response(file_contents)
                             {
                                 log::error!("Failed to handle file contents response: {}", &e);
@@ -210,7 +262,6 @@ impl PasteTask {
                                 task_handle.on_error(e);
                             }
                         } else {
-                            retry_count = 0;
                             task_handle.on_finished();
                         }
                     }
@@ -218,7 +269,6 @@ impl PasteTask {
                         let mut task_lock = handle.lock().unwrap();
                         if let Some(task_handle) = task_lock.as_mut() {
                             if task_handle.check_receive_timemout() {
-                                retry_count = 0;
                                 task_handle.on_finished();
                             }
                         }
@@ -254,12 +304,23 @@ impl PasteTaskHandle {
         if self.is_finished() {
             return Ok(());
         }
-        self.progress.current_size += size;
+        self.progress.current_size = checked_add_within(
+            self.progress.current_size,
+            size,
+            self.progress.total_size,
+            "clipboard paste total progress",
+        )?;
 
         let is_start = self.progress.list_index == -1;
-        if is_start || (self.progress.offset + size) >= self.progress.download_file_size {
+        let next_offset = checked_add_within(
+            self.progress.offset,
+            size,
+            self.progress.download_file_size,
+            "clipboard paste file offset",
+        )?;
+        if is_start || next_offset >= self.progress.download_file_size {
             if !is_start {
-                self.on_done();
+                self.on_done()?;
             }
             for i in (self.progress.list_index + 1)..self.files.len() as i32 {
                 let Some(file_desc) = self.files.get(i as usize) else {
@@ -270,14 +331,8 @@ impl PasteTaskHandle {
                 match file_desc.kind {
                     FileType::File => {
                         if file_desc.size == 0 {
-                            if let Some(new_file_path) =
-                                Self::get_new_filename(&self.target_dir, file_desc)
-                            {
-                                if let Ok(f) = std::fs::File::create(&new_file_path) {
-                                    f.set_len(0).ok();
-                                    Self::set_file_metadata(&f, file_desc);
-                                }
-                            };
+                            let pending = self.storage.begin_file(&file_desc.name, 0)?;
+                            Self::commit_file(pending, file_desc)?;
                         } else {
                             self.progress.list_index = i;
                             self.progress.offset = 0;
@@ -286,22 +341,29 @@ impl PasteTaskHandle {
                         }
                     }
                     FileType::Directory => {
-                        let path = self.target_dir.join(&file_desc.name);
-                        if !path.exists() {
-                            std::fs::create_dir_all(path).ok();
-                        }
+                        self.storage.ensure_directory(&file_desc.name)?;
                     }
                     FileType::Symlink => {
-                        // to-do: handle symlink
+                        return Err(CliprdrError::InvalidRequest {
+                            description: format!(
+                                "symbolic-link clipboard descriptor is not supported: {}",
+                                file_desc.name.display()
+                            ),
+                        });
                     }
                 }
             }
         } else {
-            self.progress.offset += size;
-            self.progress.download_file_current_size += size;
+            self.progress.offset = next_offset;
+            self.progress.download_file_current_size = checked_add_within(
+                self.progress.download_file_current_size,
+                size,
+                self.progress.download_file_size,
+                "clipboard paste file progress",
+            )?;
             self.update_progress_completed(None);
         }
-        if self.progress.file_handle.is_none() {
+        if self.progress.pending_file.is_none() {
             self.progress.list_index = self.files.len() as i32;
             self.progress.offset = 0;
             self.progress.download_file_size = 0;
@@ -311,18 +373,20 @@ impl PasteTaskHandle {
     }
 
     fn start_progress_completed(&self) {
-        if let Some(file) = self.progress.file_handle.as_ref() {
-            let creation_time =
-                SystemTime::UNIX_EPOCH + Duration::from_secs(TIMESTAMP_FOR_FILE_PROGRESS_COMPLETED);
-            file.get_ref()
-                .set_times(FileTimes::new().set_created(creation_time))
-                .ok();
-            xattr::set(
-                &self.progress.download_file_path,
-                ATTR_PROGRESS_FRACTION_COMPLETED,
-                "0.0".as_bytes(),
-            )
-            .ok();
+        let Some(pending) = self.progress.pending_file.as_ref() else {
+            return;
+        };
+        let Ok(file) = pending.file() else {
+            log::warn!("Clipboard staging file disappeared before progress setup");
+            return;
+        };
+        let creation_time =
+            SystemTime::UNIX_EPOCH + Duration::from_secs(TIMESTAMP_FOR_FILE_PROGRESS_COMPLETED);
+        if let Err(err) = file.set_times(with_created_time(FileTimes::new(), creation_time)) {
+            log::debug!("Failed to set clipboard paste progress timestamp: {err}");
+        }
+        if let Err(err) = set_progress_xattr(file, "0.0".as_bytes()) {
+            log::debug!("Failed to set clipboard paste progress xattr: {err}");
         }
     }
 
@@ -336,18 +400,14 @@ impl PasteTaskHandle {
                 1.0
             }
         });
-        xattr::set(
-            &self.progress.download_file_path,
-            ATTR_PROGRESS_FRACTION_COMPLETED,
-            &fraction_completed.to_string().as_bytes(),
-        )
-        .ok();
-    }
-
-    #[inline]
-    fn remove_progress_completed(path: &str) {
-        if !path.is_empty() {
-            xattr::remove(path, ATTR_PROGRESS_FRACTION_COMPLETED).ok();
+        if let Some(pending) = self.progress.pending_file.as_ref() {
+            let Ok(file) = pending.file() else {
+                log::warn!("Clipboard staging file disappeared during progress update");
+                return;
+            };
+            if let Err(err) = set_progress_xattr(file, fraction_completed.to_string().as_bytes()) {
+                log::debug!("Failed to update clipboard paste progress xattr: {err}");
+            }
         }
     }
 
@@ -362,92 +422,31 @@ impl PasteTaskHandle {
             });
         };
 
-        let original_file_path = self
-            .target_dir
-            .join(&file.name)
+        let pending = self
+            .storage
+            .begin_file(&file.name, BLOCK_SIZE as usize * 2)?;
+        self.progress.download_file_index = self.progress.list_index;
+        self.progress.download_file_size = file.size;
+        self.progress.download_file_path = self
+            .storage
+            .display_path(&file.name)
             .to_string_lossy()
-            .to_string();
-        let Some(download_file_path) = Self::get_first_filename(
-            format!("{}.{}", original_file_path, DOWNLOAD_EXTENSION),
-            file.kind,
-        ) else {
-            return Err(CliprdrError::CommonError {
-                description: format!("Failed to get download file path: {}", original_file_path),
-            });
-        };
-        let Some(download_path_parent) = Path::new(&download_file_path).parent() else {
-            return Err(CliprdrError::CommonError {
-                description: format!(
-                    "Failed to get parent of the download file path: {}",
-                    original_file_path
-                ),
-            });
-        };
-        if !download_path_parent.exists() {
-            if let Err(e) = std::fs::create_dir_all(download_path_parent) {
-                return Err(CliprdrError::FileError {
-                    path: download_path_parent.to_string_lossy().to_string(),
-                    err: e,
-                });
-            }
-        }
-        match std::fs::File::create(&download_file_path) {
-            Ok(handle) => {
-                let writer = BufWriter::with_capacity(BLOCK_SIZE as usize * 2, handle);
-                self.progress.download_file_index = self.progress.list_index;
-                self.progress.download_file_size = file.size;
-                self.progress.download_file_path = download_file_path;
-                self.progress.download_file_current_size = 0;
-                self.progress.file_handle = Some(writer);
-                self.start_progress_completed();
-            }
-            Err(e) => {
-                self.progress.error = Some(CliprdrError::FileError {
-                    path: download_file_path,
-                    err: e,
-                });
-            }
-        };
+            .into_owned();
+        self.progress.download_file_current_size = 0;
+        self.progress.pending_file = Some(pending);
+        self.start_progress_completed();
         Ok(())
     }
 
-    fn get_first_filename(path: String, r#type: FileType) -> Option<String> {
-        let p = Path::new(&path);
-        if !p.exists() {
-            return Some(path);
-        } else {
-            for i in 1..9999999 {
-                let new_path = match r#type {
-                    FileType::File => {
-                        if let Some(ext) = p.extension() {
-                            let new_name = format!(
-                                "{}-{}.{}",
-                                p.file_stem().unwrap_or_default().to_string_lossy(),
-                                i,
-                                ext.to_string_lossy()
-                            );
-                            p.with_file_name(new_name).to_string_lossy().to_string()
-                        } else {
-                            format!("{} ({})", path, i)
-                        }
-                    }
-                    FileType::Directory => format!("{} ({})", path, i),
-                    FileType::Symlink => {
-                        // to-do: handle symlink
-                        return None;
-                    }
-                };
-                if !Path::new(&new_path).exists() {
-                    return Some(new_path);
-                }
-            }
-        }
-        // unreachable
-        None
-    }
-
     fn progress_percent(&self) -> ProgressPercent {
-        let percent = self.progress.current_size as f64 / self.progress.total_size as f64;
+        let completed = !self.progress.is_canceled
+            && self.progress.error.is_none()
+            && self.progress.list_index >= self.files.len() as i32;
+        let percent = progress_fraction(
+            self.progress.current_size,
+            self.progress.total_size,
+            completed,
+        );
         ProgressPercent {
             percent,
             is_canceled: self.progress.is_canceled,
@@ -462,27 +461,28 @@ impl PasteTaskHandle {
     }
 
     fn check_receive_timemout(&mut self) -> bool {
-        if !self.is_finished() {
-            if self.progress.last_sent_time.elapsed() > RECEIVE_WAIT_TIMEOUT {
-                self.progress.error = Some(CliprdrError::InvalidRequest {
-                    description: "Failed to read file contents".to_string(),
-                });
-                return true;
-            }
+        if !self.is_finished() && self.progress.last_sent_time.elapsed() > RECEIVE_WAIT_TIMEOUT {
+            self.progress.error = Some(CliprdrError::InvalidRequest {
+                description: "Failed to read file contents".to_string(),
+            });
+            return true;
         }
         false
     }
 
     fn on_finished(&mut self) {
-        if self.progress.error.is_some() {
+        if self.progress.is_canceled || self.progress.error.is_some() {
             self.on_cancelled();
-        } else {
-            self.on_done();
+            return;
         }
         if self.progress.current_size != self.progress.total_size {
-            self.progress.error = Some(CliprdrError::InvalidRequest {
+            self.on_error(CliprdrError::InvalidRequest {
                 description: "Failed to download all files".to_string(),
             });
+            return;
+        }
+        if let Err(error) = self.on_done() {
+            self.on_error(error);
         }
     }
 
@@ -492,83 +492,66 @@ impl PasteTaskHandle {
     }
 
     fn on_cancelled(&mut self) {
-        self.progress.file_handle = None;
-        std::fs::remove_file(&self.progress.download_file_path).ok();
+        self.progress.outstanding_request = None;
+        self.progress.response_retries.record_success();
+        self.progress.pending_file = None;
     }
 
-    fn on_done(&mut self) {
+    fn on_done(&mut self) -> Result<(), CliprdrError> {
         self.update_progress_completed(Some(1.0));
-        Self::remove_progress_completed(&self.progress.download_file_path);
-
-        let Some(file) = self.progress.file_handle.as_mut() else {
-            return;
+        let Some(pending) = self.progress.pending_file.take() else {
+            return Ok(());
         };
         if self.progress.download_file_index == PasteTask::INVALID_FILE_INDEX {
-            return;
+            return Err(CliprdrError::InvalidRequest {
+                description: "clipboard paste file index is missing during commit".to_owned(),
+            });
         }
 
-        if let Err(e) = file.flush() {
-            log::error!("Failed to flush file: {:?}", e);
-        }
-        self.progress.file_handle = None;
-
-        let Some(file_desc) = self.files.get(self.progress.download_file_index as usize) else {
-            // unreachable
-            log::error!(
-                "Failed to get file description: {}",
-                self.progress.download_file_index
-            );
-            return;
-        };
-        let Some(rename_to_path) = Self::get_new_filename(&self.target_dir, file_desc) else {
-            return;
-        };
-        match std::fs::rename(&self.progress.download_file_path, &rename_to_path) {
-            Ok(_) => Self::set_file_metadata2(&rename_to_path, file_desc),
-            Err(e) => {
-                log::error!("Failed to rename file: {:?}", e);
-            }
-        }
+        let file_desc = self
+            .files
+            .get(self.progress.download_file_index as usize)
+            .ok_or_else(|| CliprdrError::InvalidRequest {
+                description: format!(
+                    "Invalid clipboard paste file index during commit: {}",
+                    self.progress.download_file_index
+                ),
+            })?;
+        Self::commit_file(pending, file_desc)?;
         self.progress.download_file_path = "".to_owned();
         self.progress.download_file_index = PasteTask::INVALID_FILE_INDEX;
+        Ok(())
     }
 
-    fn get_new_filename(target_dir: &PathBuf, file_desc: &FileDescription) -> Option<String> {
-        let mut rename_to_path = target_dir
-            .join(&file_desc.name)
-            .to_string_lossy()
-            .to_string();
-        if Path::new(&rename_to_path).exists() {
-            let Some(new_path) = Self::get_first_filename(rename_to_path.clone(), file_desc.kind)
-            else {
-                log::error!("Failed to get new file name: {}", &rename_to_path);
-                return None;
-            };
-            rename_to_path = new_path;
-        }
-        Some(rename_to_path)
+    fn commit_file(
+        pending: PendingPasteFile,
+        file_desc: &FileDescription,
+    ) -> Result<(), CliprdrError> {
+        pending.commit()?.finish(|file, path| {
+            if let Err(err) = remove_progress_xattr(file) {
+                log::debug!("Failed to remove clipboard paste progress xattr: {err}");
+            }
+            Self::set_file_metadata(file, path, file_desc)
+        })
     }
 
     #[inline]
-    fn set_file_metadata(f: &File, file_desc: &FileDescription) {
-        let times = FileTimes::new()
-            .set_accessed(file_desc.atime)
-            .set_modified(file_desc.last_modified)
-            .set_created(file_desc.creation_time);
-        f.set_times(times).ok();
-    }
-
-    #[inline]
-    fn set_file_metadata2(path: &str, file_desc: &FileDescription) {
-        let times = FileTimes::new()
-            .set_accessed(file_desc.atime)
-            .set_modified(file_desc.last_modified)
-            .set_created(file_desc.creation_time);
-        File::options()
-            .write(true)
-            .open(path)
-            .map(|f| f.set_times(times))
-            .ok();
+    fn set_file_metadata(
+        file: &File,
+        path: &Path,
+        file_desc: &FileDescription,
+    ) -> Result<(), CliprdrError> {
+        let times = with_created_time(
+            FileTimes::new()
+                .set_accessed(file_desc.atime)
+                .set_modified(file_desc.last_modified),
+            file_desc.creation_time,
+        );
+        file.set_times(times)
+            .map_err(|err| CliprdrError::FileError {
+                path: path.to_string_lossy().into_owned(),
+                err,
+            })
     }
 
     fn send_file_contents_request(&mut self) -> Result<(), CliprdrError> {
@@ -576,32 +559,60 @@ impl PasteTaskHandle {
             return Ok(());
         }
 
-        let stream_id = self.progress.list_index;
-        let list_index = self.progress.list_index;
+        let list_index =
+            u32::try_from(self.progress.list_index).map_err(|_| CliprdrError::InvalidRequest {
+                description: format!("Invalid file index: {}", self.progress.list_index),
+            })?;
         let Some(file) = &self.files.get(list_index as usize) else {
             // unreachable
             return Err(CliprdrError::InvalidRequest {
                 description: format!("Invalid file index: {}", list_index),
             });
         };
-        let cb_requested = min(BLOCK_SIZE as u64, file.size - self.progress.offset);
+        let remaining = file.size.checked_sub(self.progress.offset).ok_or_else(|| {
+            CliprdrError::InvalidRequest {
+                description: "clipboard paste offset exceeds file size".to_owned(),
+            }
+        })?;
+        let cb_requested = u32::try_from(min(BLOCK_SIZE as u64, remaining)).map_err(|_| {
+            CliprdrError::InvalidRequest {
+                description: "clipboard paste request length is not representable".to_owned(),
+            }
+        })?;
         let conn_id = file.conn_id;
 
         let (n_position_high, n_position_low) = (
-            (self.progress.offset >> 32) as i32,
-            (self.progress.offset & (u32::MAX as u64)) as i32,
+            (self.progress.offset >> 32) as u32,
+            self.progress.offset as u32,
         );
+        validate_file_contents_request(2, n_position_low, n_position_high, cb_requested)?;
+        let stream_id = self
+            .progress
+            .request_stream_id
+            .checked_add(1)
+            .ok_or_else(|| CliprdrError::InvalidRequest {
+                description: "clipboard paste request stream id exhausted".to_owned(),
+            })?;
         let request = ClipboardFile::FileContentsRequest {
             stream_id,
             list_index,
             dw_flags: 2,
             n_position_low,
             n_position_high,
-            cb_requested: cb_requested as _,
+            cb_requested,
             have_clip_data_id: false,
             clip_data_id: 0,
         };
-        allow_err!(send_data(conn_id, request));
+        send_data(conn_id, request)?;
+        self.progress.request_stream_id = stream_id;
+        self.progress.outstanding_request = Some(OutstandingPasteRequest::new(
+            stream_id,
+            conn_id,
+            self.progress.list_index,
+            self.progress.offset,
+            cb_requested,
+            remaining,
+        ));
         self.progress.last_sent_time = Instant::now();
 
         Ok(())
@@ -611,23 +622,21 @@ impl PasteTaskHandle {
         &mut self,
         file_contents: FileContentsResponse,
     ) -> Result<(), CliprdrError> {
-        if let Some(file) = self.progress.file_handle.as_mut() {
-            let data = file_contents.requested_data.as_slice();
-            let mut write_len = 0;
-            while write_len < data.len() {
-                match file.write(&data[write_len..]) {
-                    Ok(len) => {
-                        write_len += len;
-                    }
-                    Err(e) => {
-                        return Err(CliprdrError::FileError {
-                            path: self.progress.download_file_path.clone(),
-                            err: e,
-                        });
-                    }
-                }
+        let outstanding = self.progress.outstanding_request.take().ok_or_else(|| {
+            CliprdrError::InvalidRequest {
+                description: "clipboard paste response has no outstanding request".to_owned(),
             }
-            self.update_next(write_len as _)?;
+        })?;
+        let write_len = outstanding.validate_response(
+            self.progress.list_index,
+            self.progress.offset,
+            file_contents.requested_data.len(),
+        )?;
+        if let Some(pending) = self.progress.pending_file.as_mut() {
+            let file = pending.writer_mut()?;
+            let data = file_contents.requested_data.as_slice();
+            write_all_response(file, data, &self.progress.download_file_path)?;
+            self.update_next(write_len)?;
         } else {
             return Err(CliprdrError::FileError {
                 path: self.progress.download_file_path.clone(),

@@ -22,7 +22,10 @@ pub struct KcpStream {
 impl KcpStream {
     fn create_framed(stream: stream::KcpStream, local_addr: Option<SocketAddr>) -> Stream {
         Stream::Tcp(FramedStream(
-            tokio_util::codec::Framed::new(DynTcpStream(Box::new(stream)), BytesCodec::new()),
+            tokio_util::codec::Framed::new(
+                DynTcpStream(Box::new(stream)),
+                BytesCodec::for_session(),
+            ),
             local_addr.unwrap_or(config::Config::get_any_listen_addr(true)),
             None,
             0,

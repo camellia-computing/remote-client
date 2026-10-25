@@ -58,7 +58,6 @@ lazy_static::lazy_static! {
         video_conn_count: 0,
     }));
     static ref ASYNC_JOB_STATUS : Arc<Mutex<String>> = Default::default();
-    static ref ASYNC_HTTP_STATUS : Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
     static ref TEMPORARY_PASSWD : Arc<Mutex<String>> = Arc::new(Mutex::new("".to_owned()));
     static ref IS_REMOTE_MODIFY_ENABLED_BY_CONTROL_PERMISSIONS : Arc<Mutex<Option<bool>>> = Arc::new(Mutex::new(None));
 }
@@ -826,34 +825,6 @@ pub fn change_id(id: String) {
 }
 
 #[inline]
-pub fn http_request(url: String, method: String, body: Option<String>, header: String) {
-    // Respond to concurrent requests for resources
-    let current_request = ASYNC_HTTP_STATUS.clone();
-    current_request
-        .lock()
-        .unwrap()
-        .insert(url.clone(), " ".to_owned());
-    std::thread::spawn(move || {
-        let res = match crate::http_request_sync(url.clone(), method, body, header) {
-            Err(err) => {
-                log::error!("{}", err);
-                err.to_string()
-            }
-            Ok(text) => text,
-        };
-        current_request.lock().unwrap().insert(url, res);
-    });
-}
-
-#[inline]
-pub fn get_async_http_status(url: String) -> Option<String> {
-    match ASYNC_HTTP_STATUS.lock().unwrap().get(&url) {
-        None => None,
-        Some(_str) => Some(_str.to_string()),
-    }
-}
-
-#[inline]
 pub fn get_async_job_status() -> String {
     ASYNC_JOB_STATUS.lock().unwrap().clone()
 }
@@ -1051,10 +1022,21 @@ pub fn deploy_device(token: String, new_id: Option<String>) -> DeployResult {
     let id_to_deploy = new_id.clone().unwrap_or_else(|| local_id.clone());
     let uuid = crate::encode64(camellia_remote_protocol::get_uuid());
     let pk = crate::encode64(Config::get_key_pair().1);
+    let proof = match crate::device_identity::request_device_proof(
+        &get_api_server(),
+        "deploy",
+        &id_to_deploy,
+        &uuid,
+        token,
+    ) {
+        Ok(proof) => proof,
+        Err(err) => return DeployResult::Error(format!("Device proof failed: {}", err)),
+    };
     let body = serde_json::json!({
         "id": id_to_deploy,
         "uuid": uuid,
         "pk": pk,
+        "device_proof": proof,
     });
     let header = "Authorization: Bearer ".to_owned() + token;
     let url = get_api_server() + "/api/devices/deploy";

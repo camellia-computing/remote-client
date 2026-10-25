@@ -1,5 +1,5 @@
 use camellia_remote_protocol::message_proto::*;
-use clipboard::ClipboardFile;
+use clipboard::{validate_file_contents_payload_len, ClipboardFile};
 
 pub fn clip_2_msg(clip: ClipboardFile) -> Message {
     match clip {
@@ -213,6 +213,9 @@ pub fn msg_2_clip(msg: Cliprdr) -> Option<ClipboardFile> {
             })
         }
         Some(cliprdr::Union::FileContentsResponse(data)) => {
+            if validate_file_contents_payload_len(data.requested_data.len()).is_err() {
+                return None;
+            }
             Some(ClipboardFile::FileContentsResponse {
                 msg_flags: data.msg_flags,
                 stream_id: data.stream_id,
@@ -265,7 +268,7 @@ pub mod unix_file_clip {
     }
 
     #[inline]
-    fn resp_file_contents_fail(stream_id: i32) -> Message {
+    fn resp_file_contents_fail(stream_id: u32) -> Message {
         clip_2_msg(ClipboardFile::FileContentsResponse {
             msg_flags: 0x2,
             stream_id,
@@ -428,5 +431,43 @@ pub mod unix_file_clip {
             }
         }
         vec![]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clipboard::FILE_CONTENTS_MAX_REQUEST_BYTES;
+
+    #[test]
+    fn oversized_file_contents_response_is_rejected_before_vec_copy() {
+        let oversized = Cliprdr {
+            union: Some(cliprdr::Union::FileContentsResponse(
+                CliprdrFileContentsResponse {
+                    msg_flags: 1,
+                    stream_id: 9,
+                    requested_data: vec![0; FILE_CONTENTS_MAX_REQUEST_BYTES as usize + 1].into(),
+                    ..Default::default()
+                },
+            )),
+            ..Default::default()
+        };
+        assert!(msg_2_clip(oversized).is_none());
+
+        let valid = Cliprdr {
+            union: Some(cliprdr::Union::FileContentsResponse(
+                CliprdrFileContentsResponse {
+                    msg_flags: 1,
+                    stream_id: 9,
+                    requested_data: vec![0; FILE_CONTENTS_MAX_REQUEST_BYTES as usize].into(),
+                    ..Default::default()
+                },
+            )),
+            ..Default::default()
+        };
+        assert!(matches!(
+            msg_2_clip(valid),
+            Some(ClipboardFile::FileContentsResponse { stream_id: 9, .. })
+        ));
     }
 }

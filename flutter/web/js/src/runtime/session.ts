@@ -12,6 +12,7 @@ import { concatBytes, sha256, utf8ToBytes } from './hash';
 import { MessageInbox } from './inbox';
 import { ProtoRoots, decodeProtoObject, loadProtos } from './proto';
 import { ConnectionRoute, RelayInfo, RendezvousClient } from './rendezvous';
+import { assertPeerAuthenticatedRoute } from './direct_access_policy';
 import { WebSocketTransport } from './transport';
 import { ConnectRequest, ConnectionState, SessionContext, SessionMode } from './types';
 import {
@@ -68,7 +69,10 @@ type PeerInfoSnapshot = {
   features: { privacyMode: boolean; terminal: boolean };
   resolutions: unknown;
   platformAdditions?: unknown;
+  fileTransferProtocolVersion: number;
 };
+
+const FILE_TRANSFER_PROTOCOL_VERSION = 2;
 
 type FileEntryInfo = {
   entryType: number;
@@ -210,7 +214,8 @@ export class WebSession {
     currentDisplay: 0,
     displays: [],
     features: { privacyMode: false, terminal: false },
-    resolutions: {}
+    resolutions: {},
+    fileTransferProtocolVersion: 0
   };
   private qualityTickTs = Date.now();
   private displayIds: number[] = [0];
@@ -306,6 +311,7 @@ export class WebSession {
   async connect(context: SessionContext, reconnecting = false): Promise<void> {
     this.manualClose = false;
     this.closeNotified = false;
+    this.peerInfoSnapshot.fileTransferProtocolVersion = 0;
     this.firstDecodedVideoFrameSeen = false;
     this.initialVideoRefreshAttempts = 0;
     this.stopInitialVideoRefreshLoop();
@@ -329,42 +335,7 @@ export class WebSession {
         `Session context: version=${context.version || '-'}, buildDate=${context.buildDate || '-'}`
       );
 
-      const directTarget = this.isDirectAccessTarget(this.request.id);
-      const directEndpoint = this.resolveDirectAccessEndpoint(context);
-      if (directEndpoint) {
-        this.attachTransportMessageHandler();
-        try {
-          await this.connectDirectIpAccess(directEndpoint);
-        } catch {
-          this.transport.close();
-          throw new Error(
-            directEndpoint.startsWith('wss://')
-              ? 'Direct IP access failed. Ensure target WSS endpoint is reachable and certificate is trusted.'
-              : 'Direct IP access failed. Web client requires a reachable WS/WSS endpoint on target host.'
-          );
-        }
-        this.state = 'connected';
-        this.events.emit({ name: 'conn_status', status: 'connected' });
-        this.events.emit({
-          name: 'connection_ready',
-          secure: 'false',
-          direct: 'true',
-          stream_type: 'TCP'
-        });
-        this.startKeepalive();
-        this.startInitialVideoRefreshLoop();
-        if (this.requestedDisplays.length > 0) {
-          this.switchDisplay(this.requestedDisplays);
-        }
-        this.reconnectAttempts = 0;
-        this.logger.info('Connected in direct IP access mode (unencrypted)');
-        return;
-      }
-      if (directTarget && !context.allowDirectIpAccess) {
-        throw new Error(
-          'Direct IP access is disabled. Enable "Enable direct IP access" first.'
-        );
-      }
+      assertPeerAuthenticatedRoute(this.request.id);
 
       if (!context.rendezvousServer) {
         throw new Error('Rendezvous server not configured');
@@ -436,119 +407,6 @@ export class WebSession {
       this.state = 'idle';
       throw err;
     }
-  }
-
-  private resolveDirectAccessEndpoint(context: SessionContext): string | null {
-    if (!context.allowDirectIpAccess) {
-      return null;
-    }
-    const target = this.request.id.trim();
-    if (!target || /^\d+$/.test(target)) {
-      return null;
-    }
-    if (target.startsWith('ws://') || target.startsWith('wss://')) {
-      return target;
-    }
-    if (target.includes('/') || target.includes('?') || target.includes('#')) {
-      return null;
-    }
-    if (target.startsWith('[')) {
-      const end = target.indexOf(']');
-      if (end <= 0) {
-        return null;
-      }
-      const host = target.slice(1, end);
-      const rest = target.slice(end + 1);
-      if (!host || !host.includes(':')) {
-        return null;
-      }
-      if (!rest) {
-        return `ws://[${host}]:${context.directAccessPort}`;
-      }
-      if (!rest.startsWith(':')) {
-        return null;
-      }
-      const port = Number.parseInt(rest.slice(1), 10);
-      if (!Number.isInteger(port) || port <= 0 || port > 65535) {
-        return null;
-      }
-      return `ws://[${host}]:${port}`;
-    }
-    const colonCount = (target.match(/:/g) ?? []).length;
-    if (colonCount === 0) {
-      if (isIpv4(target)) {
-        return `ws://${target}:${context.directAccessPort}`;
-      }
-      return null;
-    }
-    if (colonCount === 1) {
-      const lastColon = target.lastIndexOf(':');
-      const host = target.slice(0, lastColon);
-      const portRaw = target.slice(lastColon + 1);
-      const port = Number.parseInt(portRaw, 10);
-      if (!host || !Number.isInteger(port) || port <= 0 || port > 65535) {
-        return null;
-      }
-      if (!isIpv4(host) && !isDomain(host)) {
-        return null;
-      }
-      return `ws://${host}:${port}`;
-    }
-    return null;
-  }
-
-  private isDirectAccessTarget(rawId: string): boolean {
-    const target = rawId.trim();
-    if (!target || /^\d+$/.test(target)) {
-      return false;
-    }
-    if (target.startsWith('ws://') || target.startsWith('wss://')) {
-      return true;
-    }
-    if (target.includes('/') || target.includes('?') || target.includes('#')) {
-      return false;
-    }
-    if (target.startsWith('[')) {
-      const end = target.indexOf(']');
-      if (end <= 0) {
-        return false;
-      }
-      const host = target.slice(1, end);
-      const rest = target.slice(end + 1);
-      if (!host || !host.includes(':')) {
-        return false;
-      }
-      if (!rest) {
-        return true;
-      }
-      if (!rest.startsWith(':')) {
-        return false;
-      }
-      const port = Number.parseInt(rest.slice(1), 10);
-      return Number.isInteger(port) && port > 0 && port <= 65535;
-    }
-    const colonCount = (target.match(/:/g) ?? []).length;
-    if (colonCount === 0) {
-      return isIpv4(target);
-    }
-    if (colonCount === 1) {
-      const lastColon = target.lastIndexOf(':');
-      const host = target.slice(0, lastColon);
-      const portRaw = target.slice(lastColon + 1);
-      const port = Number.parseInt(portRaw, 10);
-      if (!host || !Number.isInteger(port) || port <= 0 || port > 65535) {
-        return false;
-      }
-      return isIpv4(host) || isDomain(host);
-    }
-    return false;
-  }
-
-  private async connectDirectIpAccess(endpoint: string): Promise<void> {
-    await this.transport.connect(endpoint);
-    this.isSecure = false;
-    // Keep behavior aligned with native direct-IP mode (non-secure path).
-    this.sendMessage({});
   }
 
   private async connectWithRoute(
@@ -633,7 +491,7 @@ export class WebSession {
     includeHidden: boolean,
     fileNum = 0
   ): void {
-    if (!this.proto) {
+    if (!this.proto || !this.ensureFileTransferProtocol(id)) {
       return;
     }
     if (!path) {
@@ -667,7 +525,7 @@ export class WebSession {
   }
 
   startUpload(id: number, file: File, remotePath: string): void {
-    if (!this.proto) {
+    if (!this.proto || !this.ensureFileTransferProtocol(id)) {
       return;
     }
     if (!file || !remotePath) {
@@ -1241,7 +1099,7 @@ export class WebSession {
   }
 
   readAllFiles(id: number, path: string, includeHidden: boolean): void {
-    if (!this.proto) {
+    if (!this.proto || !this.ensureFileTransferProtocol(id)) {
       return;
     }
     this.sendMessage({
@@ -1256,7 +1114,7 @@ export class WebSession {
   }
 
   readEmptyDirs(path: string, includeHidden: boolean): void {
-    if (!this.proto) {
+    if (!this.proto || !this.ensureFileTransferProtocol()) {
       return;
     }
     this.sendMessage({
@@ -1284,6 +1142,9 @@ export class WebSession {
       this.clearDownloadConfirmRetry(download);
       this.downloadJobs.delete(id);
     }
+    if (!this.ensureFileTransferProtocol(id)) {
+      return;
+    }
     this.sendMessage({
       fileAction: {
         cancel: { id }
@@ -1292,7 +1153,7 @@ export class WebSession {
   }
 
   createDir(id: number, path: string): void {
-    if (!this.proto) {
+    if (!this.proto || !this.ensureFileTransferProtocol(id)) {
       return;
     }
     this.sendMessage({
@@ -1303,7 +1164,7 @@ export class WebSession {
   }
 
   removeFile(id: number, path: string, fileNum: number): void {
-    if (!this.proto) {
+    if (!this.proto || !this.ensureFileTransferProtocol(id)) {
       return;
     }
     this.sendMessage({
@@ -1318,7 +1179,7 @@ export class WebSession {
   }
 
   removeDir(id: number, path: string, recursive: boolean): void {
-    if (!this.proto) {
+    if (!this.proto || !this.ensureFileTransferProtocol(id)) {
       return;
     }
     this.sendMessage({
@@ -1333,7 +1194,7 @@ export class WebSession {
   }
 
   renameFile(id: number, path: string, newName: string): void {
-    if (!this.proto) {
+    if (!this.proto || !this.ensureFileTransferProtocol(id)) {
       return;
     }
     this.sendMessage({
@@ -1348,7 +1209,7 @@ export class WebSession {
   }
 
   confirmOverrideFile(id: number, fileNum: number, needOverride: boolean): void {
-    if (!this.proto) {
+    if (!this.proto || !this.ensureFileTransferProtocol(id)) {
       return;
     }
     const skip = !needOverride;
@@ -1385,7 +1246,7 @@ export class WebSession {
   }
 
   readRemoteDir(path: string, includeHidden: boolean): void {
-    if (!this.proto) {
+    if (!this.proto || !this.ensureFileTransferProtocol()) {
       return;
     }
     const fileAction = { readDir: { path, includeHidden } };
@@ -1480,7 +1341,7 @@ export class WebSession {
         symmetricValue: sealed
       }
     });
-    this.transport.setCipher(new SecretBoxCipher(symmetricKey));
+    this.transport.setCipher(new SecretBoxCipher(symmetricKey, 'initiator'));
     this.isSecure = true;
   }
 
@@ -1601,7 +1462,8 @@ export class WebSession {
       osLogin: {
         username: osUsername,
         password: osPassword
-      }
+      },
+      fileTransferProtocolVersion: FILE_TRANSFER_PROTOCOL_VERSION
     };
     this.attachSessionMode(loginRequest);
     this.sendMessage({ loginRequest });
@@ -1755,6 +1617,12 @@ export class WebSession {
     if (pi.platformAdditions !== undefined) {
       this.peerInfoSnapshot.platformAdditions = pi.platformAdditions;
     }
+    if (pi.fileTransferProtocolVersion !== undefined) {
+      this.peerInfoSnapshot.fileTransferProtocolVersion = this.toFiniteNumber(
+        pi.fileTransferProtocolVersion,
+        0
+      );
+    }
     const platformAdditions = this.peerInfoSnapshot.platformAdditions;
     this.events.emit({
       name: 'peer_info',
@@ -1773,7 +1641,10 @@ export class WebSession {
       platform_additions:
         platformAdditions !== undefined && platformAdditions !== null
           ? JSON.stringify(platformAdditions)
-        : ''
+        : '',
+      file_transfer_protocol_version: String(
+        this.peerInfoSnapshot.fileTransferProtocolVersion
+      )
     });
     if (pi.windowsSessions && Array.isArray(pi.windowsSessions.sessions)) {
       const sessions = pi.windowsSessions.sessions.map((s: any) => ({
@@ -1820,6 +1691,12 @@ export class WebSession {
         name: 'sync_platform_additions',
         platform_additions: pi.platformAdditions
       });
+    }
+    if (pi.fileTransferProtocolVersion !== undefined) {
+      this.peerInfoSnapshot.fileTransferProtocolVersion = this.toFiniteNumber(
+        pi.fileTransferProtocolVersion,
+        0
+      );
     }
   }
 
@@ -2246,17 +2123,17 @@ export class WebSession {
   private sendFileSendConfirm(
     id: number,
     fileNum: number,
-    offsetBlk?: number,
+    offsetBytes?: number,
     skip?: boolean
   ): void {
-    if (!this.proto) {
+    if (!this.proto || !this.isFileTransferProtocolCompatible()) {
       return;
     }
     const payload: Record<string, unknown> = { id, fileNum };
     if (skip) {
       payload.skip = true;
-    } else if (typeof offsetBlk === 'number') {
-      payload.offsetBlk = offsetBlk;
+    } else if (typeof offsetBytes === 'number') {
+      payload.offsetBytes = offsetBytes;
     }
     this.sendMessage({
       fileAction: {
@@ -2771,6 +2648,25 @@ export class WebSession {
     }
     const bytes = this.proto.messageType.encode(payload).finish();
     this.sendTransport(bytes);
+  }
+
+  private isFileTransferProtocolCompatible(): boolean {
+    return (
+      this.peerInfoSnapshot.fileTransferProtocolVersion ===
+      FILE_TRANSFER_PROTOCOL_VERSION
+    );
+  }
+
+  private ensureFileTransferProtocol(id?: number): boolean {
+    if (this.isFileTransferProtocolCompatible()) {
+      return true;
+    }
+    this.events.emit({
+      name: 'job_error',
+      id: id === undefined ? '' : String(id),
+      err: `Incompatible file transfer protocol: expected ${FILE_TRANSFER_PROTOCOL_VERSION}, got ${this.peerInfoSnapshot.fileTransferProtocolVersion}`
+    });
+    return false;
   }
 
   private startKeepalive(): void {
@@ -3572,30 +3468,6 @@ function parsePeerEncoding(value: unknown): PeerEncoding {
     h264: Boolean(enc.h264),
     h265: Boolean(enc.h265)
   };
-}
-
-function isIpv4(value: string): boolean {
-  const parts = value.split('.');
-  if (parts.length !== 4) {
-    return false;
-  }
-  return parts.every((part) => {
-    if (!/^\d+$/.test(part)) {
-      return false;
-    }
-    const num = Number.parseInt(part, 10);
-    return num >= 0 && num <= 255;
-  });
-}
-
-function isDomain(value: string): boolean {
-  if (!value || value.length > 253) {
-    return false;
-  }
-  if (value.includes('..') || value.startsWith('-') || value.endsWith('-')) {
-    return false;
-  }
-  return /^[A-Za-z0-9.-]+$/.test(value);
 }
 
 function permissionName(value: unknown): string | null {

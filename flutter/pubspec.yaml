@@ -40,6 +40,7 @@ dependencies:
   draggable_float_widget: ^0.1.0
   flutter_breadcrumb: ^1.0.1
   http: ^1.1.0
+  crypto: 3.0.7
   qr_code_scanner_plus: ^2.2.0
   zxing2: ^0.2.0
   image_picker: ^1.1.2

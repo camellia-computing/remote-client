@@ -266,16 +266,26 @@ class AbProfile {
   String? note;
   dynamic info;
   int rule;
+  int? authorizationGeneration;
 
-  AbProfile(this.guid, this.name, this.owner, this.note, this.rule, this.info);
+  AbProfile(
+    this.guid,
+    this.name,
+    this.owner,
+    this.note,
+    this.rule,
+    this.info, {
+    this.authorizationGeneration,
+  });
 
   AbProfile.fromJson(Map<String, dynamic> json)
-      : guid = json['guid'] ?? '',
-        name = json['name'] ?? '',
-        owner = json['owner'] ?? '',
-        note = json['note'] ?? '',
-        info = json['info'],
-        rule = json['rule'] ?? 0;
+    : guid = json['guid'] ?? '',
+      name = json['name'] ?? '',
+      owner = json['owner'] ?? '',
+      note = json['note'] ?? '',
+      info = json['info'],
+      rule = json['rule'] ?? 0,
+      authorizationGeneration = json['authorization_generation'];
 }
 
 class AbTag {

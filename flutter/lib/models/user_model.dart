@@ -252,9 +252,25 @@ class UserModel {
   /// throw [RequestException]
   Future<LoginResponse> login(LoginRequest loginRequest) async {
     final url = await bind.mainGetApiServer();
+    final payload = loginRequest.toJson();
+    final id = loginRequest.id ?? '';
+    final uuid = loginRequest.uuid ?? '';
+    if (id.isNotEmpty && uuid.isNotEmpty) {
+      final proofBody = await bind.mainGetDeviceProof(
+        purpose: 'login',
+        id: id,
+        uuid: uuid,
+        token: '',
+      );
+      final proof = jsonDecode(proofBody);
+      if (proof is! Map<String, dynamic> || proof['error'] != null) {
+        throw RequestException(0, proof is Map ? '${proof['error'] ?? 'Device proof failed'}' : 'Device proof failed');
+      }
+      payload['device_proof'] = proof;
+    }
     final resp = await http.post(
       Uri.parse('$url/api/login'),
-      body: jsonEncode(loginRequest.toJson()),
+      body: jsonEncode(payload),
     );
 
     final Map<String, dynamic> body;

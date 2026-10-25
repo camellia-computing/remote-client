@@ -185,6 +185,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    gFFI.ffiModel.onReconnectLifecycleState(state);
     if (state == AppLifecycleState.resumed) {
       trySyncClipboard();
     }

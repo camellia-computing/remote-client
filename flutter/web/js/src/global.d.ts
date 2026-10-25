@@ -31,6 +31,7 @@ declare global {
     __CAMELLIA_REMOTE_WEB_BRIDGE__?: Record<string, unknown>;
     setByName?: (name: string, arg0?: unknown, arg1?: unknown) => string | void;
     getByName?: (name: string, arg0?: unknown) => string;
+    getDeviceProof?: (purpose: string, id: string, uuid: string, token: string) => Promise<string>;
     init?: () => void;
     isMobile?: () => boolean;
     onInitFinished?: () => void;

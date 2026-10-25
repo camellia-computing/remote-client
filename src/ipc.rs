@@ -118,6 +118,13 @@ pub async fn connect_service(ms_timeout: u64) -> ResultType<ConnectionTmpl<ConnC
     connect(ms_timeout, crate::POSTFIX_SERVICE).await
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct FileTransferEntry {
+    pub name: String,
+    pub size: u64,
+    pub modified_time: u64,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "t", content = "c")]
 pub enum FS {
@@ -147,7 +154,7 @@ pub enum FS {
         path: String,
         id: i32,
         file_num: i32,
-        files: Vec<(String, u64)>,
+        files: Vec<FileTransferEntry>,
         overwrite_detection: bool,
         total_size: u64,
         conn_id: i32,
@@ -158,6 +165,7 @@ pub enum FS {
     WriteBlock {
         id: i32,
         file_num: i32,
+        blk_id: u32,
         data: Bytes,
         compressed: bool,
     },
@@ -173,7 +181,7 @@ pub enum FS {
     WriteOffset {
         id: i32,
         file_num: i32,
-        offset_blk: u32,
+        offset_bytes: u64,
     },
     CheckDigest {
         id: i32,
@@ -207,7 +215,7 @@ pub enum FS {
         id: i32,
         file_num: i32,
         skip: bool,
-        offset_blk: u32,
+        offset_bytes: u64,
         conn_id: i32,
     },
     ReadAllFiles {
@@ -378,6 +386,14 @@ pub enum Data {
     #[cfg(windows)]
     SyncWinCpuUsage(Option<f64>),
     FileTransferLog((String, String)),
+    FileTransferAudit {
+        id: i32,
+        total_size: u64,
+        transferred: u64,
+        state: String,
+        reason: String,
+        conn_id: i32,
+    },
     #[cfg(windows)]
     ControlledSessionCount(usize),
     CmErr(String),
@@ -409,6 +425,7 @@ pub enum Data {
     FileBlockFromCM {
         id: i32,
         file_num: i32,
+        blk_id: u32,
         /// Data is sent separately via `send_raw()` to avoid JSON encoding overhead.
         /// This field is skipped during serialization; sender must call `send_raw()` after sending.
         /// Receiver must call `next_raw()` and populate this field manually.
@@ -470,6 +487,30 @@ pub enum Data {
     FileTransferEnabledState(Option<bool>),
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[derive(Debug, Eq, PartialEq)]
+enum ServiceSyncFrameAuthorization {
+    Authorized,
+    Unauthorized,
+    Unsupported,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[inline]
+fn authorize_service_sync_frame(
+    data: &Data,
+    authorize: impl FnOnce() -> bool,
+) -> ServiceSyncFrameAuthorization {
+    if !matches!(data, Data::SyncConfig(_)) {
+        return ServiceSyncFrameAuthorization::Unsupported;
+    }
+    if authorize() {
+        ServiceSyncFrameAuthorization::Authorized
+    } else {
+        ServiceSyncFrameAuthorization::Unauthorized
+    }
+}
+
 #[tokio::main(flavor = "current_thread")]
 pub async fn start(postfix: &str) -> ResultType<()> {
     let mut incoming = new_listener(postfix).await?;
@@ -516,18 +557,29 @@ pub async fn start(postfix: &str) -> ResultType<()> {
                                     // uinput IPC paths while still minimizing exposed message surface here.
                                     #[cfg(any(target_os = "linux", target_os = "macos"))]
                                     if postfix == crate::POSTFIX_SERVICE {
-                                        if matches!(&data, Data::SyncConfig(_)) {
-                                            handle(data, &mut stream).await;
-                                        } else {
-                                            log::warn!(
-                                                "Rejected non-sync data on protected _service IPC channel: postfix={}, data_kind={:?}, peer_uid={:?}",
-                                                postfix,
-                                                std::mem::discriminant(&data),
-                                                stream.peer_uid()
-                                            );
-                                            // Close the connection to avoid keeping a protected channel
-                                            // alive while repeatedly receiving invalid traffic.
-                                            break;
+                                        // The active console user can change while this connection is
+                                        // open. Re-authorize every SyncConfig frame so a previously active
+                                        // user's connection loses authority after switch-user.
+                                        match authorize_service_sync_frame(&data, || {
+                                            authorize_service_scoped_ipc_connection(
+                                                &stream, &postfix,
+                                            )
+                                        }) {
+                                            ServiceSyncFrameAuthorization::Authorized => {
+                                                handle(data, &mut stream).await;
+                                            }
+                                            ServiceSyncFrameAuthorization::Unauthorized => break,
+                                            ServiceSyncFrameAuthorization::Unsupported => {
+                                                log::warn!(
+                                                    "Rejected non-sync data on protected _service IPC channel: postfix={}, data_kind={:?}, peer_uid={:?}",
+                                                    postfix,
+                                                    std::mem::discriminant(&data),
+                                                    stream.peer_uid()
+                                                );
+                                                // Close the connection to avoid keeping a protected channel
+                                                // alive while repeatedly receiving invalid traffic.
+                                                break;
+                                            }
                                         }
                                         continue;
                                     }
@@ -1415,7 +1467,7 @@ where
 {
     pub fn new(conn: T) -> Self {
         Self {
-            inner: Framed::new(conn, BytesCodec::new()),
+            inner: Framed::new(conn, BytesCodec::for_ipc()),
         }
     }
 
@@ -2091,11 +2143,161 @@ pub async fn set_install_option(k: String, v: String) -> ResultType<()> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use camellia_remote_protocol::{
+        bytes::{BufMut, BytesMut},
+        bytes_codec::{DEFAULT_MAX_PACKET_LENGTH, IPC_MAX_PACKET_LENGTH},
+        tokio_util::codec::Decoder,
+    };
 
     #[test]
     fn verify_ffi_enum_data_size() {
         println!("{}", std::mem::size_of::<Data>());
         assert!(std::mem::size_of::<Data>() <= 120);
+    }
+
+    #[test]
+    fn file_transfer_ipc_round_trip_preserves_sizes_block_ids_and_large_offsets() {
+        let entry = FileTransferEntry {
+            name: "large.bin".to_owned(),
+            size: (8u64 << 30) + 17,
+            modified_time: 1_700_000_000,
+        };
+        let new_write = FS::NewWrite {
+            path: "/tmp".to_owned(),
+            id: 1,
+            file_num: 0,
+            files: vec![entry.clone()],
+            overwrite_detection: true,
+            total_size: entry.size,
+            conn_id: 2,
+        };
+        let encoded = serde_json::to_vec(&new_write).unwrap();
+        let decoded: FS = serde_json::from_slice(&encoded).unwrap();
+        let FS::NewWrite { files, .. } = decoded else {
+            panic!("wrong IPC variant");
+        };
+        assert_eq!(files, vec![entry]);
+
+        let offset_bytes = (1u64 << 32) + 1;
+        let confirmation = FS::SendConfirmForRead {
+            id: 1,
+            file_num: 0,
+            skip: false,
+            offset_bytes,
+            conn_id: 2,
+        };
+        let encoded = serde_json::to_vec(&confirmation).unwrap();
+        let decoded: FS = serde_json::from_slice(&encoded).unwrap();
+        let FS::SendConfirmForRead {
+            offset_bytes: decoded_offset,
+            ..
+        } = decoded
+        else {
+            panic!("wrong IPC variant");
+        };
+        assert_eq!(decoded_offset, offset_bytes);
+
+        let write_offset = FS::WriteOffset {
+            id: 1,
+            file_num: 0,
+            offset_bytes,
+        };
+        let encoded = serde_json::to_vec(&write_offset).unwrap();
+        let decoded: FS = serde_json::from_slice(&encoded).unwrap();
+        let FS::WriteOffset {
+            offset_bytes: decoded_offset,
+            ..
+        } = decoded
+        else {
+            panic!("wrong IPC variant");
+        };
+        assert_eq!(decoded_offset, offset_bytes);
+
+        let block = FS::WriteBlock {
+            id: 1,
+            file_num: 0,
+            blk_id: u32::MAX,
+            data: Bytes::new(),
+            compressed: false,
+        };
+        let encoded = serde_json::to_vec(&block).unwrap();
+        let decoded: FS = serde_json::from_slice(&encoded).unwrap();
+        let FS::WriteBlock { blk_id, .. } = decoded else {
+            panic!("wrong IPC variant");
+        };
+        assert_eq!(blk_id, u32::MAX);
+
+        let cm_block = Data::FileBlockFromCM {
+            id: 1,
+            file_num: 0,
+            blk_id: u32::MAX,
+            data: Bytes::from_static(b"sent separately"),
+            compressed: false,
+            conn_id: 2,
+        };
+        let encoded = serde_json::to_vec(&cm_block).unwrap();
+        let decoded: Data = serde_json::from_slice(&encoded).unwrap();
+        let Data::FileBlockFromCM { blk_id, data, .. } = decoded else {
+            panic!("wrong IPC variant");
+        };
+        assert_eq!(blk_id, u32::MAX);
+        assert!(data.is_empty(), "raw block data must remain out-of-band");
+
+        let audit = Data::FileTransferAudit {
+            id: 7,
+            total_size: (8u64 << 30) + 17,
+            transferred: (4u64 << 30) + 9,
+            state: "progress".to_owned(),
+            reason: String::new(),
+            conn_id: 2,
+        };
+        let encoded = serde_json::to_vec(&audit).unwrap();
+        let decoded: Data = serde_json::from_slice(&encoded).unwrap();
+        let Data::FileTransferAudit {
+            id,
+            total_size,
+            transferred,
+            state,
+            reason,
+            conn_id,
+        } = decoded
+        else {
+            panic!("wrong IPC variant");
+        };
+        assert_eq!((id, conn_id), (7, 2));
+        assert_eq!(total_size, (8u64 << 30) + 17);
+        assert_eq!(transferred, (4u64 << 30) + 9);
+        assert_eq!(state, "progress");
+        assert!(reason.is_empty());
+    }
+
+    #[test]
+    fn ipc_connection_uses_the_explicit_frame_budget() {
+        fn frame_header(len: usize) -> BytesMut {
+            let mut header = BytesMut::new();
+            header.put_u32_le((len << 2) as u32 | 0x3);
+            header
+        }
+
+        let (_, stream) = tokio::io::duplex(64);
+        let mut connection = ConnectionTmpl::new(stream);
+        let mut above_default = frame_header(DEFAULT_MAX_PACKET_LENGTH + 1);
+        assert!(connection
+            .inner
+            .codec_mut()
+            .decode(&mut above_default)
+            .unwrap()
+            .is_none());
+
+        let (_, stream) = tokio::io::duplex(64);
+        let mut connection = ConnectionTmpl::new(stream);
+        let mut above_ipc_budget = frame_header(IPC_MAX_PACKET_LENGTH + 1);
+        let err = connection
+            .inner
+            .codec_mut()
+            .decode(&mut above_ipc_budget)
+            .unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -2105,6 +2307,35 @@ mod test {
             Config::ipc_path_for_uid(0, crate::POSTFIX_SERVICE),
             Config::ipc_path_for_uid(501, crate::POSTFIX_SERVICE)
         );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn test_service_sync_frame_reauthorizes_after_user_switch() {
+        let active_uid = Cell::new(Some(501));
+        let authorization_calls = Cell::new(0);
+        let data = Data::SyncConfig(None);
+        let authorize = || {
+            authorization_calls.set(authorization_calls.get() + 1);
+            is_allowed_service_peer_uid(501, active_uid.get())
+        };
+
+        assert_eq!(
+            authorize_service_sync_frame(&data, authorize),
+            ServiceSyncFrameAuthorization::Authorized
+        );
+        active_uid.set(Some(502));
+        assert_eq!(
+            authorize_service_sync_frame(&data, authorize),
+            ServiceSyncFrameAuthorization::Unauthorized
+        );
+        assert_eq!(authorization_calls.get(), 2);
+
+        assert_eq!(
+            authorize_service_sync_frame(&Data::Test, authorize),
+            ServiceSyncFrameAuthorization::Unsupported
+        );
+        assert_eq!(authorization_calls.get(), 2);
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
