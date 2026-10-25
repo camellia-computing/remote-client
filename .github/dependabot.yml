@@ -1,5 +1,24 @@
 version: 2
 updates:
+  - package-ecosystem: pip
+    directory: /libs/portable
+    schedule:
+      interval: weekly
+      day: monday
+      time: "03:30"
+      timezone: Asia/Singapore
+    cooldown:
+      default-days: 7
+    groups:
+      portable-python:
+        patterns: ["*"]
+        update-types: [minor, patch]
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: build(deps)
+    labels:
+      - dependencies
+
   - package-ecosystem: cargo
     directory: /
     target-branch: main
@@ -31,9 +50,30 @@ updates:
     cooldown:
       default-days: 7
     groups:
+      flutter-toolchain:
+        patterns:
+          - freezed
+          - freezed_annotation
+          - build_runner
+          - ffigen
+          - flex_color_picker
+          - vector_math
+      desktop-platform-plugins:
+        patterns:
+          - win32
+          - win32_registry
+          - uni_links_desktop
+          - device_info_plus
+          - package_info_plus
+          - file_picker
+          - wakelock_plus
+          - desktop_drop
       flutter-dependencies:
         patterns:
           - "*"
+        update-types:
+          - minor
+          - patch
     open-pull-requests-limit: 5
     commit-message:
       prefix: deps(flutter)

@@ -1171,14 +1171,14 @@ async fn handle(data: Data, stream: &mut Connection) {
 
 #[cfg(target_os = "windows")]
 pub(crate) fn generate_one_time_ipc_token() -> ResultType<String> {
-    use camellia_remote_protocol::rand::{rngs::OsRng, RngCore as _};
+    use camellia_remote_protocol::rand::{rngs::SysRng, TryRng as _};
     use std::fmt::Write as _;
 
     let mut random_bytes = [0u8; IPC_TOKEN_RANDOM_BYTES];
-    let mut rng = OsRng;
+    let mut rng = SysRng;
     rng.try_fill_bytes(&mut random_bytes).map_err(|err| {
         camellia_remote_protocol::anyhow::anyhow!(
-            "failed to generate portable service ipc token from OsRng: {}",
+            "failed to generate portable service ipc token from system randomness: {}",
             err
         )
     })?;

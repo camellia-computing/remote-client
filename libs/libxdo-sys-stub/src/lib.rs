@@ -110,7 +110,7 @@ impl XdoLib {
         unsafe {
             let (lib, lib_name) = LIB_NAMES
                 .iter()
-                .find_map(|name| Library::new(name).ok().map(|lib| (lib, *name)))?;
+                .find_map(|name| Library::new(*name).ok().map(|lib| (lib, *name)))?;
 
             log::info!("libxdo-sys Loaded {}", lib_name);
 

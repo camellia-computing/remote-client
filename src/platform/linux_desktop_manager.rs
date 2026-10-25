@@ -6,7 +6,7 @@ use crate::client::{
 };
 use camellia_remote_protocol::{
     allow_err, bail, log,
-    rand::prelude::*,
+    rand::random,
     tokio::time,
     users::{get_user_by_name, os::unix::UserExt, User},
 };

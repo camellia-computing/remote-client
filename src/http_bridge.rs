@@ -6,7 +6,7 @@ use camellia_remote_protocol::{
     base64::{engine::general_purpose::STANDARD as BASE64, Engine as _},
     config::{Config, Socks5Server},
     futures::FutureExt,
-    rand::RngCore,
+    rand::{rngs::SysRng, TryRng},
     rendezvous_proto::HeaderEntry,
     tokio::{self, sync::Semaphore},
     tokio_util::sync::CancellationToken,
@@ -299,10 +299,7 @@ impl Broker {
             Err(_) => return failed("", "capacity_exhausted"),
         };
         let mut random = [0; 16];
-        if camellia_remote_protocol::rand::rngs::OsRng
-            .try_fill_bytes(&mut random)
-            .is_err()
-        {
+        if SysRng.try_fill_bytes(&mut random).is_err() {
             return failed("", "runtime_unavailable");
         }
         let id = uuid::Builder::from_random_bytes(random)

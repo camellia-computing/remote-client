@@ -1564,7 +1564,7 @@ class FileFetcher {
         } catch (e) {
           tryCompleteListingTaskWithError(path, e.toString(), true);
         }
-        return result;
+        return await result;
       }
     } catch (e) {
       return Future.error(e);
@@ -1587,7 +1587,7 @@ class FileFetcher {
         } catch (e) {
           tryCompleteListingTaskWithError(path, e.toString(), false);
         }
-        return result;
+        return await result;
       }
     } catch (e) {
       return Future.error(e);

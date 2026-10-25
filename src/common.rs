@@ -792,7 +792,6 @@ pub fn run_me<T: AsRef<std::ffi::OsStr>>(args: Vec<T>) -> std::io::Result<std::p
 
 #[inline]
 pub fn username() -> String {
-    // fix bug of whoami
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     return whoami::username()
         .unwrap_or_default()
@@ -802,8 +801,6 @@ pub fn username() -> String {
     return DEVICE_NAME.lock().unwrap().clone();
 }
 
-// Exactly the implementation of "whoami::hostname()".
-// This wrapper is to suppress warnings.
 #[inline(always)]
 #[cfg(not(target_os = "ios"))]
 pub fn whoami_hostname() -> String {

@@ -1977,21 +1977,19 @@ mod desktop {
 }
 
 pub struct WakeLock {
-    _handle: Option<keepawake::KeepAwake>,
+    _handle: Option<super::power::PowerInhibitor>,
 }
 
 impl WakeLock {
     pub fn new(display: bool, idle: bool, sleep: bool) -> Self {
         Self {
-            _handle: keepawake::Builder::default()
-                .display(display)
-                .idle(idle)
-                .sleep(sleep)
-                .reason("Active Camellia remote session")
-                .app_name(crate::get_app_name())
-                .app_reverse_domain("com.camellia.remote")
-                .create()
-                .ok(),
+            _handle: match super::power::PowerInhibitor::new(display, idle, sleep) {
+                Ok(handle) => Some(handle),
+                Err(error) => {
+                    log::warn!("Unable to acquire session power protection: {error}");
+                    None
+                }
+            },
         }
     }
 }

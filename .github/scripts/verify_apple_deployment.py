@@ -7,7 +7,9 @@ import json
 from pathlib import Path
 import plistlib
 import re
+import shutil
 import sys
+import tomllib
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -46,6 +48,46 @@ def version_tuple(value: str, source: str) -> tuple[int, int]:
         )
     major, minor = value.split(".", maxsplit=1)
     return int(major), int(minor)
+
+
+def verify_flutter_engine_floors(podhelper: str) -> None:
+    for platform, declaration in (("ios", "ios"), ("macos", "osx")):
+        values = re.findall(
+            rf"s\.{declaration}\.deployment_target\s*=\s*['\"]([^'\"]+)['\"]",
+            podhelper,
+        )
+        if len(values) != 1:
+            raise PolicyError(f"Flutter must declare one {platform} engine minimum")
+        actual = version_tuple(values[0], f"Flutter {platform} engine")
+        if actual > SUPPORTED_FLOORS[platform]:
+            raise PolicyError(
+                f"Flutter {platform} engine requires {values[0]}, exceeding "
+                "the product deployment baseline"
+            )
+
+
+def verify_mobile_identity_features(manifest: dict) -> None:
+    ios_target = 'cfg(target_os = "ios")'
+    targets = manifest.get("target", {})
+    dependency = targets.get(ios_target, {}).get("dependencies", {}).get("whoami", {})
+    if not isinstance(dependency, dict) or "force-stub" not in dependency.get(
+        "features", []
+    ):
+        raise PolicyError("iOS must not use whoami's macOS-only identity APIs")
+    tables = [manifest.get("dependencies", {})]
+    tables.extend(
+        target.get("dependencies", {})
+        for name, target in targets.items()
+        if name != ios_target
+    )
+    for table in tables:
+        for name, dependency in table.items():
+            if (
+                isinstance(dependency, dict)
+                and (name == "whoami" or dependency.get("package") == "whoami")
+                and "force-stub" in dependency.get("features", [])
+            ):
+                raise PolicyError("the whoami fallback must be limited to the iOS target")
 
 
 def unique_values(pattern: str, text: str, source: str) -> set[str]:
@@ -421,6 +463,15 @@ def verify_apple_dependency_contract() -> None:
                 f"{marker!r} exactly once"
             )
 
+    json_version = read(".github/config/cocoapods-json-version").strip()
+    if not re.fullmatch(r"\d+\.\d+\.\d+", json_version):
+        raise PolicyError("CocoaPods JSON must pin one exact stable release")
+    launcher = read(".github/scripts/pod.rb")
+    if "gem 'json', json_version" not in launcher:
+        raise PolicyError("CocoaPods must select the pinned JSON serializer")
+    if '"$repository_root/.github/scripts/pod.rb" "$gem_bin/pod"' not in installer:
+        raise PolicyError("Apple builds must use the pinned CocoaPods launcher")
+
     lock_requirements = {
         "flutter/ios/Podfile.lock": (
             "DKImagePickerController/Core (4.3.9)",
@@ -494,6 +545,7 @@ def verify() -> tuple[str, str]:
     verify_flutter_apple_project("macos")
     verify_apple_dependency_contract()
     verify_ios_link_anchor()
+    verify_mobile_identity_features(tomllib.loads(read("Cargo.toml")))
 
     ios_podfile = read("flutter/ios/Podfile")
     require_values(
@@ -734,6 +786,12 @@ def verify() -> tuple[str, str]:
 def main() -> int:
     try:
         ios_target, macos_target = verify()
+        if flutter_executable := shutil.which("flutter"):
+            flutter_root = Path(flutter_executable).resolve().parent.parent
+            helper = (flutter_root / "packages/flutter_tools/bin/podhelper.rb").resolve()
+            if not helper.is_relative_to(flutter_root):
+                raise PolicyError("Flutter engine policy must come from the selected SDK")
+            verify_flutter_engine_floors(helper.read_text(encoding="utf-8"))
     except (
         OSError,
         json.JSONDecodeError,

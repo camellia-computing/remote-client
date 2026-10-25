@@ -273,10 +273,10 @@ class CandidateEvidenceTests(unittest.TestCase):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("finalize_candidate:", workflow)
         self.assertIn(
-            "anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610",
+            "anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c",
             workflow,
         )
-        self.assertIn("syft-version: v1.50.0", workflow)
+        self.assertIn("syft-version: v1.55.0", workflow)
         self.assertIn(
             "subject-checksums: ${{ runner.temp }}/release-assets/SHA256SUMS",
             workflow,
@@ -285,6 +285,21 @@ class CandidateEvidenceTests(unittest.TestCase):
         self.assertIn("needs.finalize_candidate.result == 'success'", workflow)
         self.assertIn("Download consolidated candidate evidence", workflow)
         self.assertEqual(workflow.count("-run-${{ github.run_id }}-${{ github.run_attempt }}"), 11)
+
+    def test_release_policy_deadlines_use_trusted_control_at_both_boundaries(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        prepare = workflow.split("  build_windows_x64:", 1)[0]
+        publish = workflow.split("  publish:", 1)[1]
+        self.assertIn("if: ${{ steps.release.outputs.release-draft == 'true' }}", prepare)
+        self.assertEqual(prepare.count("audit_cargo_dependencies.py"), 2)
+        self.assertIn('--authorization-policy "$RUNNER_TEMP/cargo-audit-policy.json"', prepare)
+        self.assertIn('git show "$GITHUB_WORKFLOW_SHA:.github/config/cargo-audit-policy.json"', publish)
+        self.assertLess(
+            prepare.index("Validate dependency policy before building"),
+            prepare.index("Validate exact CI bridge artifact"),
+        )
+        self.assertIn("audit_cargo_dependencies.py", publish)
+        self.assertIn('git show "$GITHUB_WORKFLOW_SHA:.github/scripts/$script"', publish)
 
 
 if __name__ == "__main__":

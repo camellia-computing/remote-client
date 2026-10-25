@@ -1,0 +1,30 @@
+[package]
+name = "camellia-platform-power"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.99"
+license = "AGPL-3.0-only"
+description = "Owned native session power protection and restart adapters"
+
+[dependencies]
+anyhow = "1"
+log = "0.4"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+dbus = "0.9"
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+dbus-crossroads = "0.5"
+uuid = { version = "1", features = ["v4"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-foundation = { version = "0.3.2", features = ["CFString"] }
+objc2-io-kit = { version = "0.3.2", features = ["pwr_mgt"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Shutdown",
+    "Win32_System_Threading",
+] }

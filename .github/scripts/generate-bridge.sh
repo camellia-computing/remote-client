@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-frb_codegen_version="${FRB_CODEGEN_VERSION:-2.12.0}"
+frb_codegen_version="${FRB_CODEGEN_VERSION:-2.13.0}"
 rust_features="${FRB_RUST_FEATURES:-}"
 
 installed_version=""
