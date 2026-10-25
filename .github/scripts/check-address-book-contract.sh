@@ -15,3 +15,5 @@ dart compile js -O2 test/support/address_book_mutations_js_probe.dart -o "$probe
 node "$client_root/.github/scripts/test-address-book-mutations-js.cjs" "$probe_dir/mutations.js"
 dart compile js -O2 test/support/address_book_journal_web_probe.dart -o "$probe_dir/journal.js"
 node "$client_root/.github/scripts/test-address-book-journal-web.cjs" "$probe_dir/journal.js"
+dart compile js -O2 test/support/http_browser_probe.dart -o "$probe_dir/http.js"
+node "$client_root/.github/scripts/test-http-browser.cjs" "$probe_dir/http.js"

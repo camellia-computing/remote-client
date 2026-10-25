@@ -295,6 +295,12 @@ Future<http.Response> sendAbortableHttp(
     }
     rethrow;
   } catch (_) {
+    if (deadline) {
+      throw const HttpTransportException('deadline');
+    }
+    if (cancellation?.isCancelled == true) {
+      throw const HttpTransportException('cancelled');
+    }
     throw const HttpTransportException('transport_failed');
   } finally {
     timer.cancel();

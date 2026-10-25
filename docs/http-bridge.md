@@ -14,6 +14,7 @@ runtime; it does not create an OS thread or runtime for each request.
 | Native request budget | 12 seconds including response streaming |
 | Completed result lifetime | 30 seconds, consumed exactly once; periodic expiry also cancels stale workers |
 | Reusable HTTP client | One origin and explicit proxy configuration; at most 8 old handles in active workers |
+| System DNS for HTTP/proxies | 8 admitted OS lookups shared by clients; at most 64 returned addresses |
 
 Native assigns a canonical UUIDv4 using fallible OS entropy. Poll and cancel use
 that exact identity, never the URL. Completed and failed outcomes consume their
@@ -41,10 +42,21 @@ Protocol TLS selection is stateless (`TlsType::for_url`): HTTP/WS is plaintext,
 HTTPS/WSS uses Rustls, invalid schemes fail closed. Successful hosts are not
 retained in a global discovery cache.
 
-Remaining gates: bound the lifetime/admission of blocking DNS resolution even
-when an async request is cancelled (RES-003 dependency); cover owning-platform
-engine/Web behavior, raw-TCP integration and resource measurements. No passing
+System DNS uses a shared fail-fast admission limit. The blocking OS closure owns
+its permit until it really returns, including when its async waiter is cancelled.
+There is no age-based eviction, fallback resolver or unbounded DNS admission
+queue. If all OS calls stall, further lookups fail closed until those calls return.
+HTTP deadlines still return promptly; they do not claim to kill getaddrinfo.
+
+Remaining gates: Protocol raw-TCP/TCP/UDP resolver paths are still RES-003's scope;
+cover owning-platform engine/Web behavior, raw-TCP integration and resource
+measurements. No passing
 unit suite proves these gates. The current pre-maintenance lock graph also fails
 the dependency audit; accepted maintenance source/SDK/locks/provenance must be
 integrated together. Do not widen audit exceptions or describe this feature
 branch as deployable.
+
+The compiled `http_browser_probe.dart` exercises the actual package:http
+BrowserClient with Node fetch/AbortController/ReadableStream substitutes, including
+header/body abort and oversized-reader cancellation. It runs in the existing
+contract script; it is not a real browser, network, CORS or TLS acceptance test.

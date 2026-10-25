@@ -63,6 +63,7 @@ macro_rules! configure_http_client {
             .timeout(Duration::from_secs(12))
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never())
+            .dns_resolver(super::dns::shared())
             .pool_max_idle_per_host(2);
         match $tls_type {
             TlsType::Plain => {}
@@ -169,7 +170,7 @@ mod tests {
         let direct = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let proxy = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let conf = Socks5Server {
-            proxy: format!("http://{}", proxy.local_addr().unwrap()),
+            proxy: format!("http://localhost:{}", proxy.local_addr().unwrap().port()),
             username: "alice".to_owned(),
             password: "test-password".to_owned(),
         };
