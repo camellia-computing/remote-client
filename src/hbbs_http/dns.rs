@@ -18,6 +18,10 @@ pub(super) fn shared() -> Arc<BoundedResolver> {
     RESOLVER.clone()
 }
 
+pub(crate) async fn resolve_endpoint(endpoint: &str) -> Result<Vec<SocketAddr>, DnsError> {
+    RESOLVER.resolve_endpoint(endpoint).await
+}
+
 pub(super) struct BoundedResolver {
     permits: Arc<tokio::sync::Semaphore>,
 }
@@ -54,6 +58,46 @@ impl BoundedResolver {
             }
             Ok(Box::new(result.into_iter().take(MAX_ADDRESSES)) as Addrs)
         })
+    }
+
+    async fn resolve_endpoint(&self, endpoint: &str) -> Result<Vec<SocketAddr>, DnsError> {
+        if endpoint.is_empty() || endpoint.len() > 260 {
+            return Err(failure("dns_invalid_endpoint"));
+        }
+        // Numeric destinations do not need an OS worker, even while all DNS
+        // workers are blocked. Port zero is never a valid outbound endpoint.
+        if let Ok(address) = endpoint.parse::<SocketAddr>() {
+            return if address.port() == 0 {
+                Err(failure("dns_invalid_endpoint"))
+            } else {
+                Ok(vec![address])
+            };
+        }
+        let (host, port) = endpoint
+            .rsplit_once(':')
+            .ok_or_else(|| failure("dns_invalid_endpoint"))?;
+        let port = port
+            .parse::<u16>()
+            .ok()
+            .filter(|port| *port != 0)
+            .ok_or_else(|| failure("dns_invalid_endpoint"))?;
+        if host.is_empty()
+            || host.len() > 253
+            || host
+                .chars()
+                .any(|ch| ch.is_control() || ch.is_whitespace() || ":/\\@?#[]%".contains(ch))
+        {
+            return Err(failure("dns_invalid_endpoint"));
+        }
+        let host = url::Host::parse(host)
+            .map_err(|_| failure("dns_invalid_endpoint"))?
+            .to_string();
+        let addresses = self.lookup(move || {
+            (host.as_str(), port)
+                .to_socket_addrs()
+                .map(|addresses| addresses.take(MAX_ADDRESSES).collect())
+        });
+        Ok(addresses.await?.collect())
     }
 }
 
@@ -213,5 +257,67 @@ mod tests {
         assert!(addresses
             .iter()
             .all(|address| address.ip().is_loopback() && address.port() == 0));
+    }
+
+    #[tokio::test]
+    async fn raw_endpoint_uses_the_same_admission_pool_and_numeric_addresses_need_no_worker() {
+        let resolver = BoundedResolver::new(1);
+        let permit = resolver.permits.clone().try_acquire_owned().unwrap();
+        assert_eq!(
+            resolver
+                .resolve_endpoint("localhost:21116")
+                .await
+                .unwrap_err()
+                .to_string(),
+            "dns_capacity_exhausted"
+        );
+        for endpoint in ["127.0.0.1:21116", "[::1]:21116"] {
+            assert_eq!(
+                resolver.resolve_endpoint(endpoint).await.unwrap(),
+                [endpoint.parse::<SocketAddr>().unwrap()]
+            );
+        }
+        drop(permit);
+        let addresses = resolver.resolve_endpoint("localhost:21116").await.unwrap();
+        assert!(!addresses.is_empty());
+        assert!(addresses
+            .iter()
+            .all(|address| address.ip().is_loopback() && address.port() == 21116));
+    }
+
+    #[tokio::test]
+    async fn raw_endpoint_rejects_invalid_or_oversized_inputs_before_admission() {
+        let resolver = BoundedResolver::new(0);
+        for endpoint in [
+            "",
+            "localhost",
+            "localhost:0",
+            "127.0.0.1:0",
+            "[::1]:0",
+            "localhost:65536",
+            "PRIVATE@localhost:443",
+            "http://localhost:443",
+            "localhost/path:443",
+            "localhost\n:443",
+            "[invalid]:443",
+            "::1:443",
+        ] {
+            assert_eq!(
+                resolver
+                    .resolve_endpoint(endpoint)
+                    .await
+                    .unwrap_err()
+                    .to_string(),
+                "dns_invalid_endpoint"
+            );
+        }
+        assert_eq!(
+            resolver
+                .resolve_endpoint(&"x".repeat(261))
+                .await
+                .unwrap_err()
+                .to_string(),
+            "dns_invalid_endpoint"
+        );
     }
 }

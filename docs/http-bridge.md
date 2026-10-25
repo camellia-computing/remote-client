@@ -14,7 +14,8 @@ runtime; it does not create an OS thread or runtime for each request.
 | Native request budget | 12 seconds including response streaming |
 | Completed result lifetime | 30 seconds, consumed exactly once; periodic expiry also cancels stale workers |
 | Reusable HTTP client | One origin and explicit proxy configuration; at most 8 old handles in active workers |
-| System DNS for HTTP/proxies | 8 admitted OS lookups shared by clients; at most 64 returned addresses |
+| System DNS for HTTP/proxies/raw TCP | 8 admitted OS lookups shared by clients; at most 64 returned addresses |
+| Raw TCP wire frame | Rendezvous control budget, 17 MiB including protobuf/encryption overhead; decoded bridge body remains 1 MiB |
 
 Native assigns a canonical UUIDv4 using fallible OS entropy. Poll and cancel use
 that exact identity, never the URL. Completed and failed outcomes consume their
@@ -29,7 +30,7 @@ before sending. An explicit HTTP/HTTPS/SOCKS proxy takes precedence over raw TCP
 bad proxy configuration cannot create a direct client. Redirects and transparent
 reqwest retries are disabled. The bridge never switches transport after an
 uncertain result. Other native telemetry POST callers still have a separate
-historical fallback path; this is not a claim that NET-004's entire scope is done.
+historical fallback path; this does not give it the bridge's single-attempt contract.
 That POST path now captures its explicit proxy and full-origin routing policy
 before awaiting transport. A failed explicit proxy cannot become raw TCP because
 live settings changed later. Its no-proxy fallback behavior is separate from the
@@ -59,7 +60,16 @@ There is no age-based eviction, fallback resolver or unbounded DNS admission
 queue. If all OS calls stall, further lookups fail closed until those calls return.
 HTTP deadlines still return promptly; they do not claim to kill getaddrinfo.
 
-Remaining gates: Protocol raw-TCP/TCP/UDP resolver paths are still RES-003's scope;
+Raw TCP captures the rendezvous endpoint and public key before awaiting I/O,
+validates the key before DNS/connect, and uses that same shared DNS admission
+pool. Only numeric addresses enter the Protocol socket constructor: it cannot
+re-read a later explicit proxy/WebSocket policy or start a second hostname
+lookup. DNS and all address attempts share one connect budget, inside the total
+request budget. Authentication must complete before any HTTP headers/body are
+sent; cancelling a handshake drops its socket. Raw TCP does not construct an
+unused HTTP client, and HTTP clients are built only in admitted workers.
+
+Remaining gates: other Protocol TCP/UDP/proxy resolver paths remain RES-003's scope;
 cover owning-platform engine/Web behavior, raw-TCP integration and resource
 measurements. No passing
 unit suite proves these gates. The current pre-maintenance lock graph also fails

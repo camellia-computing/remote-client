@@ -8,6 +8,7 @@ mod dns;
 mod http_client;
 pub mod record_upload;
 pub mod sync;
+pub(crate) use dns::resolve_endpoint;
 pub(crate) use http_client::{
     create_http_client_async_for_configuration, create_http_client_for_configuration,
 };

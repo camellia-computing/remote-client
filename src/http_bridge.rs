@@ -158,48 +158,63 @@ fn response_value(status: u16, headers: HeaderMap, bytes: &[u8]) -> Result<Value
     Ok(json!({"status_code": status, "headers": result, "body_base64": BASE64.encode(bytes)}))
 }
 
-async fn request_once(request: Request, client: Client, raw_tcp: bool) -> Result<Value, Failure> {
-    if raw_tcp {
-        let headers = request
-            .headers
-            .iter()
-            .map(|(name, value)| {
-                Ok(HeaderEntry {
-                    name: name.to_string(),
-                    value: value.to_str().map_err(|_| "invalid_headers")?.to_owned(),
-                    ..Default::default()
+enum RequestRoute {
+    Http(Client),
+    RawTcp(crate::common::RawTcpContext),
+}
+
+async fn request_once(request: Request, route: RequestRoute) -> Result<Value, Failure> {
+    let client = match route {
+        RequestRoute::Http(client) => client,
+        RequestRoute::RawTcp(context) => {
+            let headers = request
+                .headers
+                .iter()
+                .map(|(name, value)| {
+                    Ok(HeaderEntry {
+                        name: name.to_string(),
+                        value: value.to_str().map_err(|_| "invalid_headers")?.to_owned(),
+                        ..Default::default()
+                    })
                 })
-            })
-            .collect::<Result<Vec<_>, Failure>>()?;
-        let response = crate::common::bridge_raw_tcp_request(
-            request.url.as_str(),
-            request.method.as_str(),
-            request.body.as_bytes(),
-            headers,
-        )
-        .await
-        .map_err(|_| "transport_failed")?;
-        if !response.error.is_empty() {
-            return Err("transport_failed");
+                .collect::<Result<Vec<_>, Failure>>()?;
+            let response = crate::common::bridge_raw_tcp_request(
+                context,
+                request.url.as_str(),
+                request.method.as_str(),
+                request.body.as_bytes(),
+                headers,
+            )
+            .await
+            .map_err(|_| "transport_failed")?;
+            if !response.error.is_empty() {
+                return Err("transport_failed");
+            }
+            let status = u16::try_from(response.status).map_err(|_| "invalid_response")?;
+            if (300..400).contains(&status) {
+                return Err("redirect_rejected");
+            }
+            if !(100..600).contains(&status) {
+                return Err("invalid_response");
+            }
+            if response.body.len() > MAX_BODY {
+                return Err("response_too_large");
+            }
+            if response.headers.len() > 64 {
+                return Err("invalid_response_headers");
+            }
+            let mut headers = HeaderMap::new();
+            for entry in response.headers {
+                let name = HeaderName::from_bytes(entry.name.as_bytes())
+                    .map_err(|_| "invalid_response_headers")?;
+                headers.append(
+                    name,
+                    HeaderValue::from_str(&entry.value).map_err(|_| "invalid_response_headers")?,
+                );
+            }
+            return response_value(status, headers, &response.body);
         }
-        let status = u16::try_from(response.status).map_err(|_| "invalid_response")?;
-        if (300..400).contains(&status) {
-            return Err("redirect_rejected");
-        }
-        if !(100..600).contains(&status) {
-            return Err("invalid_response");
-        }
-        let mut headers = HeaderMap::new();
-        for entry in response.headers {
-            let name = HeaderName::from_bytes(entry.name.as_bytes())
-                .map_err(|_| "invalid_response_headers")?;
-            headers.append(
-                name,
-                HeaderValue::from_str(&entry.value).map_err(|_| "invalid_response_headers")?,
-            );
-        }
-        return response_value(status, headers, &response.body);
-    }
+    };
     let mut response = client
         .request(request.method, request.url)
         .headers(request.headers)
@@ -425,11 +440,10 @@ pub(crate) async fn start(
     };
     let conf = Config::get_socks();
     let raw_tcp = conf.is_none() && crate::common::bridge_raw_tcp_target(request.url.as_str());
-    // A cache for one origin, not one unbounded multi-host keep-alive pool.
-    // Existing workers retain at most MAX_ACTIVE old client handles.
-    let client = match client_for(&conf, &request.url.origin().ascii_serialization()) {
-        Ok(client) => client,
-        Err(code) => return failed("", code).to_string(),
+    let raw_context = if raw_tcp {
+        Some(crate::common::capture_raw_tcp_context().await)
+    } else {
+        None
     };
     if !SWEEPER.swap(true, std::sync::atomic::Ordering::AcqRel) {
         let owner = Arc::downgrade(&BROKER);
@@ -445,7 +459,18 @@ pub(crate) async fn start(
         });
     }
     BROKER
-        .start(request_once(request, client, raw_tcp))
+        .start(async move {
+            // Construct clients only after admission; raw TCP needs no HTTP
+            // client. The cache retains one origin/proxy plus active handles.
+            let route = match raw_context {
+                Some(context) => RequestRoute::RawTcp(context),
+                None => RequestRoute::Http(client_for(
+                    &conf,
+                    &request.url.origin().ascii_serialization(),
+                )?),
+            };
+            request_once(request, route).await
+        })
         .to_string()
 }
 
@@ -722,10 +747,12 @@ mod tests {
             "{}".to_owned(),
         )
         .unwrap();
-        let result =
-            tokio::time::timeout(Duration::from_secs(2), request_once(request, client, false))
-                .await
-                .unwrap();
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            request_once(request, RequestRoute::Http(client)),
+        )
+        .await
+        .unwrap();
         assert_eq!(result.unwrap_err(), "redirect_rejected");
         server.await.unwrap();
         assert!(
@@ -753,7 +780,7 @@ mod tests {
         let client = crate::hbbs_http::create_http_client_async_for_configuration(None).unwrap();
         let request = Request::parse(url, "GET".to_owned(), None, "{}".to_owned()).unwrap();
         let broker = Arc::new(Broker::new());
-        let request_id = id(&broker.start(request_once(request, client, false)));
+        let request_id = id(&broker.start(request_once(request, RequestRoute::Http(client))));
         tokio::time::timeout(Duration::from_secs(2), received)
             .await
             .unwrap()

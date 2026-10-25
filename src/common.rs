@@ -1126,22 +1126,41 @@ fn get_tcp_proxy_addr() -> String {
     check_port(Config::get_rendezvous_server(), RENDEZVOUS_PORT)
 }
 
+/// Owned routing inputs; never re-read configuration after request admission.
+pub(crate) struct RawTcpContext {
+    endpoint: String,
+    key: String,
+}
+
+pub(crate) async fn capture_raw_tcp_context() -> RawTcpContext {
+    RawTcpContext {
+        endpoint: get_tcp_proxy_addr(),
+        key: crate::get_key(true).await,
+    }
+}
+
 /// Send an HTTP request via the rendezvous server's TCP proxy using protobuf.
-/// Connects with `connect_tcp` + `secure_tcp`, sends `HttpProxyRequest`,
+/// Resolves through the shared bounded DNS pool, connects to numeric addresses
+/// with the captured no-proxy policy, authenticates, sends `HttpProxyRequest`,
 /// receives `HttpProxyResponse`.
 ///
-/// The entire operation (connect + handshake + send + receive) is wrapped in
+/// The entire operation (DNS + connect + handshake + send + receive) is wrapped in
 /// an overall timeout of `CONNECT_TIMEOUT + READ_TIMEOUT` so that a stall at
 /// any stage cannot block the caller indefinitely.
 async fn tcp_proxy_request(
+    context: RawTcpContext,
     method: &str,
     url: &str,
     body: &[u8],
     headers: Vec<HeaderEntry>,
 ) -> ResultType<HttpProxyResponse> {
-    let tcp_addr = get_tcp_proxy_addr();
-    if tcp_addr.is_empty() {
-        bail!("No rendezvous server configured for TCP proxy");
+    let RawTcpContext {
+        endpoint: tcp_addr,
+        key,
+    } = context;
+    // Validate before DNS/connect, not merely before sending the HTTP body.
+    if get_rs_pk(&key).is_none() {
+        bail!("raw_tcp_invalid_key");
     }
 
     let parsed = url::Url::parse(url)?;
@@ -1160,8 +1179,23 @@ async fn tcp_proxy_request(
 
     let overall_timeout = CONNECT_TIMEOUT + READ_TIMEOUT;
     timeout(overall_timeout, async {
-        let mut conn = socket_client::connect_tcp(&*tcp_addr, CONNECT_TIMEOUT).await?;
-        let key = crate::get_key(true).await;
+        // One DNS+connect budget, not one timeout per returned address. A
+        // cancelled OS lookup retains its shared permit until getaddrinfo ends.
+        let mut conn = timeout(CONNECT_TIMEOUT, async {
+            let addresses = crate::hbbs_http::resolve_endpoint(&tcp_addr)
+                .await.map_err(|_| anyhow!("raw_tcp_dns_failed"))?;
+            for address in addresses {
+                if let Ok(mut connection) = camellia_remote_protocol::tcp::FramedStream::new(
+                    address, None, CONNECT_TIMEOUT,
+                ).await {
+                    *connection.0.codec_mut() = camellia_remote_protocol::bytes_codec::BytesCodec::with_max_packet_length(
+                        camellia_remote_protocol::bytes_codec::RENDEZVOUS_CONTROL_MAX_PACKET_LENGTH,
+                    );
+                    return Ok(Stream::Tcp(connection));
+                }
+            }
+            Err(anyhow!("raw_tcp_connect_failed"))
+        }).await??;
         secure_tcp_silent(&mut conn, &key).await?;
 
         let mut req = HttpProxyRequest::new();
@@ -1203,12 +1237,13 @@ pub(crate) fn bridge_raw_tcp_target(url: &str) -> bool {
 }
 
 pub(crate) async fn bridge_raw_tcp_request(
+    context: RawTcpContext,
     url: &str,
     method: &str,
     body: &[u8],
     headers: Vec<HeaderEntry>,
 ) -> ResultType<HttpProxyResponse> {
-    tcp_proxy_request(method, url, body, headers).await
+    tcp_proxy_request(context, method, url, body, headers).await
 }
 
 /// Build HeaderEntry list from "Key: Value" style header string (used by post_request).
@@ -1263,13 +1298,14 @@ fn post_header_entries(header: &str, operation: &HttpOperation) -> Vec<HeaderEnt
 
 /// POST request via TCP proxy.
 async fn post_request_via_tcp_proxy(
+    context: RawTcpContext,
     url: &str,
     body: &str,
     header: &str,
     operation: &HttpOperation,
 ) -> ResultType<String> {
     let headers = post_header_entries(header, operation);
-    let resp = tcp_proxy_request("POST", url, body.as_bytes(), headers).await?;
+    let resp = tcp_proxy_request(context, "POST", url, body.as_bytes(), headers).await?;
     if !resp.error.is_empty() {
         bail!("TCP proxy error: {}", resp.error);
     }
@@ -1367,12 +1403,13 @@ pub(crate) async fn post_request_with_operation(
         use_ws(),
         get_builtin_option(keys::OPTION_USE_RAW_TCP_FOR_API) == "Y",
     );
+    let raw_context = capture_raw_tcp_context().await;
     with_tcp_proxy_fallback(
         &url,
         "POST",
         policy,
         post_request_http(&url, &body, header, operation, &proxy_conf),
-        post_request_via_tcp_proxy(&url, &body, header, operation),
+        post_request_via_tcp_proxy(raw_context, &url, &body, header, operation),
     )
     .await
 }
@@ -2657,6 +2694,196 @@ mod tests {
         );
 
         assert_eq!(get_tcp_proxy_addr(), format!("[1:2]:{RENDEZVOUS_PORT}"));
+    }
+
+    #[tokio::test]
+    async fn raw_tcp_invalid_key_is_rejected_before_connecting() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let request = tcp_proxy_request(
+            RawTcpContext {
+                endpoint: listener.local_addr().unwrap().to_string(),
+                key: "PRIVATE-INVALID-KEY".to_owned(),
+            },
+            "POST",
+            "https://management.example.test/api/ab/peer/add",
+            b"PRIVATE-BODY",
+            vec![],
+        );
+        let result = tokio::time::timeout(Duration::from_secs(2), request)
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(result.to_string(), "raw_tcp_invalid_key");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), listener.accept())
+                .await
+                .is_err(),
+            "invalid credentials must not open a socket"
+        );
+    }
+
+    #[tokio::test]
+    async fn raw_tcp_captured_context_carries_mandatory_headers_on_an_authenticated_channel() {
+        use camellia_remote_protocol::tcp::FramedStream;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = listener.local_addr().unwrap().to_string();
+        let (public, secret) = sign::gen_keypair();
+        let key = BASE64.encode(public.0);
+        let expected_key = key.clone();
+        let server = tokio::spawn(async move {
+            let (socket, address) = listener.accept().await.unwrap();
+            let mut connection = FramedStream::from(socket, address);
+            let (box_public, box_secret) = box_::gen_keypair();
+            let mut challenge = RendezvousMessage::new();
+            challenge.set_key_exchange(KeyExchange {
+                keys: vec![sign::sign(&box_public.0, &secret).into()],
+                ..Default::default()
+            });
+            connection.send(&challenge).await.unwrap();
+            let message =
+                RendezvousMessage::parse_from_bytes(&connection.next().await.unwrap().unwrap())
+                    .unwrap();
+            let Some(rendezvous_message::Union::KeyExchange(exchange)) = message.union else {
+                panic!("expected secure handshake, never a plaintext HTTP request");
+            };
+            assert_eq!(exchange.keys.len(), 2);
+            let key = Encrypt::decode(&exchange.keys[1], &exchange.keys[0], &box_secret).unwrap();
+            connection.set_key(key, CipherRole::Responder);
+            let message =
+                RendezvousMessage::parse_from_bytes(&connection.next().await.unwrap().unwrap())
+                    .unwrap();
+            let Some(rendezvous_message::Union::HttpProxyRequest(request)) = message.union else {
+                panic!("expected encrypted HTTP request");
+            };
+            assert_eq!(request.method, "POST");
+            assert_eq!(request.path, "/api/ab/peer/add?guid=book");
+            assert_eq!(request.body.as_ref(), b"{\"peers\":[]}");
+            assert_eq!(request.licence_key, expected_key);
+            for (name, value) in [
+                ("Authorization", "Bearer test-secret"),
+                ("Idempotency-Key", "03440000-0000-4000-8000-000000000001"),
+                ("If-Match", "\"7\""),
+            ] {
+                assert_eq!(
+                    request
+                        .headers
+                        .iter()
+                        .find(|h| h.name == name)
+                        .unwrap()
+                        .value,
+                    value
+                );
+            }
+            let mut response = RendezvousMessage::new();
+            response.set_http_proxy_response(HttpProxyResponse {
+                status: 200,
+                body: Bytes::from_static(b"receipt"),
+                ..Default::default()
+            });
+            connection.send(&response).await.unwrap();
+        });
+        let request = tcp_proxy_request(
+            RawTcpContext { endpoint, key },
+            "POST",
+            "https://management.example.test/api/ab/peer/add?guid=book",
+            b"{\"peers\":[]}",
+            [
+                ("Authorization", "Bearer test-secret"),
+                ("Idempotency-Key", "03440000-0000-4000-8000-000000000001"),
+                ("If-Match", "\"7\""),
+            ]
+            .into_iter()
+            .map(|(name, value)| HeaderEntry {
+                name: name.to_owned(),
+                value: value.to_owned(),
+                ..Default::default()
+            })
+            .collect(),
+        );
+        let response = tokio::time::timeout(Duration::from_secs(2), request)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body.as_ref(), b"receipt");
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn raw_tcp_cancellation_during_handshake_closes_socket_without_http_payload() {
+        use tokio::io::AsyncReadExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let context = RawTcpContext {
+            endpoint: listener.local_addr().unwrap().to_string(),
+            key: BASE64.encode(sign::gen_keypair().0 .0),
+        };
+        let request = tokio::spawn(async move {
+            tcp_proxy_request(
+                context,
+                "POST",
+                "https://management.example.test/api/login",
+                b"PRIVATE-MUTATION",
+                vec![],
+            )
+            .await
+        });
+        let (mut socket, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        request.abort();
+        assert!(request.await.unwrap_err().is_cancelled());
+        let mut buffer = [0; 64];
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), socket.read(&mut buffer))
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn raw_tcp_rejects_session_sized_control_frame_before_receiving_payload() {
+        use camellia_remote_protocol::bytes_codec::RENDEZVOUS_CONTROL_MAX_PACKET_LENGTH;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let context = RawTcpContext {
+            endpoint: listener.local_addr().unwrap().to_string(),
+            key: BASE64.encode(sign::gen_keypair().0 .0),
+        };
+        let request = tokio::spawn(async move {
+            tcp_proxy_request(
+                context,
+                "POST",
+                "https://management.example.test/api/login",
+                b"PRIVATE-MUTATION",
+                vec![],
+            )
+            .await
+        });
+        let (mut socket, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        let header = (((RENDEZVOUS_CONTROL_MAX_PACKET_LENGTH + 1) as u32) << 2) | 3;
+        socket.write_all(&header.to_le_bytes()).await.unwrap();
+        assert!(tokio::time::timeout(Duration::from_secs(2), request)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_err());
+        let mut buffer = [0; 64];
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), socket.read(&mut buffer))
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
     }
 
     #[test]
