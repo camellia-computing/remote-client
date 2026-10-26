@@ -1,0 +1,16 @@
+[package]
+name = "camellia-windows-bootstrap"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.99"
+license = "AGPL-3.0-only"
+publish = false
+description = "Owned, scoped Windows portable-service SYSTEM bootstrap"
+
+[target.'cfg(windows)'.dependencies]
+log = "0.4"
+winapi = { version = "0.3", features = [
+    "errhandlingapi", "fileapi", "handleapi", "processthreadsapi",
+    "securitybaseapi", "stringapiset", "sysinfoapi", "tlhelp32", "userenv",
+    "winbase", "winerror", "winnt",
+] }

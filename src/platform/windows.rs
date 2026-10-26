@@ -2400,11 +2400,18 @@ pub fn elevate(arg: &str) -> ResultType<bool> {
     )
 }
 
-pub fn run_as_system(arg: &str) -> ResultType<()> {
-    let exe = std::env::current_exe()?.to_string_lossy().to_string();
-    if impersonate_system::run_as_system(&exe, arg).is_err() {
-        bail!(format!("Failed to run {} as system", exe));
-    }
+fn run_as_system(no_install: bool, shared_memory_name: Option<&str>) -> ResultType<()> {
+    let app_name = std::env::var_os(PORTABLE_APPNAME_RUNTIME_ENV_KEY);
+    let launched = camellia_windows_bootstrap::launch_portable_service(
+        no_install,
+        shared_memory_name,
+        app_name.as_deref(),
+    )?;
+    log::info!(
+        "event=system_bootstrap_launched child_pid={} session_id={}",
+        launched.process_id,
+        launched.session_id,
+    );
     Ok(())
 }
 
@@ -2423,12 +2430,6 @@ pub fn elevate_or_run_as_system(is_setup: bool, is_elevate: bool, is_run_as_syst
         "--elevate"
     }
     .to_owned();
-    let mut arg_run_as_system = if is_setup {
-        "--noinstall --run-as-system"
-    } else {
-        "--run-as-system"
-    }
-    .to_owned();
     let shmem_name_from_args = crate::portable_service::portable_service_shmem_name_from_args();
     if shmem_name_from_args.is_none() && crate::portable_service::has_portable_service_shmem_arg() {
         log::error!("Invalid portable service shared memory argument, aborting elevation flow");
@@ -2437,12 +2438,10 @@ pub fn elevate_or_run_as_system(is_setup: bool, is_elevate: bool, is_run_as_syst
         // with inconsistent shared-memory contract.
         std::process::exit(1);
     }
-    if let Some(shmem_name) = shmem_name_from_args {
-        let shmem_arg = crate::portable_service::portable_service_shmem_arg(&shmem_name);
+    if let Some(shmem_name) = shmem_name_from_args.as_ref() {
+        let shmem_arg = crate::portable_service::portable_service_shmem_arg(shmem_name);
         arg_elevate.push(' ');
         arg_elevate.push_str(&shmem_arg);
-        arg_run_as_system.push(' ');
-        arg_run_as_system.push_str(&shmem_arg);
     }
     if is_root() {
         if is_run_as_system {
@@ -2454,13 +2453,11 @@ pub fn elevate_or_run_as_system(is_setup: bool, is_elevate: bool, is_run_as_syst
             Ok(elevated) => {
                 if elevated {
                     if !is_run_as_system {
-                        if run_as_system(arg_run_as_system.as_str()).is_ok() {
-                            std::process::exit(0);
-                        } else {
-                            log::error!(
-                                "Failed to run as system, error {}",
-                                io::Error::last_os_error()
-                            );
+                        match run_as_system(is_setup, shmem_name_from_args.as_deref()) {
+                            Ok(()) => std::process::exit(0),
+                            Err(failure) => {
+                                log::error!("event=system_bootstrap_failed {}", failure)
+                            }
                         }
                     }
                 } else {
