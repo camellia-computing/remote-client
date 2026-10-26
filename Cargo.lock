@@ -833,6 +833,7 @@ dependencies = [
  "bytes",
  "camellia-platform-power",
  "camellia-remote-protocol",
+ "camellia-windows-bootstrap",
  "cc",
  "cfg-if 1.0.5",
  "chrono",
@@ -861,7 +862,6 @@ dependencies = [
  "foreign-types 0.3.2",
  "gtk",
  "image 0.24.9",
- "impersonate_system",
  "include_dir",
  "jni 0.21.1",
  "kcp-sys",
@@ -954,7 +954,6 @@ dependencies = [
  "confy",
  "crypto_box",
  "crypto_secretbox",
- "default_net",
  "directories-next",
  "dirs-next",
  "ed25519-dalek",
@@ -1005,6 +1004,14 @@ dependencies = [
  "x11 2.21.0",
  "zeroize",
  "zstd",
+]
+
+[[package]]
+name = "camellia-windows-bootstrap"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "winapi",
 ]
 
 [[package]]
@@ -2080,16 +2087,6 @@ dependencies = [
  "once_cell",
  "system-configuration",
  "windows 0.32.0",
-]
-
-[[package]]
-name = "default_net"
-version = "0.1.0"
-source = "git+https://github.com/rustdesk-org/default_net?rev=78f8f70cd85151a3a2c4a3230d80d5272703c02e#78f8f70cd85151a3a2c4a3230d80d5272703c02e"
-dependencies = [
- "anyhow",
- "regex",
- "winapi",
 ]
 
 [[package]]
@@ -3935,14 +3932,6 @@ dependencies = [
  "num-traits 0.2.19",
  "png 0.18.1",
  "tiff 0.11.3",
-]
-
-[[package]]
-name = "impersonate_system"
-version = "0.1.0"
-source = "git+https://github.com/rustdesk-org/impersonate-system#2f429010a5a10b1fe5eceb553c6672fd53d20167"
-dependencies = [
- "cc",
 ]
 
 [[package]]
