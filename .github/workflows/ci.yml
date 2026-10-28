@@ -328,6 +328,13 @@ jobs:
           cargo clippy --locked -p camellia-windows-bootstrap --all-targets
           --target "$BOOTSTRAP_TARGET" -- -D warnings
 
+      - name: Check Windows document-package print boundary
+        env:
+          PRINT_TARGET: ${{ matrix.target }}
+        run: >-
+          cargo clippy --locked -p camellia-printing --all-targets
+          --target "$PRINT_TARGET" -- -D warnings
+
   windows_portable:
     name: Windows portable smoke check (${{ matrix.target }})
     if: needs.classify.outputs.runtime == 'true'
@@ -356,6 +363,10 @@ jobs:
       - name: Test native bootstrap boundaries without launching SYSTEM children
         if: matrix.target == 'x86_64-pc-windows-msvc'
         run: cargo test --locked -p camellia-windows-bootstrap -- --nocapture
+
+      - name: Test print resource and COM ownership without creating print jobs
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        run: cargo test --locked -p camellia-printing -- --nocapture
 
       - name: Build deterministic portable launcher fixture
         shell: pwsh

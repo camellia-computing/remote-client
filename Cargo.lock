@@ -822,6 +822,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "camellia-printing"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "windows 0.61.3",
+]
+
+[[package]]
 name = "camellia-remote"
 version = "1.0.1"
 dependencies = [
@@ -832,6 +840,7 @@ dependencies = [
  "bytemuck",
  "bytes",
  "camellia-platform-power",
+ "camellia-printing",
  "camellia-remote-protocol",
  "camellia-windows-bootstrap",
  "cc",
