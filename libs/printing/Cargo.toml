@@ -1,0 +1,20 @@
+[package]
+name = "camellia-printing"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.99"
+license = "AGPL-3.0-only"
+publish = false
+description = "Owned Windows document-package print submission boundary"
+
+[target.'cfg(windows)'.dependencies]
+log = "0.4"
+windows = { version = "0.61", features = [
+    "Win32_Graphics_Printing",
+    "Win32_Security",
+    "Win32_Storage_Packaging_Opc",
+    "Win32_Storage_Xps",
+    "Win32_Storage_Xps_Printing",
+    "Win32_System_Com",
+    "Win32_UI_Shell",
+] }

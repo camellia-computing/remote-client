@@ -63,10 +63,7 @@ use winapi::{
             TOKEN_ELEVATION, TOKEN_GROUPS, TOKEN_QUERY, TOKEN_TYPE,
         },
         winreg::HKEY_CURRENT_USER,
-        winspool::{
-            EnumPrintersW, GetDefaultPrinterW, PRINTER_ENUM_CONNECTIONS, PRINTER_ENUM_LOCAL,
-            PRINTER_INFO_1W,
-        },
+        winspool::{EnumPrintersW, PRINTER_ENUM_CONNECTIONS, PRINTER_ENUM_LOCAL, PRINTER_INFO_1W},
         winuser::*,
     },
 };
@@ -4152,56 +4149,13 @@ pub fn get_printer_names() -> ResultType<Vec<String>> {
     }
 }
 
-extern "C" {
-    fn PrintXPSRawData(printer_name: *const u16, raw_data: *const u8, data_size: c_ulong) -> DWORD;
-}
-
 pub fn send_raw_data_to_printer(printer_name: Option<String>, data: Vec<u8>) -> ResultType<()> {
-    let mut printer_name = printer_name.unwrap_or_default();
-    if printer_name.is_empty() {
-        // use GetDefaultPrinter to get the default printer name
-        let mut needed_bytes = 0;
-        unsafe {
-            GetDefaultPrinterW(std::ptr::null_mut(), &mut needed_bytes);
-        }
-        if needed_bytes > 0 {
-            let mut default_printer_name = vec![0u16; needed_bytes as usize];
-            unsafe {
-                GetDefaultPrinterW(
-                    default_printer_name.as_mut_ptr() as *mut _,
-                    &mut needed_bytes,
-                );
-            }
-            printer_name = String::from_utf16_lossy(&default_printer_name[..needed_bytes as usize]);
-        }
-    } else {
-        if let Ok(names) = crate::platform::windows::get_printer_names() {
-            if !names.contains(&printer_name) {
-                // Don't set the first printer as current printer.
-                // It may not be the desired printer.
-                bail!("Printer name \"{}\" not found", &printer_name);
-            }
-        }
-    }
-    if printer_name.is_empty() {
-        return Err(anyhow!("Failed to get printer name"));
-    }
-
-    log::info!("Sending data to printer: {}", &printer_name);
-    let printer_name = wide_string(&printer_name);
-    unsafe {
-        let res = PrintXPSRawData(
-            printer_name.as_ptr(),
-            data.as_ptr() as *const u8,
-            data.len() as c_ulong,
-        );
-        if res != 0 {
-            bail!("Failed to send data to the printer, see logs in C:\\Windows\\temp\\test_rustdesk.log for more details.");
-        } else {
-            log::info!("Successfully sent data to the printer");
-        }
-    }
-
+    let submitted = camellia_printing::submit_xps(printer_name.as_deref(), &data)?;
+    log::info!(
+        "print stage=submitted_to_spooler documents={} pages={}",
+        submitted.documents,
+        submitted.pages
+    );
     Ok(())
 }
 

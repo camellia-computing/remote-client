@@ -132,6 +132,7 @@ winreg = "0.11"
 windows-service = "0.6"
 virtual_display = { path = "libs/virtual_display" }
 remote_printer = { path = "libs/remote_printer" }
+camellia-printing = { path = "libs/printing" }
 shared_memory = "0.12"
 tauri-winrt-notification = "0.8.1"
 runas = "1.2"
@@ -195,7 +196,7 @@ android-wakelock = { git = "https://github.com/rustdesk-org/android-wakelock" }
 whoami = { version = "2", features = ["force-stub"] }
 
 [workspace]
-members = ["libs/scrap", "libs/camellia_remote_protocol", "libs/enigo", "libs/clipboard", "libs/virtual_display", "libs/virtual_display/dylib", "libs/portable", "libs/remote_printer", "libs/platform_power", "libs/windows-bootstrap"]
+members = ["libs/scrap", "libs/camellia_remote_protocol", "libs/enigo", "libs/clipboard", "libs/virtual_display", "libs/virtual_display/dylib", "libs/portable", "libs/remote_printer", "libs/platform_power", "libs/windows-bootstrap", "libs/printing"]
 exclude = ["vdi/host", "examples/custom_plugin"]
 
 # Patch libxdo-sys to use a stub implementation that doesn't require libxdo
