@@ -43,7 +43,7 @@ dependencies:
   qr_code_scanner_plus: ^2.2.0
   zxing2: ^0.2.0
   image_picker: ^1.1.2
-  image: ^4.0.17
+  image: ^4.13.1
   back_button_interceptor: ^8.0.4
   flutter_rust_bridge: 2.13.0
   window_manager:
@@ -104,9 +104,9 @@ dependencies:
   xterm: ^4.0.0
   # No Dart import: the macOS Runner registers SqflitePlugin natively
   # (macos/Runner/MainFlutterWindow.swift), so the plugin must be resolved.
-  sqflite: ^2.2.0
+  sqflite: ^2.4.6
   vector_math: ^2.1.4
-  web: ^1.1.1
+  web: ^1.1.2
 
 dev_dependencies:
   flutter_test:
